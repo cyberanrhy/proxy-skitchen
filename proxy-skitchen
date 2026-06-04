@@ -1,0 +1,4098 @@
+#!/usr/bin/env python3
+"""
+proxy-skitchen — форк proxy-fetcher-gui, графическое приложение для поиска, парсинга,
+глубокого тестирования (через sing-box) и сохранения прокси-подписок
+с GitHub в формат Hiddify и другие клиенты.
+"""
+
+import asyncio
+import base64
+import faulthandler
+import json
+import os
+import random
+import re
+import socket
+import ssl
+import subprocess
+import sys
+import threading
+import time
+import traceback
+import tempfile
+import urllib.parse
+import urllib.request
+import urllib.error
+from collections import defaultdict, Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from dataclasses import dataclass, field
+
+import socks
+from sockshandler import SocksiPyHandler
+
+# ─── QT COMPATIBILITY LAYER ───
+os.environ["QT_API"] = "pyside6"
+
+try:
+    from PySide6.QtCore import (
+        QAbstractTableModel, Qt, QModelIndex, QSortFilterProxyModel,
+        Signal, QObject, QThread, QTimer, Slot, QUrl,
+    )
+    from PySide6.QtGui import QAction, QFont, QColor, QBrush, QDesktopServices
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QSplitter, QTabWidget, QTableView,
+        QPushButton, QLineEdit, QLabel, QComboBox, QCheckBox,
+        QProgressBar, QTextEdit, QListWidget, QListWidgetItem,
+        QGroupBox, QGridLayout, QMessageBox, QFileDialog,
+        QHeaderView, QAbstractItemView, QMenu, QStatusBar,
+        QSpinBox, QFormLayout, QTreeWidget, QTreeWidgetItem,
+        QDialog, QDialogButtonBox, QTableWidget, QScrollArea,
+        QButtonGroup, QPlainTextEdit,
+    )
+except ImportError:
+    from PySide2.QtCore import (
+        QAbstractTableModel, Qt, QModelIndex, QSortFilterProxyModel,
+        Signal, QObject, QThread, QTimer, Slot, QUrl,
+    )
+    from PySide2.QtGui import QFont, QColor, QBrush, QDesktopServices
+    from PySide2.QtWidgets import (
+        QAction,
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QSplitter, QTabWidget, QTableView,
+        QPushButton, QLineEdit, QLabel, QComboBox, QCheckBox,
+        QProgressBar, QTextEdit, QListWidget, QListWidgetItem,
+        QGroupBox, QGridLayout, QMessageBox, QFileDialog,
+        QHeaderView, QAbstractItemView, QMenu, QStatusBar,
+        QSpinBox, QFormLayout, QTreeWidget, QTreeWidgetItem,
+        QDialog, QDialogButtonBox, QTableWidget, QScrollArea,
+        QButtonGroup, QPlainTextEdit,
+    )
+
+if hasattr(QDialog, "DialogCode"):
+    _Accepted = QDialog.DialogCode.Accepted
+else:
+    _Accepted = QDialog.Accepted
+
+FAULT_LOG = "/tmp/proxy-fetcher-fault.log"
+_fault = open(FAULT_LOG, "w")
+faulthandler.enable(file=_fault)
+
+# ─── Crash logger ───
+CRASH_LOG = "/tmp/proxy-fetcher-crash.log"
+def _crash_log(exc_info=None):
+    with open(CRASH_LOG, "a") as f:
+        f.write(f"\n=== {datetime.now().isoformat()} ===\n")
+        if exc_info:
+            traceback.print_exception(*exc_info, file=f)
+        else:
+            traceback.print_exc(file=f)
+
+DEBUG_LOG = "/tmp/proxy-fetcher-debug.log"
+def _debug(msg):
+    with open(DEBUG_LOG, "a") as f:
+        f.write(f"[{datetime.now().isoformat()}] {msg}\n")
+
+# ─── Пути ───
+VPN_DIR = os.path.join(os.environ.get("HOME", "/home/skitchen"), "vpn-configs")
+OUT_DIR = os.path.join(VPN_DIR, "tested")
+TMP_DIR = "/tmp/proxy-fetcher"
+os.makedirs(OUT_DIR, exist_ok=True)
+os.makedirs(TMP_DIR, exist_ok=True)
+
+HIDDIFY_PROXY = "http://127.0.0.1:12334"
+CLASH_API = "http://127.0.0.1:16756"
+SING_BOX = "/usr/local/bin/sing-box"
+DESKTOP_DIR = os.path.expanduser("~/Рабочий стол")
+
+# ─── Форк ───
+FORK_NAME = "proxy-skitchen"
+FORK_VERSION = "1.0.0"
+
+# ─── Настройки ───
+SETTINGS_DIR = os.path.expanduser("~/.config/proxy-fetcher")
+SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+AUTH_FILE = os.path.join(SETTINGS_DIR, "auth.json")
+DEFAULT_SETTINGS = {
+    "proxy_enabled": True,
+    "proxy_type": "http",
+    "proxy_host": "127.0.0.1",
+    "proxy_port": 12334,
+    "scanned_repos": {},
+    "gh_scanned_repos": {},
+    "perf_mode": "medium",
+}
+
+PERF_PRESETS = {
+    "low":    {"test_threads": 2, "deep_threads": 1, "max_repos": 3,  "max_files": 10},
+    "medium": {"test_threads": 4, "deep_threads": 2, "max_repos": 8,  "max_files": 30},
+    "high":   {"test_threads": 8, "deep_threads": 3, "max_repos": 15, "max_files": 50},
+}
+
+def _load_settings() -> dict:
+    try:
+        sz = os.path.getsize(SETTINGS_FILE)
+        if sz > 1_000_000:  # >1MB — битый файл, сброс
+            os.remove(SETTINGS_FILE)
+            return dict(DEFAULT_SETTINGS)
+        with open(SETTINGS_FILE) as f:
+            s = json.load(f)
+            for k, v in DEFAULT_SETTINGS.items():
+                s.setdefault(k, v)
+            return s
+    except Exception:
+        return dict(DEFAULT_SETTINGS)
+
+def _save_settings(s: dict):
+    os.makedirs(SETTINGS_DIR, exist_ok=True)
+    # Токены не сохраняем в settings.json
+    s.pop("github_tokens", None)
+    tmp = SETTINGS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, SETTINGS_FILE)  # атомарная замена
+
+def _load_auth() -> dict:
+    """Загружает auth.json (только токены). Если файла нет — пустой список."""
+    try:
+        if os.path.exists(AUTH_FILE):
+            with open(AUTH_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"github_tokens": []}
+
+def _save_auth(data: dict):
+    """Сохраняет auth.json с правами 0600."""
+    os.makedirs(SETTINGS_DIR, exist_ok=True)
+    tmp = AUTH_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, AUTH_FILE)
+
+# Миграция: перенос github_tokens из settings.json в auth.json
+_settings_data = _load_settings()
+_auth_data = _load_auth()
+if not _auth_data.get("github_tokens") and _settings_data.get("github_tokens"):
+    _auth_data["github_tokens"] = _settings_data.pop("github_tokens")
+    _save_auth(_auth_data)
+    _save_settings(_settings_data)
+# Старый одиночный токен → auth.json
+if not _auth_data.get("github_tokens") and _settings_data.get("github_token"):
+    _auth_data["github_tokens"] = [_settings_data["github_token"]]
+    del _settings_data["github_token"]
+    _save_auth(_auth_data)
+    _save_settings(_settings_data)
+_settings_data.pop("github_tokens", None)
+
+_proxy_cache: dict | None = None
+
+def _get_proxy_opener(timeout: int = 8) -> tuple[urllib.request.OpenerDirector, dict]:
+    """Return (opener, proxy_dict) based on current settings."""
+    global _proxy_cache
+    if _proxy_cache is None:
+        _proxy_cache = _load_settings()
+    s = _proxy_cache
+    if not s.get("proxy_enabled"):
+        return urllib.request.build_opener(), {}
+    ptype = s.get("proxy_type", "http")
+    host = s.get("proxy_host", "127.0.0.1")
+    port = s.get("proxy_port", 12334)
+    if ptype == "socks5":
+        handler = SocksiPyHandler(socks.SOCKS5, host, port)
+        return urllib.request.build_opener(handler), {}
+    url = f"http://{host}:{port}"
+    pd = {"http": url, "https": url}
+    handler = urllib.request.ProxyHandler(pd)
+    return urllib.request.build_opener(handler), pd
+
+def _invalidate_proxy_cache():
+    global _proxy_cache
+    _proxy_cache = None
+
+
+
+# ═══════════════════════════════════════════════════════════
+#  Парсинг прокси
+# ═══════════════════════════════════════════════════════════
+
+_GOOD_SNI_DOMAINS = [
+    "vk.com", "ok.ru", "vk.ru", "mail.ru",
+    "yandex.ru", "ya.ru", "yastatic.net", "bk.ru", "inbox.ru", "list.ru",
+    "sberbank.ru", "online.sberbank.ru", "vtb.ru", "tinkoff.ru",
+    "gazprombank.ru", "alfabank.ru",
+    "ozon.ru", "wildberries.ru", "avito.ru", "hh.ru",
+    "gosuslugi.ru", "mos.ru", "rt.ru",
+    "megafon.ru", "mts.ru", "beeline.ru", "tele2.ru", "rostelecom.ru",
+    "dns-shop.ru", "citilink.ru", "lamoda.ru", "drom.ru",
+    "ivi.ru", "kinopoisk.ru",
+    "www.google.com", "google.com", "www.googleapis.com", "dl.google.com",
+    "play.google.com", "fonts.googleapis.com", "www.gstatic.com",
+    "www.microsoft.com", "microsoft.com", "update.microsoft.com",
+    "www.apple.com", "apple.com", "cdn.apple.com",
+    "www.cloudflare.com", "cloudflare.com", "one.one.one.one", "cdn.cloudflare.com",
+    "www.amazon.com", "amazon.com", "aws.amazon.com",
+    "www.mozilla.org", "mozilla.org",
+    "www.yahoo.com", "yahoo.com",
+    "www.wikipedia.org", "wikipedia.org",
+    "www.reddit.com", "reddit.com",
+    "www.github.com", "github.com",
+    "www.samsung.com", "samsung.com",
+    "www.nvidia.com", "nvidia.com",
+    "www.speedtest.net", "speedtest.net",
+    "www.netflix.com", "netflix.com",
+    "www.youtube.com", "youtube.com",
+    "www.bing.com", "bing.com",
+    "www.office.com", "outlook.office365.com", "login.microsoftonline.com",
+    "www.intel.com", "www.amd.com",
+    "www.adobe.com", "adobe.com",
+    "www.paypal.com", "paypal.com",
+    "www.instagram.com", "instagram.com",
+    "www.facebook.com", "facebook.com",
+    "www.twitter.com", "twitter.com", "x.com",
+    "www.tiktok.com", "tiktok.com",
+    "www.zoom.us", "zoom.us",
+    "www.discord.com", "discord.com",
+    "www.spotify.com", "spotify.com",
+    "www.samsung.com", "samsung.com",
+    "www.nvidia.com", "nvidia.com",
+    "www.speedtest.net", "speedtest.net",
+    "www.netflix.com", "netflix.com",
+    "www.youtube.com", "youtube.com",
+    "www.bing.com", "bing.com",
+    "www.office.com", "outlook.office365.com", "login.microsoftonline.com",
+    "www.intel.com", "www.amd.com",
+    "www.adobe.com", "adobe.com",
+    "www.paypal.com", "paypal.com",
+]
+_GOOD_SET = set(d.lower() for d in _GOOD_SNI_DOMAINS)
+
+
+def _is_ip(s: str) -> bool:
+    return bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', s))
+
+
+def _strip_remark(uri: str) -> tuple[str, str]:
+    idx = uri.rfind('#')
+    if idx == -1: return uri, ''
+    return uri[:idx], urllib.parse.unquote(uri[idx + 1:])
+
+
+def extract_sni(line: str) -> Optional[str]:
+    try:
+        clean, _ = _strip_remark(line.strip())
+        qmark = clean.find('?')
+        if qmark != -1:
+            params = urllib.parse.parse_qs(clean[qmark + 1:])
+            for key in ('sni', 'serverName', 'server_name', 'host'):
+                vals = params.get(key, [])
+                if vals and vals[0].strip() and not _is_ip(vals[0].strip()):
+                    return vals[0].strip()
+    except Exception:
+        pass
+    return None
+
+
+def sni_is_good(line: str) -> bool:
+    sni = extract_sni(line)
+    if not sni: return False
+    sni = sni.lower().strip().rstrip('.')
+    if _is_ip(sni): return False
+    if sni in _GOOD_SET: return True
+    for good in _GOOD_SET:
+        if sni.endswith('.' + good): return True
+    return False
+
+
+def get_protocol(uri: str) -> str:
+    l = uri.strip().lower()
+    if l.startswith('vless://'): return 'vless'
+    if l.startswith('vmess://'): return 'vmess'
+    if l.startswith('trojan://'): return 'trojan'
+    if l.startswith('ss://') or l.startswith('shadowsocks://'): return 'ss'
+    if l.startswith('hysteria2://') or l.startswith('hy2://'): return 'hy2'
+    if l.startswith('hysteria://') or l.startswith('hy://'): return 'hy'
+    if l.startswith('tuic://'): return 'tuic'
+    if l.startswith('socks5://') or l.startswith('socks4://'): return 'socks'
+    if l.startswith('http://') or l.startswith('https://'): return 'http'
+    if l.startswith('naive+'): return 'naive'
+    if l.startswith('wireguard://') or l.startswith('wg://'): return 'wireguard'
+    return 'unknown'
+
+
+def get_server_port(uri: str) -> tuple[Optional[str], Optional[int]]:
+    line = uri.strip()
+    l = line.lower()
+    for pfx in ['vless://', 'trojan://', 'ss://', 'hysteria://', 'hy://', 'hysteria2://', 'hy2://', 'tuic://', 'socks5://', 'socks4://']:
+        if l.startswith(pfx):
+            line = line[len(pfx):]
+            break
+
+    if l.startswith('vmess://'):
+        try:
+            b64 = line[len('vmess://'):]
+            pad = 4 - len(b64) % 4
+            if pad != 4: b64 += '=' * pad
+            data = json.loads(base64.b64decode(b64))
+            return data.get('add', ''), int(data.get('port', 0)) if data.get('port') else None
+        except Exception:
+            return None, None
+
+    at_idx = line.find('@')
+    host_part = line[at_idx + 1:] if at_idx != -1 else line
+    qm = host_part.find('?')
+    if qm != -1: host_part = host_part[:qm]
+    h = host_part.find('#')
+    if h != -1: host_part = host_part[:h]
+    # method:pass@host:port for ss
+    colon = host_part.rfind(':')
+    if colon != -1:
+        try:
+            return host_part[:colon].strip('[]'), int(host_part[colon + 1:])
+        except ValueError:
+            return host_part[:colon].strip('[]'), None
+    return host_part.strip('[]'), None
+
+
+def get_remark(uri: str) -> str:
+    _, r = _strip_remark(uri)
+    return r
+
+
+def guess_country(uri: str) -> str:
+    remark = get_remark(uri)
+    flags = re.findall(r'[\U0001F1E6-\U0001F1FF]{2}', remark)
+    flag_map = {
+        '🇦🇱': 'Albania', '🇩🇿': 'Algeria', '🇦🇷': 'Argentina', '🇦🇺': 'Australia', '🇦🇹': 'Austria',
+        '🇧🇪': 'Belgium', '🇧🇷': 'Brazil', '🇧🇬': 'Bulgaria', '🇨🇦': 'Canada', '🇨🇱': 'Chile',
+        '🇨🇳': 'China', '🇨🇴': 'Colombia', '🇭🇷': 'Croatia', '🇨🇿': 'Czech', '🇩🇰': 'Denmark',
+        '🇪🇬': 'Egypt', '🇫🇮': 'Finland', '🇫🇷': 'France', '🇩🇪': 'Germany', '🇬🇷': 'Greece',
+        '🇭🇰': 'Hong Kong', '🇭🇺': 'Hungary', '🇮🇸': 'Iceland', '🇮🇳': 'India', '🇮🇩': 'Indonesia',
+        '🇮🇷': 'Iran', '🇮🇪': 'Ireland', '🇮🇱': 'Israel', '🇮🇹': 'Italy', '🇯🇵': 'Japan',
+        '🇰🇿': 'Kazakhstan', '🇰🇷': 'South Korea', '🇱🇻': 'Latvia', '🇱🇹': 'Lithuania', '🇲🇾': 'Malaysia',
+        '🇲🇽': 'Mexico', '🇲🇦': 'Morocco', '🇳🇱': 'Netherlands', '🇳🇿': 'New Zealand', '🇳🇬': 'Nigeria',
+        '🇳🇴': 'Norway', '🇵🇭': 'Philippines', '🇵🇱': 'Poland', '🇵🇹': 'Portugal', '🇷🇴': 'Romania',
+        '🇷🇺': 'Russia', '🇸🇦': 'Saudi Arabia', '🇷🇸': 'Serbia', '🇸🇬': 'Singapore', '🇸🇰': 'Slovakia',
+        '🇿🇦': 'South Africa', '🇪🇸': 'Spain', '🇸🇪': 'Sweden', '🇨🇭': 'Switzerland', '🇹🇼': 'Taiwan',
+        '🇹🇭': 'Thailand', '🇹🇷': 'Turkey', '🇺🇦': 'Ukraine', '🇦🇪': 'UAE', '🇬🇧': 'UK',
+        '🇺🇸': 'USA', '🇻🇳': 'Vietnam',
+    }
+    for flag in flags:
+        if flag in flag_map: return flag_map[flag]
+    countries = ['Albania','Algeria','Argentina','Australia','Austria','Belgium','Brazil','Bulgaria',
+        'Canada','Chile','China','Colombia','Croatia','Czech','Denmark','Egypt','Finland','France',
+        'Germany','Greece','Hong Kong','Hungary','Iceland','India','Indonesia','Iran','Ireland',
+        'Israel','Italy','Japan','Kazakhstan','South Korea','Latvia','Lithuania','Malaysia',
+        'Mexico','Morocco','Netherlands','New Zealand','Nigeria','Norway','Philippines','Poland',
+        'Portugal','Romania','Russia','Saudi Arabia','Serbia','Singapore','Slovakia','South Africa',
+        'Spain','Sweden','Switzerland','Taiwan','Thailand','Turkey','Ukraine','UAE','UK','USA',
+        'Vietnam']
+    for c in countries:
+        if c.lower() in remark.lower(): return c
+    server, _ = get_server_port(uri)
+    if server:
+        tld_map = {'.ru':'Russia','.de':'Germany','.fr':'France','.nl':'Netherlands','.uk':'UK',
+            '.jp':'Japan','.sg':'Singapore','.hk':'Hong Kong','.kr':'South Korea','.au':'Australia',
+            '.ca':'Canada','.br':'Brazil','.in':'India','.cn':'China','.tw':'Taiwan'}
+        for tld, country in tld_map.items():
+            if server.endswith(tld): return country
+    return ''
+
+
+# ═══════════════════════════════════════════════════════════
+#  Источники
+# ═══════════════════════════════════════════════════════════
+
+DEFAULT_SOURCES = []
+
+
+# ═══════════════════════════════════════════════════════════
+#  Модель данных
+# ═══════════════════════════════════════════════════════════
+
+class ProxyEntry:
+    def __init__(self, uri: str, source: str = ""):
+        self.uri = uri
+        self.source = source
+        self.protocol = get_protocol(uri)
+        self.server, self.port = get_server_port(uri)
+        self.sni = extract_sni(uri) or ""
+        self.remark = get_remark(uri)
+        self.country = guess_country(uri)
+        self.sni_good = sni_is_good(uri)
+        self.tcp_ok: Optional[bool] = None
+        self.deep_ok: Optional[bool] = None
+        self.latency_ms: Optional[float] = None
+        self.error_msg: str = ""
+
+    @property
+    def server_display(self) -> str:
+        if self.server and self.port:
+            return f"{self.server}:{self.port}"
+        return self.server or "?"
+
+    def __repr__(self):
+        return f"[{self.protocol}] {self.server_display}"
+
+
+COLUMNS = ["✓", "Протокол", "Сервер:Порт", "SNI", "Страна", "Источник", "TCP", "Deep", "Латентность", "Remark"]
+
+class ProxyTableModel(QAbstractTableModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.proxies: list[ProxyEntry] = []
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self.proxies)
+
+    def columnCount(self, parent=QModelIndex()):
+        return len(COLUMNS)
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() >= len(self.proxies):
+            return None
+        p = self.proxies[index.row()]
+        col = index.column()
+
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
+            vals = {
+                0: "✅" if p.deep_ok is True else ("❌" if p.deep_ok is False else ("✓" if p.tcp_ok is True else ("✗" if p.tcp_ok is False else "?"))),
+                1: p.protocol,
+                2: p.server_display,
+                3: p.sni if p.sni else "—",
+                4: p.country if p.country else "—",
+                5: p.source,
+                6: "✅" if p.tcp_ok is True else ("❌" if p.tcp_ok is False else "—"),
+                7: "✅" if p.deep_ok is True else ("❌" if p.deep_ok is False else "—"),
+                8: f"{p.latency_ms:.0f}ms" if p.latency_ms else "—",
+                9: p.remark[:60] if p.remark else "—",
+            }
+            return vals.get(col, "")
+        return None
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return COLUMNS[section]
+        return None
+
+    def add_proxies(self, entries: list[ProxyEntry]):
+        if not entries: return
+        self.beginInsertRows(QModelIndex(), len(self.proxies), len(self.proxies) + len(entries) - 1)
+        self.proxies.extend(entries)
+        self.endInsertRows()
+
+    def clear(self):
+        self.beginResetModel()
+        self.proxies.clear()
+        self.endResetModel()
+
+    def update_entry(self, row: int, **kwargs):
+        if 0 <= row < len(self.proxies):
+            for k, v in kwargs.items():
+                setattr(self.proxies[row], k, v)
+            changed_cols = {0, 6, 7, 8}  # статус, TCP, Deep, latency
+            min_col = min(changed_cols)
+            max_col = max(changed_cols)
+            self.dataChanged.emit(self.index(row, min_col), self.index(row, max_col))
+
+
+class ProxyFilterModel(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._filter_text = ""
+        self._filter_proto = ""
+        self._filter_country = ""
+        self._filter_sni_good_only = False
+        self._filter_deep_good_only = False
+
+    def set_filter_text(self, text: str):
+        self._filter_text = text.lower()
+        self.invalidateFilter()
+
+    def set_filter_proto(self, proto: str):
+        self._filter_proto = proto
+        self.invalidateFilter()
+
+    def set_filter_country(self, country: str):
+        self._filter_country = country
+        self.invalidateFilter()
+
+    def set_filter_sni_good(self, v: bool):
+        self._filter_sni_good_only = v
+        self.invalidateFilter()
+
+    def set_filter_deep_good(self, v: bool):
+        self._filter_deep_good_only = v
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        model: ProxyTableModel = self.sourceModel()
+        if source_row >= len(model.proxies): return False
+        p = model.proxies[source_row]
+
+        if self._filter_text:
+            t = self._filter_text
+            if t not in p.server_display.lower() and t not in p.sni.lower() and \
+               t not in p.remark.lower() and t not in p.protocol.lower() and \
+               t not in p.country.lower() and t not in p.source.lower():
+                return False
+
+        if self._filter_proto and p.protocol != self._filter_proto:
+            return False
+
+        if self._filter_country:
+            if self._filter_country == "_empty" and p.country: return False
+            elif self._filter_country != "_empty" and p.country != self._filter_country: return False
+
+        if self._filter_sni_good_only and not p.sni_good: return False
+        if self._filter_deep_good_only and p.deep_ok is not True: return False
+
+        return True
+
+
+# ═══════════════════════════════════════════════════════════
+#  ТЕСТИРОВАНИЕ ЧЕРЕЗ SING-BOX
+# ═══════════════════════════════════════════════════════════
+
+class ProxyTester:
+    """Тестирует прокси через sing-box."""
+
+    TEST_URL = "http://cp.cloudflare.com/generate_204"
+    TEST_DOMAIN = "cloudflare.com"
+    TIMEOUT = 12  # seconds
+
+    _sb_semaphore = threading.Semaphore(3)
+
+    def __init__(self):
+        self.resolved_ips: dict[str, str] = {}
+        self.stats = Counter()
+
+    def resolve_host(self, host: str) -> Optional[str]:
+        if host in self.resolved_ips:
+            return self.resolved_ips[host]
+        try:
+            addrs = socket.getaddrinfo(host, 80, socket.AF_INET, socket.SOCK_STREAM)
+            if addrs:
+                ip = addrs[0][4][0]
+                self.resolved_ips[host] = ip
+                return ip
+        except Exception:
+            pass
+        return None
+
+    def test_tcp(self, host: str, port: int) -> bool:
+        try:
+            addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            if not addrs: return False
+            s = socket.socket(addrs[0][0], addrs[0][1], addrs[0][2])
+            s.settimeout(12)
+            s.connect(addrs[0][4])
+            s.close()
+            return True
+        except Exception:
+            return False
+
+    def test_tls_handshake(self, host: str, sni: str = "") -> bool:
+        """Проверяет TLS-рукопожатие (для vless/trojan/vmess)."""
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.set_alpn_protocols(["h2", "http/1.1"])
+            addrs = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+            if not addrs: return False
+            s = socket.socket(addrs[0][0], addrs[0][1], addrs[0][2])
+            s.settimeout(12)
+            s.connect(addrs[0][4])
+            tls_sock = ctx.wrap_socket(s, server_hostname=sni or host)
+            tls_sock.do_handshake()
+            tls_sock.close()
+            return True
+        except Exception:
+            return False
+
+    def test_via_singbox(self, proxy_uri: str, port: int) -> tuple[bool, float, str, Optional[subprocess.Popen]]:
+        """Тестирует прокси через sing-box: запускает, подключается, измеряет latency."""
+        tmp_dir = tempfile.mkdtemp(prefix="sb_test_", dir=TMP_DIR)
+        config_path = os.path.join(tmp_dir, "config.json")
+
+        config = self._make_singbox_config(proxy_uri, port)
+        if config is None:
+            return False, 0, "unsupported protocol", None
+
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+        try:
+            with self._sb_semaphore:
+                time.sleep(random.uniform(0.1, 0.4))
+                proc = subprocess.Popen(
+                    [SING_BOX, "run", "-c", config_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    cwd=tmp_dir,
+                )
+                time.sleep(0.3)
+                proxy_url = f"http://127.0.0.1:{port}"
+                result, latency = self._test_http_proxy(proxy_url)
+                proc.terminate()
+                proc.wait(3)
+
+            return result, latency if result else 0, "" if result else f"latency:{latency:.0f}ms", proc
+        except Exception as e:
+            return False, 0, str(e), None
+        finally:
+            # Cleanup
+            try:
+                subprocess.run(["pkill", "-f", config_path], capture_output=True, timeout=2)
+            except Exception:
+                pass
+            try:
+                for f in os.listdir(tmp_dir):
+                    os.remove(os.path.join(tmp_dir, f))
+                os.rmdir(tmp_dir)
+            except Exception:
+                pass
+
+    def _make_singbox_config(self, proxy_uri: str, local_port: int) -> Optional[dict]:
+        """Генерирует конфиг sing-box для тестирования одного прокси."""
+        proto = get_protocol(proxy_uri)
+        outbounds = [self._parse_outbound(proxy_uri)]
+        if outbounds[0] is None:
+            return None
+        outbounds[0]["tag"] = "proxy"
+        return {
+            "log": {"level": "error", "output": "/dev/null"},
+            "inbounds": [{
+                "type": "http",
+                "tag": "http-in",
+                "listen": "127.0.0.1",
+                "listen_port": local_port,
+            }],
+            "outbounds": outbounds + [{"type": "direct", "tag": "direct"}],
+            "route": {
+                "rules": [{"rule_set": [], "outbound": "proxy"}],
+                "final": "proxy",
+            },
+        }
+
+    def _parse_outbound(self, uri: str) -> Optional[dict]:
+        """Парсит URI в outbound-конфиг sing-box."""
+        try:
+            proto = get_protocol(uri)
+            line = uri.strip()
+            l = line.lower()
+
+            if proto == 'vless':
+                return self._parse_vless(line)
+            elif proto == 'trojan':
+                return self._parse_trojan(line)
+            elif proto == 'vmess':
+                return self._parse_vmess(line)
+            elif proto == 'ss':
+                return self._parse_ss(line)
+            elif proto in ('hy2', 'hysteria2'):
+                return self._parse_hysteria2(line)
+            elif proto == 'socks':
+                return self._parse_socks(line)
+            elif proto == 'http':
+                return self._parse_http(line)
+            else:
+                return None
+        except Exception:
+            return None
+
+    def _parse_query(self, uri: str) -> dict:
+        qmark = uri.find('?')
+        if qmark == -1: return {}
+        return urllib.parse.parse_qs(uri[qmark + 1:])
+
+    def _query_get(self, q: dict, key: str, default=""):
+        vals = q.get(key, [])
+        return vals[0] if vals else default
+
+    def _parse_vless(self, uri: str) -> dict:
+        clean = uri.replace('vless://', '')
+        q = self._parse_query(clean)
+        at_idx = clean.find('@')
+        uuid = clean[:at_idx]
+        rest = clean[at_idx + 1:]
+        qm = rest.find('?')
+        host_part = rest[:qm] if qm != -1 else rest
+        colon = host_part.rfind(':')
+        host = host_part[:colon]
+        p = host_part[colon + 1:]
+        try: port = int(p)
+        except: port = 443
+        flow = self._query_get(q, 'flow')
+        security = self._query_get(q, 'security', '')
+        sni = self._query_get(q, 'sni', host)
+        alpn_str = self._query_get(q, 'alpn', '')
+        fp = self._query_get(q, 'fp', 'chrome')
+
+        packet_enc = self._query_get(q, 'packet_encoding', 'xudp')
+        encrypt = self._query_get(q, 'encryption', 'none')
+
+        out = {
+            "type": "vless",
+            "server": host,
+            "server_port": port,
+            "uuid": uuid,
+            "flow": flow,
+            "packet_encoding": packet_enc,
+        }
+        if security == 'reality':
+            pbk = self._query_get(q, 'pbk')
+            sid = self._query_get(q, 'sid', '')
+            spx = self._query_get(q, 'spx', '/')
+            out["tls"] = {
+                "enabled": True,
+                "server_name": sni or host,
+                "utls": {"enabled": True, "fingerprint": fp},
+                "reality": {"enabled": True, "public_key": pbk, "short_id": sid},
+            }
+        elif security in ('tls', 'xtls', ''):
+            out["tls"] = {"enabled": True, "server_name": sni or host}
+
+        ttype = self._query_get(q, 'type', 'tcp')
+        if ttype == 'ws':
+            path = self._query_get(q, 'path', '/')
+            host_hdr = self._query_get(q, 'host', sni or host)
+            out["transport"] = {"type": "ws", "path": path, "headers": {"Host": host_hdr}}
+        elif ttype == 'grpc':
+            service_name = self._query_get(q, 'serviceName', '')
+            out["transport"] = {"type": "grpc", "service_name": service_name}
+        elif ttype == 'xhttp':
+            mode = self._query_get(q, 'mode', 'auto')
+            out["transport"] = {"type": "xhttp", "mode": mode}
+        return out
+
+    def _parse_trojan(self, uri: str) -> dict:
+        clean = uri.replace('trojan://', '')
+        q = self._parse_query(clean)
+        at_idx = clean.find('@')
+        password = clean[:at_idx]
+        rest = clean[at_idx + 1:]
+        qm = rest.find('?')
+        host_part = rest[:qm] if qm != -1 else rest
+        colon = host_part.rfind(':')
+        host = host_part[:colon]
+        p = host_part[colon + 1:]
+        try: port = int(p)
+        except: port = 443
+        sni = self._query_get(q, 'sni', host)
+        alpn_str = self._query_get(q, 'alpn', '')
+        fp = self._query_get(q, 'fp', 'chrome')
+        out = {"type": "trojan", "server": host, "server_port": port, "password": password}
+        out["tls"] = {"enabled": True, "server_name": sni or host}
+        if fp:
+            out["tls"]["utls"] = {"enabled": True, "fingerprint": fp}
+        ttype = self._query_get(q, 'type', 'tcp')
+        if ttype == 'ws':
+            path = self._query_get(q, 'path', '/')
+            host_hdr = self._query_get(q, 'host', sni or host)
+            out["transport"] = {"type": "ws", "path": path, "headers": {"Host": host_hdr}}
+        elif ttype == 'grpc':
+            service_name = self._query_get(q, 'serviceName', '')
+            out["transport"] = {"type": "grpc", "service_name": service_name}
+        elif ttype == 'xhttp':
+            out["transport"] = {"type": "xhttp", "mode": self._query_get(q, 'mode', 'auto')}
+        return out
+
+    def _parse_vmess(self, uri: str) -> Optional[dict]:
+        b64 = uri.replace('vmess://', '')
+        pad = 4 - len(b64) % 4
+        if pad != 4: b64 += '=' * pad
+        data = json.loads(base64.b64decode(b64))
+        host = data.get('add', '')
+        port = int(data.get('port', 443))
+        uuid = data.get('id', '')
+        aid = int(data.get('aid', 0))
+        net = data.get('net', 'tcp')
+        tls = data.get('tls', '')
+        sni = data.get('sni', host)
+        path = data.get('path', '/')
+        host_hdr = data.get('host', host)
+        fp = data.get('fp', 'chrome')
+        type_hdr = data.get('type', 'none')
+        out = {"type": "vmess", "server": host, "server_port": port, "uuid": uuid, "alter_id": aid}
+        if tls:
+            out["tls"] = {"enabled": True, "server_name": sni or host}
+            if fp:
+                out["tls"]["utls"] = {"enabled": True, "fingerprint": fp}
+        if net == 'ws':
+            out["transport"] = {"type": "ws", "path": path, "headers": {"Host": host_hdr}}
+        elif net == 'grpc':
+            out["transport"] = {"type": "grpc", "service_name": path.lstrip('/')}
+        elif net == 'http':
+            out["transport"] = {"type": "http"}
+        return out
+
+    def _parse_ss(self, uri: str) -> Optional[dict]:
+        clean = uri.replace('ss://', '')
+        q = self._parse_query(clean)
+        # ss://method:pass@host:port  or  ss://base64(method:pass)@host:port
+        at_idx = clean.find('@')
+        if at_idx == -1:
+            # format: ss://base64(method:pass@host:port)
+            b64_part = clean.split('?')[0].split('#')[0]
+            try:
+                pad = 4 - len(b64_part) % 4
+                if pad != 4: b64_part += '=' * pad
+                decoded = base64.b64decode(b64_part).decode('utf-8', errors='ignore')
+                at_idx2 = decoded.find('@')
+                if at_idx2 == -1: return None
+                mp = decoded[:at_idx2]
+                hp = decoded[at_idx2 + 1:]
+            except:
+                return None
+        else:
+            mp_b64 = clean[:at_idx]
+            try:
+                pad = 4 - len(mp_b64) % 4
+                if pad != 4: mp_b64 += '=' * pad
+                mp = base64.b64decode(mp_b64).decode('utf-8', errors='ignore')
+            except:
+                mp = mp_b64
+            hp = clean[at_idx + 1:]
+        qm = hp.find('?')
+        if qm != -1: hp = hp[:qm]
+        colon = hp.rfind(':')
+        host = hp[:colon]
+        p = hp[colon + 1:]
+        try: port = int(p)
+        except: port = 443
+        colon2 = mp.find(':')
+        method = mp[:colon2]
+        password = mp[colon2 + 1:]
+        plugin_str = self._query_get(q, 'plugin', '')
+        out = {"type": "shadowsocks", "server": host, "server_port": port, "method": method, "password": password}
+        if plugin_str:
+            out["plugin"] = plugin_str
+        return out
+
+    def _parse_hysteria2(self, uri: str) -> Optional[dict]:
+        clean = uri.replace('hysteria2://', '').replace('hy2://', '')
+        q = self._parse_query(clean)
+        auth = self._query_get(q, 'auth', '')
+        at_idx = clean.find('@')
+        if at_idx != -1:
+            auth = clean[:at_idx]
+            rest = clean[at_idx + 1:]
+        else:
+            auth = self._query_get(q, 'auth', clean.split('?')[0].split('#')[0])
+            rest = clean
+        qm = rest.find('?')
+        host_part = rest[:qm] if qm != -1 else rest
+        colon = host_part.rfind(':')
+        host = host_part[:colon] if colon != -1 else host_part
+        p = host_part[colon + 1:] if colon != -1 else '443'
+        try: port = int(p)
+        except: port = 443
+        sni = self._query_get(q, 'sni', host)
+        insecure = self._query_get(q, 'insecure', '0') in ('1', 'true')
+        out = {"type": "hysteria2", "server": host, "server_port": port, "password": auth, "tls": {"enabled": True, "server_name": sni or host, "insecure": insecure}}
+        return out
+
+    def _parse_socks(self, uri: str) -> Optional[dict]:
+        l = uri.strip().lower()
+        version = 5 if l.startswith('socks5://') else 4
+        clean = uri.replace('socks5://', '').replace('socks4://', '')
+        at_idx = clean.find('@')
+        user = passwd = ''
+        if at_idx != -1:
+            user_pass = clean[:at_idx]
+            colon = user_pass.find(':')
+            if colon != -1:
+                user = user_pass[:colon]
+                passwd = user_pass[colon + 1:]
+            rest = clean[at_idx + 1:]
+        else:
+            rest = clean
+        qm = rest.find('?')
+        if qm != -1: rest = rest[:qm]
+        h = rest.find('#')
+        if h != -1: rest = rest[:h]
+        colon = rest.rfind(':')
+        host = rest[:colon]
+        p = rest[colon + 1:]
+        try: port = int(p)
+        except: port = 1080
+        out = {"type": "socks", "server": host, "server_port": port, "version": f"Socks{version}"}
+        if user: out["username"] = user
+        if passwd: out["password"] = passwd
+        return out
+
+    def _parse_http(self, uri: str) -> Optional[dict]:
+        clean = uri.replace('https://', '').replace('http://', '')
+        qm = clean.find('?')
+        if qm != -1: clean = clean[:qm]
+        h = clean.find('#')
+        if h != -1: clean = clean[:h]
+        at_idx = clean.find('@')
+        user = passwd = ''
+        if at_idx != -1:
+            up = clean[:at_idx]
+            colon = up.find(':')
+            if colon != -1:
+                user = up[:colon]
+                passwd = up[colon + 1:]
+            clean = clean[at_idx + 1:]
+        colon = clean.rfind(':')
+        host = clean[:colon]
+        p = clean[colon + 1:]
+        try: port = int(p)
+        except: port = 8080
+        out = {"type": "http", "server": host, "server_port": port}
+        if user: out["username"] = user
+        if passwd: out["password"] = passwd
+        return out
+
+    def _test_http_proxy(self, proxy_url: str, timeout: float = 8) -> tuple[bool, float]:
+        """Делает HTTP-запрос через SOCKS5-прокси, измеряет latency."""
+        import urllib.request as req_lib
+        try:
+            start = time.time()
+            handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+            opener = req_lib.build_opener(handler)
+            r = opener.open(self.TEST_URL, timeout=timeout)
+            elapsed = (time.time() - start) * 1000
+            return r.status == 204, elapsed
+        except Exception:
+            return False, (time.time() - start) * 1000 if 'start' in dir() else 9999
+
+
+# ═══════════════════════════════════════════════════════════
+#  ФОРМАТТЕРЫ ЭКСПОРТА
+# ═══════════════════════════════════════════════════════════
+
+def format_clash(entries: list[ProxyEntry]) -> str:
+    """Экспорт в Clash YAML."""
+    lines = [
+        "port: 7890",
+        "socks-port: 7891",
+        "allow-lan: false",
+        "mode: Rule",
+        "log-level: info",
+        "proxies:",
+    ]
+    for p in entries:
+        proto = p.protocol
+        name = p.remark or f"{proto}-{p.server}"
+        name_safe = re.sub(r'[^a-zA-Z0-9_-]', '_', name)[:30]
+        if proto == 'vless':
+            lines.append(f"  - name: {name_safe}")
+            lines.append(f"    type: vless")
+            lines.append(f"    server: {p.server}")
+            lines.append(f"    port: {p.port}")
+            lines.append(f"    uuid: auto")
+            lines.append(f"    tls: true")
+        elif proto == 'trojan':
+            lines.append(f"  - name: {name_safe}")
+            lines.append(f"    type: trojan")
+            lines.append(f"    server: {p.server}")
+            lines.append(f"    port: {p.port}")
+            lines.append(f"    password: auto")
+        elif proto == 'vmess':
+            lines.append(f"  - name: {name_safe}")
+            lines.append(f"    type: vmess")
+            lines.append(f"    server: {p.server}")
+            lines.append(f"    port: {p.port}")
+            lines.append(f"    uuid: auto")
+        elif proto == 'ss':
+            lines.append(f"  - name: {name_safe}")
+            lines.append(f"    type: ss")
+            lines.append(f"    server: {p.server}")
+            lines.append(f"    port: {p.port}")
+            lines.append(f"    cipher: auto")
+            lines.append(f"    password: auto")
+    return "\n".join(lines)
+
+
+def uri_to_singbox(uri: str) -> dict | None:
+    """Конвертирует proxy URI в outbound для sing-box."""
+    try:
+        proto = uri.split("://")[0]
+        if proto == "vmess":
+            b64 = uri[8:]
+            padding = 4 - len(b64) % 4
+            if padding != 4: b64 += "=" * padding
+            cfg = json.loads(base64.b64decode(b64).decode())
+            out = {"type": "vmess", "tag": cfg.get("ps", "vmess"), "server": cfg.get("add", ""), "server_port": int(cfg.get("port", 0))}
+            if cfg.get("id"): out["uuid"] = cfg["id"]
+            if cfg.get("aid"): out["alter_id"] = int(cfg["aid"])
+            net = cfg.get("net", "")
+            if net == "ws":
+                out["transport"] = "ws"
+                if cfg.get("path"): out["transport_opts"] = {"path": cfg["path"]}
+                if cfg.get("host"): out.setdefault("transport_opts", {})["headers"] = {"Host": cfg["host"]}
+            elif net == "grpc":
+                out["transport"] = "grpc"
+            elif net == "tcp":
+                out["transport"] = "tcp"
+            elif net == "kcp":
+                out["transport"] = "kcp"
+            tls = cfg.get("tls", "")
+            if tls and tls != "none":
+                out["tls"] = {"enabled": True, "insecure": cfg.get("allowInsecure", "0") == "1"}
+                if cfg.get("sni"): out["tls"]["server_name"] = cfg["sni"]
+            return out
+        elif proto in ("vless", "trojan"):
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(uri)
+            pw_or_uuid = parsed.username or ""
+            host = parsed.hostname or ""
+            port = parsed.port or 443
+            qs = parse_qs(parsed.query, keep_blank_values=True)
+            def g(k): return (qs.get(k) or [None])[0]
+            out = {"type": proto, "tag": parsed.fragment or f"{proto}_{host}", "server": host, "server_port": port}
+            if proto == "trojan":
+                out["password"] = pw_or_uuid
+            else:
+                out["uuid"] = pw_or_uuid
+            # TLS / Reality
+            sec = g("security") or "none"
+            if sec == "tls":
+                out["tls"] = {"enabled": True}
+                if g("sni"): out["tls"]["server_name"] = g("sni")
+                if g("alpn"): out["tls"]["alpn"] = g("alpn").split(",")
+                if g("fp"): out["tls"]["fingerprint"] = g("fp")
+                if g("allowInsecure") == "1" or g("allow_insecure") == "1":
+                    out["tls"]["insecure"] = True
+            elif sec == "reality":
+                out["tls"] = {"enabled": True, "reality": {"enabled": True}}
+                if g("sni"): out["tls"]["server_name"] = g("sni")
+                if g("fp"): out["tls"]["fingerprint"] = g("fp")
+                if g("pbk"): out["tls"]["reality"]["public_key"] = g("pbk")
+                if g("sid"): out["tls"]["reality"]["short_id"] = g("sid")
+            elif proto == "trojan":
+                # Trojan всегда использует TLS, даже если параметр security не указан
+                out["tls"] = {"enabled": True}
+                if g("sni"): out["tls"]["server_name"] = g("sni")
+                if g("alpn"): out["tls"]["alpn"] = g("alpn").split(",")
+                if g("fp"): out["tls"]["fingerprint"] = g("fp")
+            # Transport
+            tp = g("type") or "tcp"
+            if tp == "ws":
+                out["transport"] = "ws"
+                opts = {}
+                if g("path"): opts["path"] = g("path")
+                if g("host"): opts["headers"] = {"Host": g("host")}
+                if opts: out["transport_opts"] = opts
+            elif tp == "grpc":
+                out["transport"] = "grpc"
+                if g("serviceName"): out["transport_opts"] = {"service_name": g("serviceName")}
+            elif tp in ("tcp", "kcp", "quic"):
+                out["transport"] = tp
+            # Flow
+            if g("flow"): out["flow"] = g("flow")
+            return out
+        return None
+    except Exception:
+        return None
+
+
+def is_safe_proxy(uri: str) -> bool:
+    """Проверяет, не содержит ли прокси проблемных возможностей (REALITY, xtls-rprx)."""
+    try:
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(uri)
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        sec = (qs.get("security") or [""])[0]
+        flow = (qs.get("flow") or [""])[0]
+        if sec == "reality":
+            return False
+        if "xtls-rprx" in flow:
+            return False
+        if uri.startswith("vless://") and sec == "none" and flow:
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def format_singbox(entries: list[ProxyEntry]) -> str:
+    """Экспорт в sing-box JSON (список outbounds)."""
+    outbounds = []
+    for p in entries:
+        ob = uri_to_singbox(p.uri)
+        if ob:
+            outbounds.append(ob)
+    return json.dumps(outbounds, indent=2, ensure_ascii=False)
+
+
+def format_v2rayn(entries: list[ProxyEntry]) -> str:
+    """Base64-encoded subscription для v2rayN."""
+    lines = [p.uri for p in entries]
+    data = "\n".join(lines).encode()
+    return base64.b64encode(data).decode()
+
+def format_raw(entries: list[ProxyEntry]) -> str:
+    """Raw URIs по одной на строку."""
+    return "\n".join(p.uri for p in entries) + "\n"
+
+
+# ═══════════════════════════════════════════════════════════
+#  ВОРКЕРЫ (QThread)
+# ═══════════════════════════════════════════════════════════
+
+class NetworkWorker(QObject):
+    log_signal = Signal(str)
+    progress_signal = Signal(int, int, str)
+    finished_signal = Signal()
+    proxy_parsed = Signal(list)  # batch of URI strings
+    source_status = Signal(str, bool, int)
+
+    def __init__(self):
+        super().__init__()
+        self._stop = False
+
+    def stop(self): self._stop = True
+
+    def _is_proxy(self, s: str) -> bool:
+        l = s.strip().lower()
+        prefixes = ('vless://','vmess://','trojan://','ss://','shadowsocks://',
+                    'hysteria2://','hy2://','hysteria://','hy://','tuic://',
+                    'socks5://','socks4://','http://','https://','naive+',
+                    'wireguard://','wg://')
+        if l.startswith(prefixes):
+            return True
+        if re.match(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$', l):
+            return True
+        if re.match(r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+$', l, re.IGNORECASE):
+            return True
+        return False
+
+    def _json_to_uri(self, obj: dict) -> Optional[str]:
+        ptype = (obj.get("type") or obj.get("protocol") or "").lower()
+        server = obj.get("server") or obj.get("address") or obj.get("add") or ""
+        port = obj.get("port") or obj.get("server_port") or 0
+        if not server or not port:
+            return None
+        try: port = int(port)
+        except: return None
+        tag = obj.get("tag") or obj.get("name") or obj.get("remark") or ""
+        if ptype == "vmess":
+            vm = {"v": 2, "ps": tag, "add": server, "port": port,
+                  "id": obj.get("uuid") or obj.get("id") or "",
+                  "aid": obj.get("aid") or obj.get("alterId") or 0,
+                  "net": obj.get("network") or obj.get("net") or "tcp",
+                  "type": "none", "host": "", "path": "", "tls": ""}
+            tls = obj.get("tls") or {}
+            if isinstance(tls, dict):
+                if tls.get("enabled"):
+                    vm["tls"] = "tls"
+                    vm["sni"] = tls.get("server_name", "")
+            elif isinstance(tls, str):
+                vm["tls"] = tls
+            b64 = base64.b64encode(json.dumps(vm).encode()).decode()
+            return f"vmess://{b64}"
+        uuid = obj.get("uuid") or obj.get("id") or obj.get("password") or obj.get("auth") or ""
+        params = {}
+        tls = obj.get("tls") or {}
+        if isinstance(tls, dict) and tls.get("enabled"):
+            params["security"] = "tls"
+            if tls.get("server_name"):
+                params["sni"] = tls["server_name"]
+        flow = obj.get("flow") or ""
+        if flow: params["flow"] = flow
+        if obj.get("insecure"):
+            params["insecure"] = "1"
+        enc = obj.get("encryption") or obj.get("method") or (obj.get("security") if ptype != "vless" else "")
+        if enc and enc != "none": params["encryption"] = enc
+        obj_type = ptype
+        if obj_type == "shadowsocks":
+            obj_type = "ss"
+            if enc and uuid:
+                userinfo = base64.urlsafe_b64encode(f"{enc}:{uuid}".encode()).decode().rstrip("=")
+                return f"ss://{userinfo}@{server}:{port}{f'#{urllib.parse.quote(tag)}' if tag else ''}"
+        elif obj_type in ("hysteria2", "hysteria"):
+            obj_type = "hy2" if obj_type == "hysteria2" else "hy"
+        elif obj_type in ("socks5", "socks"):
+            obj_type = "socks5"
+        param_str = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
+        uri = f"{obj_type}://"
+        if uuid: uri += f"{uuid}@"
+        uri += f"{server}:{port}"
+        if param_str: uri += f"?{param_str}"
+        if tag: uri += f"#{urllib.parse.quote(tag)}"
+        return uri
+
+    def _parse_json_proxies(self, text: str) -> list[str]:
+        s = text.strip()
+        if not (s.startswith("{") or s.startswith("[")):
+            return []
+        try: data = json.loads(s)
+        except: return []
+        results = []
+        def walk(obj, depth=0):
+            if depth > 4: return
+            if isinstance(obj, dict):
+                if obj.get("server") or obj.get("address") or obj.get("add"):
+                    uri = self._json_to_uri(obj)
+                    if uri: results.append(uri)
+                    return
+                for v in obj.values(): walk(v, depth + 1)
+            elif isinstance(obj, list):
+                for n, item in enumerate(obj):
+                    if isinstance(item, str):
+                        if self._is_proxy(item):
+                            results.append(item)
+                    else:
+                        walk(item, depth + 1)
+        walk(data)
+        return results
+
+    def _fetch_one(self, name: str, url: str):
+        m = re.match(r'https://github\.com/([^/]+/[^/]+)/blob/(.+)$', url)
+        if m:
+            url = f'https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}'
+        def _do(use_proxy=False):
+            opener, _ = _get_proxy_opener(timeout=8) if use_proxy else (urllib.request.build_opener(), {})
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
+            try:
+                with opener.open(req, timeout=8) as resp:
+                    return resp.read().decode("utf-8", errors="ignore")
+            except Exception:
+                return None
+        data = _do(False) or _do(True)
+        if data is None:
+            return None
+        proxies = []
+        for line in data.splitlines():
+            line = line.strip()
+            if not line or line.startswith('//') or line.startswith('#'):
+                continue
+            if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
+                try:
+                    decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
+                    for sl in decoded.splitlines():
+                        sl = sl.strip()
+                        if sl and self._is_proxy(sl): proxies.append(sl)
+                except Exception:
+                    if self._is_proxy(line): proxies.append(line)
+            else:
+                if self._is_proxy(line): proxies.append(line)
+        json_proxies = self._parse_json_proxies(data)
+        for p in json_proxies:
+            if p and p not in proxies:
+                proxies.append(p)
+        wrapped = []
+        for p in proxies:
+            if re.match(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$', p) or re.match(r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+$', p, re.IGNORECASE):
+                wrapped.append(f"socks5://{p}")
+            else:
+                wrapped.append(p)
+        return wrapped
+
+    @Slot()
+    def fetch_all(self, sources: list[tuple[str, str]]):
+        self._stop = False
+        total = len(sources)
+        pool = ThreadPoolExecutor(max_workers=4)
+        futs: list[concurrent.futures.Future] = []
+        names: list[str] = []
+        try:
+            for name, url in sources:
+                if self._stop: break
+                futs.append(pool.submit(self._fetch_one, name, url))
+                names.append(name)
+            pending: set[concurrent.futures.Future] = set(futs)
+            while pending and not self._stop:
+                done, pending = wait(pending, timeout=1.0)
+                for fut in done:
+                    idx = next(i for i, f in enumerate(futs) if f is fut)
+                    name = names[idx]
+                    self.progress_signal.emit(idx + 1, total, name)
+                    proxies = fut.result()
+                    if proxies is None:
+                        self.log_signal.emit(f"  ✗ {name}: не удалось загрузить")
+                        self.source_status.emit(name, False, 0)
+                    else:
+                        count = 0
+                        batch: list[str] = []
+                        for uri in proxies:
+                            if self._stop: break
+                            batch.append(uri)
+                            count += 1
+                            if len(batch) >= 50:
+                                self.proxy_parsed.emit(batch)
+                                batch = []
+                        if batch:
+                            self.proxy_parsed.emit(batch)
+                        self.source_status.emit(name, True, count)
+                        self.log_signal.emit(f"  ✓ {name}: {count} прокси")
+        finally:
+            for fut in futs:
+                fut.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+        self.progress_signal.emit(total, total, "Готово")
+        self.finished_signal.emit()
+
+
+class TesterWorker(QObject):
+    log_signal = Signal(str)
+    progress_signal = Signal(int, int, int, str)  # row, current, total, name
+    finished_signal = Signal()
+    result_signal = Signal(int, bool, float, str, int)  # row, ok, latency, error, type (0=tcp, 1=deep)
+
+    def __init__(self, deep: bool = False, test_threads: int = 8, deep_threads: int = 4):
+        super().__init__()
+        self._stop = False
+        self._deep = deep
+        self._timeout = 12.0
+        self._sb_procs: list[subprocess.Popen] = []
+        self._test_threads = test_threads
+        self._deep_threads = deep_threads
+
+    def stop(self):
+        self._stop = True
+        socket.setdefaulttimeout(0.5)
+        for proc in self._sb_procs:
+            try: proc.terminate()
+            except Exception: pass
+        self._sb_procs.clear()
+
+    @Slot()
+    def test_batch(self, entries: list[tuple[int, ProxyEntry]]):
+        self._stop = False
+        self._sb_procs.clear()
+        deep = self._deep
+        total = len(entries)
+        tester = ProxyTester()
+
+        def _work(args):
+            idx, row, p = args
+            if self._stop:
+                return None
+            host, port = p.server, p.port
+            if not host or not port:
+                return (row, False, 0, "no server:port", 0 if not deep else 1)
+
+            start = time.monotonic()
+            tcp_ok = tester.test_tcp(host, port)
+            if not tcp_ok:
+                return (row, False, 0, "TCP refused", 0)
+
+            tcp_latency = (time.monotonic() - start) * 1000
+
+            if not deep:
+                return (row, True, tcp_latency, "", 0)
+
+            try:
+                ok, sb_latency, error, proc = tester.test_via_singbox(p.uri, port=9999 + (row % 1000))
+                if proc:
+                    self._sb_procs.append(proc)
+                return (row, ok, sb_latency, error, 1)
+            except Exception as e:
+                return (row, False, 0, str(e), 1)
+
+        pool = ThreadPoolExecutor(max_workers=self._deep_threads if self._deep else self._test_threads)
+        try:
+            args_list = [(idx, row, p) for idx, (row, p) in enumerate(entries)]
+            futures = {pool.submit(_work, a): a for a in args_list}
+            pending = set(futures.keys())
+
+            while pending and not self._stop:
+                done, pending = wait(pending, timeout=0.5)
+                for future in done:
+                    idx = futures[future][0]
+                    self.progress_signal.emit(-1, idx + 1, total, f"... {idx+1}/{total}")
+                    result = future.result()
+                    if result is None:
+                        continue
+                    row, ok, latency, error, ttype = result
+                    self.result_signal.emit(row, ok, latency, error, ttype)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        self.finished_signal.emit()
+
+
+class _SourceFetcher(QObject):
+    result = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, url):
+        super().__init__()
+        self._url = url
+
+    @Slot()
+    def run(self):
+        try:
+            data = None
+            for use_proxy in (False, True):
+                opener, _ = _get_proxy_opener(timeout=8) if use_proxy else (urllib.request.build_opener(), {})
+                req = urllib.request.Request(self._url, headers={"User-Agent": "Mozilla/5.0"})
+                try:
+                    with opener.open(req, timeout=8) as resp:
+                        data = resp.read().decode("utf-8", errors="ignore")
+                        break
+                except Exception:
+                    continue
+            if data is not None:
+                self.result.emit(data[:50000])
+            else:
+                self.error.emit("Не удалось загрузить (прямой доступ и прокси)")
+        except Exception as e:
+            self.error.emit(str(e))
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Proxy Fetcher v2 — Hiddify Subscription Manager")
+        self.setMinimumSize(1100, 650)
+        self.resize(1300, 750)
+
+        self.proxy_model = ProxyTableModel()
+        self.filter_model = ProxyFilterModel()
+        self.filter_model.setSourceModel(self.proxy_model)
+
+        self._settings = _load_settings()
+
+        # Загружаем источники: сначала из сохранённых, потом дефолтные
+        saved_sources = self._settings.get("sources", [])
+        if saved_sources:
+            self.sources = [(s[0], s[1], s[2]) for s in saved_sources]
+        else:
+            self.sources = [
+                (name, url, True) for name, url in DEFAULT_SOURCES
+            ]
+        self._http_server_proc = None
+        self._http_port = 18080
+        self._auto_timer = QTimer()
+        self._auto_timer.timeout.connect(self._on_fetch)
+
+        self._tester = ProxyTester()
+        self._settings = _load_settings()
+
+        self._build_ui()
+        self._build_menu()
+        self._connect_signals()
+        self._apply_settings()
+
+        self._net_thread = None
+        self._net_worker = None
+        self._test_thread = None
+        self._test_worker = None
+        self._gh_thread = None
+        self._gh_worker = None
+        self._proxy_test_thread = None
+        self._proxy_test_worker = None
+
+    def closeEvent(self, event):
+        self._log("⏹ Завершение работы...")
+        self._stop_http_server()
+        self._auto_timer.stop()
+        self._on_stop()
+        # Сохраняем источники
+        self._settings["sources"] = [(n, u, e) for n, u, e in self.sources]
+        # Сохраняем прокси из таблицы
+        proxy_data = []
+        for p in self.proxy_model.proxies[:200]:
+            proxy_data.append({
+                "uri": p.uri,
+                "source": p.source,
+                "tcp_ok": p.tcp_ok,
+                "deep_ok": p.deep_ok,
+                "latency_ms": p.latency_ms,
+            })
+        self._settings["proxy_cache"] = proxy_data
+        # Сохраняем токены в auth.json
+        _auth_data["github_tokens"] = [t.strip() for t in self.github_tokens_edit.toPlainText().strip().splitlines() if t.strip()]
+        _save_auth(_auth_data)
+        # Сохраняем остальные настройки
+        self._settings["proxy_type"] = self.proxy_type_combo.currentText().lower()
+        self._settings["proxy_host"] = self.proxy_host_edit.text().strip()
+        self._settings["proxy_port"] = self.proxy_port_spin.value()
+        self._settings["proxy_enabled"] = self.cb_proxy_enable.isChecked()
+        _save_settings(self._settings)
+        self._log("👋 Программа закрыта")
+        event.accept()
+
+    def changeEvent(self, event):
+        if event.type() == event.Type.WindowStateChange and hasattr(self, "act_fullscreen"):
+            self.act_fullscreen.setChecked(self.isFullScreen())
+        super().changeEvent(event)
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        main_layout.addWidget(self.tabs)
+
+        # ════════════════════════════════════════════
+        # Вкладка 1: Прокси
+        # ════════════════════════════════════════════
+        proxy_tab = QWidget()
+        proxy_layout = QVBoxLayout(proxy_tab)
+        proxy_layout.setContentsMargins(2, 2, 2, 2)
+        proxy_layout.setSpacing(4)
+
+        # ── Тулбар ──
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(3)
+
+        # Основные действия
+        self.btn_fetch = QPushButton("⬇ Загрузить")
+        self.btn_fetch.setToolTip("Загрузить прокси из источников")
+        self.btn_fetch.setMinimumHeight(28)
+        self.btn_stop = QPushButton("⏹ Стоп")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setToolTip("Остановить операцию")
+        self.btn_stop.setMinimumHeight(28)
+        self.btn_tcp_test = QPushButton("🔌 TCP-тест")
+        self.btn_tcp_test.setEnabled(False)
+        self.btn_tcp_test.setMinimumHeight(28)
+        self.btn_deep_test = QPushButton("🧪 Deep-тест")
+        self.btn_deep_test.setEnabled(False)
+        self.btn_deep_test.setMinimumHeight(28)
+
+        # Сохранение
+        self.btn_save = QPushButton("💾 Сохранить")
+        self.btn_save.setEnabled(False)
+        self.btn_save.setMinimumHeight(28)
+        self.btn_desktop = QPushButton("🖥 Рабочий стол")
+        self.btn_desktop.setEnabled(False)
+        self.btn_desktop.setMinimumHeight(28)
+        self.btn_serve = QPushButton("🌐 Сервер")
+        self.btn_serve.setCheckable(True)
+        self.btn_serve.setMinimumHeight(28)
+
+        # Утилиты
+        self.btn_stats = QPushButton("📊 Статистика")
+        self.btn_stats.setEnabled(False)
+        self.btn_stats.setMinimumHeight(28)
+        self.btn_clear = QPushButton("🗑 Очистить")
+        self.btn_clear.setEnabled(False)
+        self.btn_clear.setMinimumHeight(28)
+        self.btn_dedup = QPushButton("🧹 Дедуп")
+        self.btn_dedup.setEnabled(False)
+        self.btn_dedup.setMinimumHeight(28)
+
+        # Автообновление
+        self.cb_auto = QCheckBox("Авто")
+        self.cb_auto.setToolTip("Автозагрузка каждые N часов")
+        self.spin_auto = QSpinBox()
+        self.spin_auto.setRange(1, 24)
+        self.spin_auto.setValue(6)
+        self.spin_auto.setFixedWidth(50)
+        self.spin_auto.setEnabled(False)
+        self.spin_auto.setToolTip("Интервал в часах")
+        self.cb_auto.toggled.connect(self.spin_auto.setEnabled)
+        self.cb_auto.toggled.connect(self._on_auto_toggle)
+
+        # Прокси вкл/выкл
+        self.cb_proxy_enable = QCheckBox("Прокси")
+        self.cb_proxy_enable.setChecked(True)
+        self.cb_proxy_enable.setToolTip("Использовать прокси для запросов")
+        self.cb_proxy_enable.toggled.connect(self._on_proxy_toggle)
+
+        toolbar.addWidget(self.btn_fetch)
+        toolbar.addWidget(self.btn_stop)
+        toolbar.addSpacing(6)
+        toolbar.addWidget(self.btn_tcp_test)
+        toolbar.addWidget(self.btn_deep_test)
+        toolbar.addSpacing(6)
+        toolbar.addWidget(self.btn_save)
+        toolbar.addWidget(self.btn_desktop)
+        toolbar.addWidget(self.btn_serve)
+        toolbar.addSpacing(6)
+        toolbar.addWidget(self.btn_stats)
+        toolbar.addWidget(self.btn_clear)
+        toolbar.addWidget(self.btn_dedup)
+        self.proxy_count_label = QLabel("🔌 0")
+        self.proxy_count_label.setStyleSheet("color: #81c784; font-size: 10px;")
+        self.proxy_count_label.setToolTip("Видимые / Всего прокси")
+        toolbar.addWidget(self.proxy_count_label)
+        toolbar.addSpacing(4)
+
+        # Переключатель режима производительности
+        self.perf_group = QButtonGroup(self)
+        self.perf_btns = {}
+        for i, (mode, label) in enumerate([("low", "🐢"), ("medium", "⚡"), ("high", "🚀")]):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFixedSize(28, 22)
+            btn.setToolTip({"low": "Эконом (3 потока, 5 репо)",
+                            "medium": "Средний (8 потоков, 12 репо)",
+                            "high": "Максимум (16 потоков, 30 репо)"}[mode])
+            btn.setProperty("perf_mode", mode)
+            btn.setStyleSheet(
+                "QPushButton { font-size: 10px; padding: 0; border: 1px solid #6a6a6a; border-radius: 3px; background: #4a4a4a; color: #aaa; font-weight: bold; }"
+                "QPushButton:checked { background: #2e7d32; color: #fff; border-color: #a5d6a7; }"
+                "QPushButton:hover { background: #66bb6a; border-color: #a5d6a7; color: #fff; }"
+            )
+            self.perf_group.addButton(btn, i)
+            self.perf_btns[mode] = btn
+            toolbar.addWidget(btn)
+        self.perf_group.idToggled.connect(self._on_perf_mode_changed)
+
+        toolbar.addStretch()
+        toolbar.addWidget(self.cb_auto)
+        toolbar.addWidget(self.spin_auto)
+        toolbar.addSpacing(6)
+        toolbar.addWidget(self.cb_proxy_enable)
+        proxy_layout.addLayout(toolbar)
+
+        # ── Прогресс ──
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(4)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFixedHeight(20)
+        self.progress_bar.setToolTip("Прогресс операции")
+        progress_row.addWidget(self.progress_bar, 1)
+        self.btn_cancel = QPushButton("✕")
+        self.btn_cancel.setObjectName("btn_cancel")
+        self.btn_cancel.setFixedWidth(32)
+        self.btn_cancel.setFixedHeight(20)
+        self.btn_cancel.setToolTip("Остановить операцию")
+        self.btn_cancel.setEnabled(False)
+        progress_row.addWidget(self.btn_cancel)
+        proxy_layout.addLayout(progress_row)
+
+        # ── Сплиттер: Источники | Таблица ──
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Левая панель — Источники
+        self.left_panel = QWidget()
+        left_layout = QVBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+
+        # Группа источников
+        src_group = QGroupBox("📂 Источники")
+        src_layout = QVBoxLayout()
+        src_layout.setContentsMargins(4, 16, 4, 4)
+        src_layout.setSpacing(4)
+
+        self.src_list = QTreeWidget()
+        self.src_list.setHeaderLabels(["", "Источник", "Прокси"])
+        self.src_list.setColumnWidth(0, 24)
+        self.src_list.setColumnWidth(1, 180)
+        self.src_list.setColumnWidth(2, 60)
+        self.src_list.setRootIsDecorated(False)
+        self.src_list.header().setStretchLastSection(False)
+        self.src_list.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.src_list.setToolTip("Отметь галочкой → скачать")
+        self._populate_sources()
+        src_layout.addWidget(self.src_list)
+
+        # Кнопки управления источниками
+        src_btn_row = QHBoxLayout()
+        src_btn_row.setSpacing(2)
+        self.btn_add_source = QPushButton("+ Добавить")
+        self.btn_add_source.setToolTip("Добавить подписку")
+        self.btn_add_source.setMinimumHeight(26)
+        self.btn_remove_source = QPushButton("− Удалить")
+        self.btn_remove_source.setToolTip("Удалить выбранные/отмеченные источники")
+        self.btn_remove_source.setMinimumHeight(26)
+        self.btn_select_all = QPushButton("✓ Все")
+        self.btn_select_all.setToolTip("Отметить все галочками")
+        self.btn_select_all.setMinimumHeight(26)
+        self.btn_select_none = QPushButton("✗ Снять")
+        self.btn_select_none.setToolTip("Снять все галочки")
+        self.btn_select_none.setMinimumHeight(26)
+        src_btn_row.addWidget(self.btn_add_source)
+        src_btn_row.addWidget(self.btn_remove_source)
+        src_btn_row.addStretch()
+        src_btn_row.addWidget(self.btn_select_all)
+        src_btn_row.addWidget(self.btn_select_none)
+        src_layout.addLayout(src_btn_row)
+
+        # GitHub поиск — ключевые слова кнопками
+        gh_box = QGroupBox("🔍 GitHub поиск")
+        gh_layout = QVBoxLayout()
+        gh_layout.setContentsMargins(4, 16, 4, 4)
+        gh_layout.setSpacing(4)
+
+        # Строка ввода + кнопка добавления
+        gh_input_row = QHBoxLayout()
+        gh_input_row.setSpacing(4)
+        self.gh_keyword = QLineEdit()
+        self.gh_keyword.setPlaceholderText("Введи своё ключевое слово...")
+        self.gh_keyword.setToolTip("Добавить ключевое слово")
+        self.gh_keyword.returnPressed.connect(self._on_add_gh_keyword)
+        self.btn_add_gh_keyword = QPushButton("+")
+        self.btn_add_gh_keyword.setFixedWidth(28)
+        self.btn_add_gh_keyword.setToolTip("Добавить ключевое слово")
+        self.btn_add_gh_keyword.clicked.connect(self._on_add_gh_keyword)
+        gh_input_row.addWidget(self.gh_keyword, 1)
+        gh_input_row.addWidget(self.btn_add_gh_keyword)
+
+        # Кнопки-ключевые слова (12 шт, 4 в ряд)
+        self.gh_kw_grid = QGridLayout()
+        self.gh_kw_grid.setSpacing(3)
+        self.gh_kw_grid.setContentsMargins(2, 2, 2, 2)
+        self.gh_kw_buttons = []
+        self.gh_selected_keywords = set()
+
+        for kw in [
+            "vless subscription", "vmess subscription", "trojan subscription",
+            "v2ray subscription", "sing-box subscription", "hysteria2 subscription",
+            "hy2 subscription", "tuic subscription", "shadowsocks subscription",
+            "clash subscription", "xray subscription", "proxy list",
+        ]:
+            btn = QPushButton(kw)
+            btn.setCheckable(True)
+            btn.setFixedHeight(24)
+            btn.setFont(btn.font())
+            btn.setStyleSheet(
+                "QPushButton { font-size: 9px; padding: 2px 6px; border: 1px solid #6a6a6a; border-radius: 3px; background: #4a4a4a; color: #ddd; font-weight: bold; }"
+                "QPushButton:checked { background: #2e7d32; color: #fff; border-color: #a5d6a7; }"
+                "QPushButton:hover { background: #66bb6a; border-color: #a5d6a7; color: #fff; }"
+            )
+            btn.setToolTip(f"Нажми чтобы {'снять' if kw in self.gh_selected_keywords else 'выбрать'} «{kw}»")
+            btn.toggled.connect(lambda checked, k=kw, b=btn: self._on_gh_kw_toggle(k, b, checked))
+            self.gh_kw_buttons.append((kw, btn))
+            idx = len(self.gh_kw_buttons) - 1
+            self.gh_kw_grid.addWidget(btn, idx // 4, idx % 4)
+
+        # Строка: период + поиск
+        gh_btn_row = QHBoxLayout()
+        gh_btn_row.setSpacing(4)
+        self.gh_period_combo = QComboBox()
+        self.gh_period_combo.addItems([
+            "25 мин", "1 час", "2 ч", "4 ч", "6 ч", "8 ч", "10 ч", "12 ч",
+            "14 ч", "16 ч", "18 ч", "20 ч", "22 ч", "24 ч",
+            "1 день", "2 дня", "3 дня", "4 дня", "5 дней", "6 дней", "7 дней",
+        ])
+        self.gh_period_combo.setCurrentIndex(1)
+        self.gh_period_combo.setFixedWidth(80)
+        self.gh_period_combo.setToolTip("Период поиска")
+        self.btn_github_search = QPushButton("🔍 Искать")
+        self.btn_github_search.setToolTip("Искать на GitHub по отмеченным ключевым словам")
+        gh_btn_row.addStretch()
+        gh_btn_row.addWidget(self.gh_period_combo)
+        gh_btn_row.addWidget(self.btn_github_search)
+
+        gh_layout.addLayout(gh_input_row)
+        gh_layout.addLayout(self.gh_kw_grid)
+        gh_layout.addLayout(gh_btn_row)
+        gh_box.setLayout(gh_layout)
+        left_layout.addWidget(gh_box)
+
+        src_group.setLayout(src_layout)
+        left_layout.addWidget(src_group, 1)  # stretch=1 — занимает всё доступное место
+
+        # Лог GitHub поиска
+        self.gh_search_group = QGroupBox("🔍 Лог поиска")
+        gh_search_layout = QVBoxLayout()
+        gh_search_layout.setContentsMargins(2, 14, 2, 2)
+        gh_search_layout.setSpacing(2)
+        count_row = QHBoxLayout()
+        count_row.setSpacing(4)
+        count_row.addWidget(QLabel("Найдено файлов:"))
+        self.gh_count_label = QLabel("0")
+        self.gh_count_label.setToolTip("Найдено подписок")
+        self.gh_count_label.setStyleSheet("color: #a5d6a7; font-weight: bold; font-size: 12px;")
+        count_row.addWidget(self.gh_count_label)
+        count_row.addStretch()
+        gh_search_layout.addLayout(count_row)
+        self.gh_search_log = QTextEdit()
+        self.gh_search_log.setReadOnly(True)
+        self.gh_search_log.setStyleSheet("QTextEdit { background-color: #333333; color: #c8e6c9; font-family: monospace; font-size: 9px; border: none; }")
+        self.gh_search_log.setPlaceholderText("Лог поиска GitHub...")
+        gh_search_layout.addWidget(self.gh_search_log)
+        self.gh_search_group.setLayout(gh_search_layout)
+        self.gh_search_group.setFixedHeight(140)
+        left_layout.addWidget(self.gh_search_group)
+
+        left_layout.addStretch()
+        self.splitter.addWidget(self.left_panel)
+
+        # Центр — Таблица прокси
+        center_widget = QWidget()
+        center_layout = QVBoxLayout(center_widget)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(4)
+
+        # Фильтр-бар
+        fb = QHBoxLayout()
+        fb.setSpacing(4)
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("🔍 Фильтр: сервер, SNI, страна, протокол...")
+        self.filter_input.setToolTip("Поиск по всем полям таблицы")
+        self.filter_input.setMinimumHeight(26)
+        self.filter_proto = QComboBox()
+        self.filter_proto.addItems(["Все", "vless", "vmess", "trojan", "ss", "hy2", "tuic", "socks"])
+        self.filter_proto.setFixedWidth(80)
+        self.filter_proto.setToolTip("Фильтр по протоколу")
+        self.filter_country = QComboBox()
+        self.filter_country.addItems(["Все страны", "Russia", "Germany", "France", "Netherlands", "USA", "UK", "Japan", "Singapore", "Canada", "Australia"])
+        self.filter_country.setFixedWidth(110)
+        self.filter_country.setToolTip("Фильтр по стране")
+        self.cb_sni = QCheckBox("SNI")
+        self.cb_sni.setToolTip("Только прокси с белым SNI")
+        self.cb_deep = QCheckBox("Раб.")
+        self.cb_deep.setToolTip("Только рабочие прокси")
+        self.btn_remove_dead = QPushButton("✕ Мёртвые")
+        self.btn_remove_dead.setToolTip("Удалить нерабочие")
+        self.btn_remove_dead.setEnabled(False)
+        self.btn_remove_dead.setFixedHeight(26)
+
+        fb.addWidget(self.filter_input, 1)
+        fb.addWidget(self.filter_proto)
+        fb.addWidget(self.filter_country)
+        fb.addWidget(self.cb_sni)
+        fb.addWidget(self.cb_deep)
+        fb.addWidget(self.btn_remove_dead)
+        center_layout.addLayout(fb)
+
+        # Таблица
+        self.table = QTableView()
+        self.table.setModel(self.filter_model)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 24)
+        self.table.setColumnWidth(1, 70)
+        self.table.setColumnWidth(2, 150)
+        self.table.setColumnWidth(3, 180)
+        self.table.setColumnWidth(4, 70)
+        self.table.setColumnWidth(5, 130)
+        self.table.setColumnWidth(6, 36)
+        self.table.setColumnWidth(7, 36)
+        self.table.setColumnWidth(8, 70)
+        self.table.verticalHeader().hide()
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
+        center_layout.addWidget(self.table)
+
+        self.splitter.addWidget(center_widget)
+
+        # Правая панель — Лог
+        self.right_panel = QWidget()
+        right_layout = QVBoxLayout(self.right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+
+        log_group = QGroupBox("📋 Лог")
+        log_layout = QVBoxLayout()
+        log_layout.setContentsMargins(2, 14, 2, 2)
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setStyleSheet("QTextEdit { background-color: #333333; color: #c8e6c9; font-family: monospace; font-size: 9px; border: none; }")
+        log_layout.addWidget(self.log_output)
+        log_group.setLayout(log_layout)
+        right_layout.addWidget(log_group)
+
+        # URL подписки
+        url_row = QHBoxLayout()
+        url_row.setSpacing(4)
+        self.btn_copy_url = QPushButton("📋 URL")
+        self.btn_copy_url.setToolTip("Копировать URL подписки")
+        self.btn_copy_url.clicked.connect(self._on_copy_url)
+        self.url_label = QLabel("http://127.0.0.1:18080/latest.txt")
+        self.url_label.setStyleSheet("color: #81c784; font-size: 9px;")
+        self.url_label.setWordWrap(True)
+        url_row.addWidget(self.btn_copy_url)
+        url_row.addWidget(self.url_label, 1)
+        right_layout.addLayout(url_row)
+
+        self.splitter.addWidget(self.right_panel)
+
+        self.splitter.setSizes([220, 750, 200])
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setStretchFactor(2, 0)
+        self.splitter.setHandleWidth(4)
+        proxy_layout.addWidget(self.splitter, 1)
+
+        self.tabs.addTab(proxy_tab, "🔌 Прокси")
+
+        # ════════════════════════════════════════════
+        # Вкладка 4: Настройки
+        # ════════════════════════════════════════════
+        settings_tab = QWidget()
+        settings_layout = QVBoxLayout(settings_tab)
+        settings_layout.setContentsMargins(8, 8, 8, 8)
+        self._build_settings_tab(settings_layout)
+        self.tabs.addTab(settings_tab, "⚙ Настройки")
+
+        # Статусбар
+        self.sb = QStatusBar()
+        self.setStatusBar(self.sb)
+        self.sb_label = QLabel("Готов")
+        self.sb_label.setToolTip("Текущий статус")
+        self.sb.addWidget(self.sb_label)
+
+    def _icon_btn(self, icon: str, tooltip: str) -> QPushButton:
+        """Компактная кнопка с иконкой."""
+        btn = QPushButton(icon)
+        btn.setToolTip(tooltip)
+        btn.setFixedWidth(32)
+        btn.setMinimumHeight(28)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        return btn
+
+    def _build_menu(self):
+        self.menu_bar = self.menuBar()
+        view_menu = self.menu_bar.addMenu("📺 Вид")
+
+        self.act_fullscreen = QAction("⛶ На весь экран", self)
+        self.act_fullscreen.setCheckable(True)
+        self.act_fullscreen.setShortcut("F11")
+        self.act_fullscreen.triggered.connect(self._toggle_fullscreen)
+        view_menu.addAction(self.act_fullscreen)
+        view_menu.addSeparator()
+
+        self.act_toggle_left = QAction("📂 Показать/скрыть источник", self)
+        self.act_toggle_left.setShortcut("Ctrl+B")
+        self.act_toggle_left.setCheckable(True)
+        self.act_toggle_left.setChecked(True)
+        self.act_toggle_left.triggered.connect(self._toggle_left_panel)
+        view_menu.addAction(self.act_toggle_left)
+
+        self.act_toggle_right = QAction("📋 Показать/скрыть лог", self)
+        self.act_toggle_right.setShortcut("Ctrl+L")
+        self.act_toggle_right.setCheckable(True)
+        self.act_toggle_right.setChecked(True)
+        self.act_toggle_right.triggered.connect(self._toggle_right_panel)
+        view_menu.addAction(self.act_toggle_right)
+
+    def _toggle_left_panel(self, visible: bool):
+        self.left_panel.setVisible(visible)
+
+    def _toggle_right_panel(self, visible: bool):
+        self.right_panel.setVisible(visible)
+
+    def _toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowFullScreen)
+            self.act_fullscreen.setChecked(False)
+        else:
+            self.showFullScreen()
+            self.act_fullscreen.setChecked(True)
+
+    def _build_settings_tab(self, layout):
+        px_group = QGroupBox("Прокси-сервер")
+        px_grid = QFormLayout()
+        px_grid.setSpacing(6)
+        self.proxy_type_combo = QComboBox()
+        self.proxy_type_combo.addItems(["HTTP", "SOCKS5"])
+        self.proxy_type_combo.setToolTip("Тип прокси: HTTP или SOCKS5")
+        px_grid.addRow("Тип:", self.proxy_type_combo)
+        self.proxy_host_edit = QLineEdit("127.0.0.1")
+        self.proxy_host_edit.setToolTip("IP-адрес или хост прокси")
+        px_grid.addRow("Хост:", self.proxy_host_edit)
+        self.proxy_port_spin = QSpinBox()
+        self.proxy_port_spin.setRange(1, 65535)
+        self.proxy_port_spin.setValue(12334)
+        self.proxy_port_spin.setFixedWidth(120)
+        px_grid.addRow("Порт:", self.proxy_port_spin)
+        self.btn_test_proxy = QPushButton("Проверить прокси")
+        self.btn_test_proxy.setToolTip("Проверить доступность прокси через example.com")
+        self.btn_test_proxy.clicked.connect(self._on_test_proxy)
+        px_grid.addRow("", self.btn_test_proxy)
+        px_group.setLayout(px_grid)
+        layout.addWidget(px_group)
+
+        self.proxy_type_combo.currentTextChanged.connect(lambda: self._save_proxy_settings())
+        self.proxy_host_edit.editingFinished.connect(lambda: self._save_proxy_settings())
+        self.proxy_port_spin.valueChanged.connect(lambda: self._save_proxy_settings())
+
+        gh_group = QGroupBox("GitHub API")
+        gh_grid = QFormLayout()
+        gh_grid.setSpacing(6)
+        self.github_tokens_edit = QPlainTextEdit()
+        self.github_tokens_edit.setPlaceholderText("ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ngho_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\n... по одному токену на строку")
+        self.github_tokens_edit.setToolTip("GitHub Personal Access Token (лимит 5000 запросов/час)\nНесколько токенов — каждый на новой строке.\nПрограмма переберёт их при ошибке 401/403.")
+        self.github_tokens_edit.setFixedHeight(60)
+        gh_grid.addRow("Токены:", self.github_tokens_edit)
+        gh_link = QLabel('<a href="https://github.com/settings/tokens/new" style="color:#81c784;">→ Создать токен</a>')
+        gh_link.setOpenExternalLinks(True)
+        gh_grid.addRow("", gh_link)
+        btn_row = QHBoxLayout()
+        self.btn_check_token = QPushButton("🔍 Проверить токены")
+        self.btn_check_token.setToolTip("Проверить все введённые токены через API /user")
+        self.btn_check_token.clicked.connect(self._on_check_github_token)
+        btn_row.addWidget(self.btn_check_token)
+        self.btn_save_settings = QPushButton("💾 Сохранить настройки")
+        self.btn_save_settings.setToolTip("Сохранить все настройки (токены, прокси)")
+        self.btn_save_settings.clicked.connect(self._save_proxy_settings)
+        btn_row.addWidget(self.btn_save_settings)
+        gh_grid.addRow("", btn_row)
+        gh_group.setLayout(gh_grid)
+        layout.addWidget(gh_group)
+
+        layout.addStretch()
+
+        # Статус
+        self.settings_status = QLabel("")
+        self.settings_status.setStyleSheet("color: #81c784;")
+        layout.addWidget(self.settings_status)
+
+    def _populate_sources(self):
+        self.src_list.clear()
+        for name, url, enabled in self.sources:
+            item = QTreeWidgetItem()
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked)
+            item.setText(1, name)
+            item.setText(2, "⏳")
+            item.setData(1, Qt.ItemDataRole.UserRole, url)
+            item.setToolTip(1, name)
+            item.setToolTip(2, f"URL: {url}")
+            self.src_list.addTopLevelItem(item)
+
+    def _connect_signals(self):
+        self.btn_fetch.clicked.connect(self._on_fetch)
+        self.btn_stop.clicked.connect(self._on_stop)
+        self.btn_cancel.clicked.connect(self._on_stop)
+        self.btn_tcp_test.clicked.connect(self._on_tcp_test)
+        self.btn_deep_test.clicked.connect(self._on_deep_test)
+        self.btn_save.clicked.connect(self._on_save)
+        self.btn_desktop.clicked.connect(self._on_save_desktop)
+        self.btn_serve.clicked.connect(self._on_toggle_server)
+        self.btn_stats.clicked.connect(self._on_show_stats)
+        self.btn_clear.clicked.connect(self._on_clear)
+        self.btn_remove_dead.clicked.connect(self._on_remove_dead)
+        self.btn_dedup.clicked.connect(self._on_dedup)
+        self.btn_add_source.clicked.connect(self._on_add_source)
+        self.btn_remove_source.clicked.connect(self._on_remove_source)
+        self.btn_select_all.clicked.connect(self._on_select_all_sources)
+        self.btn_select_none.clicked.connect(self._on_select_none_sources)
+        self.btn_github_search.clicked.connect(self._on_github_search)
+        self.filter_input.textChanged.connect(self.filter_model.set_filter_text)
+        self.filter_proto.currentTextChanged.connect(self._on_filter_proto)
+        self.filter_country.currentTextChanged.connect(self._on_filter_country)
+        self.cb_sni.toggled.connect(self.filter_model.set_filter_sni_good)
+        self.cb_deep.toggled.connect(self.filter_model.set_filter_deep_good)
+        self.src_list.itemDoubleClicked.connect(self._on_source_double_click)
+        self.filter_model.layoutChanged.connect(self._update_stats)
+
+        self._tokens_timer = QTimer()
+        self._tokens_timer.setSingleShot(True)
+        self._tokens_timer.timeout.connect(self._save_tokens_now)
+        self.github_tokens_edit.textChanged.connect(self._on_tokens_edited)
+
+
+    # ── Прокси ──
+
+    def _apply_settings(self):
+        s = self._settings
+        self.cb_proxy_enable.setChecked(s.get("proxy_enabled", True))
+        self.proxy_type_combo.setCurrentText(s.get("proxy_type", "HTTP").upper())
+        self.proxy_host_edit.setText(s.get("proxy_host", "127.0.0.1"))
+        self.proxy_port_spin.setValue(s.get("proxy_port", 12334))
+        self.github_tokens_edit.setPlainText("\n".join(_auth_data.get("github_tokens", [])))
+        self._sync_proxy_ui()
+        # Восстанавливаем прокси из кэша (макс 200)
+        cached = s.get("proxy_cache", [])
+        if cached:
+            entries = []
+            for item in cached[:200]:
+                entry = ProxyEntry(item.get("uri", ""), item.get("source", ""))
+                entry.tcp_ok = item.get("tcp_ok")
+                entry.deep_ok = item.get("deep_ok")
+                entry.latency_ms = item.get("latency_ms")
+                entries.append(entry)
+            self.proxy_model.add_proxies(entries)
+            self._log(f"📂 Восстановлено {len(entries)} прокси из кэша.")
+        mode = s.get("perf_mode", "medium")
+        idx = {"low": 0, "medium": 1, "high": 2}.get(mode, 1)
+        if idx < len(self.perf_btns):
+            self.perf_btns[{"low": "low", "medium": "medium", "high": "high"}[mode]].setChecked(True)
+        self._set_busy(False)
+        self._update_stats()
+
+    def _sync_proxy_ui(self):
+        pass  # настройки всегда доступны для редактирования
+
+    def _on_tokens_edited(self):
+        self._tokens_timer.start(1000)
+
+    def _save_tokens_now(self):
+        tokens = [t.strip() for t in self.github_tokens_edit.toPlainText().strip().splitlines() if t.strip()]
+        _auth_data["github_tokens"] = tokens
+        _save_auth(_auth_data)
+
+    def _save_proxy_settings(self):
+        tokens = [t.strip() for t in self.github_tokens_edit.toPlainText().strip().splitlines() if t.strip()]
+        self._log(f"🔧 Сохранение настроек... (токенов: {len(tokens)})")
+        _auth_data["github_tokens"] = tokens
+        _save_auth(_auth_data)
+        self._settings["proxy_enabled"] = self.cb_proxy_enable.isChecked()
+        self._settings["proxy_type"] = self.proxy_type_combo.currentText().lower()
+        self._settings["proxy_host"] = self.proxy_host_edit.text().strip()
+        self._settings["proxy_port"] = self.proxy_port_spin.value()
+        _save_settings(self._settings)
+        _invalidate_proxy_cache()
+        self.sb_label.setText("✅ Настройки сохранены")
+
+    def _on_proxy_toggle(self, enabled: bool):
+        self._sync_proxy_ui()
+        self._save_proxy_settings()
+
+    def _on_perf_mode_changed(self, btn_id: int, checked: bool):
+        if not checked:
+            return
+        mode = ["low", "medium", "high"][btn_id]
+        self._settings["perf_mode"] = mode
+        _save_settings(self._settings)
+        cfg = PERF_PRESETS[mode]
+        self._log(f"⚡ Режим: {mode} ({cfg['test_threads']}потоков, {cfg['max_repos']}репо)")
+
+    def _on_check_github_token(self):
+        tokens = [t.strip() for t in self.github_tokens_edit.toPlainText().strip().splitlines() if t.strip()]
+        if not tokens:
+            self._log("⛔ Нет токенов для проверки")
+            if hasattr(self, 'settings_status'):
+                self.settings_status.setText("⛔ Введите токены")
+            return
+        self._log(f"🔍 Проверка {len(tokens)} токенов GitHub...")
+        if hasattr(self, 'settings_status'):
+            self.settings_status.setText("⏳ Проверка токенов...")
+        self.btn_check_token.setEnabled(False)
+        ok_count = 0
+        for i, token in enumerate(tokens):
+            if not token.startswith(("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_")):
+                self._log(f"  ⏭ Токен #{i+1}: неверный формат")
+                continue
+            try:
+                req = urllib.request.Request("https://api.github.com/user", headers={
+                    "Authorization": f"Bearer {token}", "User-Agent": "proxy-fetcher/2.0",
+                })
+                for use_proxy in (False, True):
+                    opener, _ = _get_proxy_opener(timeout=8) if use_proxy else (urllib.request.build_opener(), {})
+                    try:
+                        with opener.open(req, timeout=8) as resp:
+                            data = json.loads(resp.read())
+                            login = data.get("login", "?")
+                            self._log(f"  ✅ Токен #{i+1}: {login}")
+                            ok_count += 1
+                            break
+                    except urllib.error.HTTPError as e:
+                        if e.code == 401:
+                            self._log(f"  ⛔ Токен #{i+1}: недействителен (401)")
+                        elif e.code == 403:
+                            self._log(f"  ⚠️ Токен #{i+1}: лимит запросов (403)")
+                        elif e.code == 304:
+                            self._log(f"  ✅ Токен #{i+1}: OK (304)")
+                            ok_count += 1
+                        else:
+                            self._log(f"  ⚠️ Токен #{i+1}: ошибка {e.code}")
+                        break
+                    except Exception:
+                        continue
+                else:
+                    self._log(f"  ⛔ Токен #{i+1}: нет соединения")
+            except Exception as e:
+                self._log(f"  ⛔ Токен #{i+1}: {e}")
+        self._log(f"✅ Работает: {ok_count}/{len(tokens)}")
+        if hasattr(self, 'settings_status'):
+            self.settings_status.setText(f"✅ {ok_count}/{len(tokens)} токенов работают" if ok_count else "⛔ Ни один токен не работает")
+        self.btn_check_token.setEnabled(True)
+
+    def _on_test_proxy(self):
+        if self._proxy_test_thread and self._proxy_test_thread.isRunning():
+            self._log("⏳ Предыдущая проверка ещё выполняется")
+            return
+        host = self.proxy_host_edit.text().strip()
+        port = self.proxy_port_spin.value()
+        ptype = self.proxy_type_combo.currentText().lower()
+        self.btn_test_proxy.setEnabled(False)
+        self.btn_test_proxy.setText("⏳ Проверка...")
+        self.sb_label.setText(f"⏳ Проверка прокси {host}:{port}...")
+        if hasattr(self, 'settings_status'):
+            self.settings_status.setText("⏳ Проверка...")
+
+        thread = QThread()
+        worker = _ProxyTestWorker(host, port, ptype)
+        worker.moveToThread(thread)
+        worker.result_signal.connect(self._on_test_proxy_done, Qt.ConnectionType.QueuedConnection)
+        thread.started.connect(worker.run, Qt.ConnectionType.DirectConnection)
+        thread.finished.connect(thread.deleteLater)
+        self._proxy_test_thread = thread
+        self._proxy_test_worker = worker
+        thread.start()
+
+    def _on_test_proxy_done(self, ok: bool, ms: float, err: str):
+        if ok:
+            self._log(f"✅ Прокси работает ({ms:.0f}ms)")
+            self.sb_label.setText(f"✅ Прокси — {ms:.0f}ms")
+            if hasattr(self, 'settings_status'):
+                self.settings_status.setText(f"✅ Работает ({ms:.0f}ms)")
+        else:
+            self._log(f"❌ Прокси не отвечает: {err}")
+            self.sb_label.setText(f"❌ Ошибка: {err[:60]}")
+            if hasattr(self, 'settings_status'):
+                self.settings_status.setText(f"❌ {err[:80]}")
+        self.btn_test_proxy.setText("Проверить прокси")
+        self.btn_test_proxy.setEnabled(True)
+        if self._proxy_test_thread:
+            self._proxy_test_thread.quit()
+            self._proxy_test_thread.wait(2)
+            self._proxy_test_thread = None
+        self._proxy_test_worker = None
+
+    # ── Фильтры ──
+
+    def _on_filter_proto(self, t):
+        self.filter_model.set_filter_proto("" if t == "Все протоколы" else t)
+
+    def _on_filter_country(self, t):
+        self.filter_model.set_filter_country("" if t == "Все страны" else t)
+
+    def _on_auto_toggle(self, on: bool):
+        if on:
+            interval = self.spin_auto.value() * 3600000  # ms
+            self._auto_timer.start(interval)
+            self._log(f"⏰ Автообновление каждые {self.spin_auto.value()}ч")
+        else:
+            self._auto_timer.stop()
+            self._log("⏰ Автообновление отключено")
+
+    def _log(self, msg: str):
+        self.log_output.append(msg)
+        sb = self.log_output.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _update_stats(self):
+        p = self.proxy_model.proxies
+        total = len(p)
+        visible = self.filter_model.rowCount() if hasattr(self, 'filter_model') else total
+        tested = sum(1 for x in p if x.tcp_ok is not None or x.deep_ok is not None)
+        ok = sum(1 for x in p if x.deep_ok is True or x.tcp_ok is True)
+        label = f"🔌 {visible}/{total}"
+        if tested:
+            label += f"  ✅{ok} ❌{tested - ok} ⏳{total - tested}"
+        self.proxy_count_label.setText(label)
+        self.btn_stats.setEnabled(total > 0)
+        self.btn_clear.setEnabled(total > 0)
+        self.btn_remove_dead.setEnabled(total > 0)
+        self.btn_dedup.setEnabled(total > 0)
+
+    def _get_selected_sources(self) -> list[tuple[str, str]]:
+        r = []
+        for i in range(self.src_list.topLevelItemCount()):
+            item = self.src_list.topLevelItem(i)
+            if item.checkState(0) == Qt.CheckState.Checked:
+                r.append((item.text(1), item.data(1, Qt.ItemDataRole.UserRole)))
+        return r
+
+    # ─── FETCH ───
+
+    def _on_fetch(self):
+        sources = self._get_selected_sources()
+        if not sources:
+            QMessageBox.warning(self, "Нет источников", "Выбери хотя бы один источник.")
+            return
+        self.proxy_model.clear()
+        self._update_stats()
+        self._set_busy(True, "fetch")
+        self.progress_bar.setMaximum(len(sources))
+        self._net_thread = QThread()
+        self._net_worker = NetworkWorker()
+        self._net_worker.moveToThread(self._net_thread)
+        self._net_worker.log_signal.connect(self._log, Qt.ConnectionType.QueuedConnection)
+        self._net_worker.progress_signal.connect(self._on_net_progress, Qt.ConnectionType.QueuedConnection)
+        self._net_worker.source_status.connect(self._on_source_status, Qt.ConnectionType.QueuedConnection)
+        self._net_worker.proxy_parsed.connect(self._on_proxy_parsed, Qt.ConnectionType.QueuedConnection)
+        self._net_worker.finished_signal.connect(self._on_fetch_finished, Qt.ConnectionType.QueuedConnection)
+        self._net_thread.started.connect(lambda: self._net_worker.fetch_all(sources), Qt.ConnectionType.DirectConnection)
+        self._net_thread.finished.connect(self._net_thread.deleteLater)
+        self._net_thread.start()
+
+    def _on_net_progress(self, c, t, n):
+        self.progress_bar.setValue(c)
+        self.sb_label.setText(f"Загрузка {n}...")
+
+    def _on_proxy_parsed(self, urls: list[str]):
+        entries = [ProxyEntry(u) for u in urls]
+        self.proxy_model.add_proxies(entries)
+        self._update_stats()
+
+    def _on_source_status(self, name, ok, count):
+        for i in range(self.src_list.topLevelItemCount()):
+            item = self.src_list.topLevelItem(i)
+            if item.text(1) == name:
+                if not ok:
+                    item.setText(2, "✗")
+                    item.setForeground(2, QBrush(QColor("#e53935")))
+                elif count == 0:
+                    item.setText(2, "пусто")
+                    item.setForeground(2, QBrush(QColor("#ff9800")))
+                else:
+                    item.setText(2, str(count))
+                    item.setForeground(2, QBrush(QColor("#8bc34a")))
+
+    def _on_fetch_finished(self):
+        _debug(f"_on_fetch_finished: proxies={len(self.proxy_model.proxies)}")
+        self._set_busy(False, "fetch")
+        self._update_stats()
+        self._log(f"\n✅ Загружено {len(self.proxy_model.proxies)} прокси")
+        # Auto-save after fetch
+        self._auto_save_subscription()
+        if self._net_thread:
+            self._net_thread.quit()
+            self._net_thread.wait(2000)
+            self._net_thread = None
+
+    def _auto_save_subscription(self):
+        proxies = self.proxy_model.proxies
+        working = [p for p in proxies if p.deep_ok is True or p.tcp_ok is True]
+        if not working:
+            working = proxies
+        try:
+            with open(os.path.join(OUT_DIR, "latest.txt"), "w") as f:
+                f.write(format_v2rayn(working))
+            # Hiddify-совместимый plain text
+            plain_lines = [
+                "#profile-title: skitchen VPN",
+                "#profile-update-interval: 1",
+                "",
+            ]
+            for p in working:
+                plain_lines.append(p.uri)
+            with open(os.path.join(OUT_DIR, "hiddify_sub.txt"), "w") as f:
+                f.write("\n".join(plain_lines) + "\n")
+            if self._http_server_proc is not None:
+                self._stop_http_server()
+                self._start_http_server()
+        except Exception:
+            pass
+
+    def _on_select_all_sources(self):
+        for i in range(self.src_list.topLevelItemCount()):
+            self.src_list.topLevelItem(i).setCheckState(0, Qt.CheckState.Checked)
+
+    def _on_select_none_sources(self):
+        for i in range(self.src_list.topLevelItemCount()):
+            self.src_list.topLevelItem(i).setCheckState(0, Qt.CheckState.Unchecked)
+
+    def _on_clear_sources(self):
+        if not self.sources:
+            return
+        reply = QMessageBox.question(self, "Очистить источники",
+            f"Удалить все {len(self.sources)} источников из списка?\nИх можно будет добавить заново через GitHub поиск или кнопку «+».",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.sources.clear()
+        self._populate_sources()
+
+    def _on_table_context_menu(self, pos):
+        """Контекстное меню правой кнопки мыши на таблице прокси."""
+        indexes = self.table.selectionModel().selectedRows()
+        if not indexes:
+            return
+
+        menu = QMenu(self)
+        copy_one_action = menu.addAction("📋 Копировать URI в буфер")
+        menu.addSeparator()
+        copy_all_action = menu.addAction("📋 Копировать ВСЕ URI (выделенные)")
+
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if action == copy_one_action:
+            # Копируем URI первой выбранной строки
+            row = indexes[0].row()
+            source_row = self.filter_model.mapToSource(indexes[0]).row()
+            entry = self.proxy_model.proxies[source_row]
+            QApplication.clipboard().setText(entry.uri)
+            self._log(f"📋 Скопирован URI: {entry.uri[:50]}...")
+        elif action == copy_all_action:
+            # Копируем все выбранные URI
+            uris = []
+            for idx in indexes:
+                source_row = self.filter_model.mapToSource(idx).row()
+                entry = self.proxy_model.proxies[source_row]
+                uris.append(entry.uri)
+            QApplication.clipboard().setText("\n".join(uris))
+            self._log(f"📋 Скопировано {len(uris)} URI в буфер.")
+
+    def _on_source_double_click(self, item, column):
+        url = item.data(1, Qt.ItemDataRole.UserRole)
+        if not url: return
+
+        class _DialogSlot(QObject):
+            result_signal = Signal(str)
+            error_signal = Signal(str)
+
+            def __init__(self, widget):
+                super().__init__()
+                self._w = widget
+                self.result_signal.connect(self._on_result, Qt.ConnectionType.QueuedConnection)
+                self.error_signal.connect(self._on_error, Qt.ConnectionType.QueuedConnection)
+
+            @Slot(str)
+            def _on_result(self, data):
+                self._w.setPlainText(data)
+
+            @Slot(str)
+            def _on_error(self, err):
+                self._w.setPlainText(f"✗ Ошибка: {err}")
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Содержимое: {item.text(1)}")
+        dlg.setMinimumSize(700, 500)
+        layout = QVBoxLayout(dlg)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setFont(QFont("monospace", 9))
+        text.setPlainText("⏳ Загрузка...")
+        layout.addWidget(text)
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_box.rejected.connect(dlg.reject)
+        layout.addWidget(btn_box)
+
+        slot = _DialogSlot(text)
+        thread = QThread()
+        worker = _SourceFetcher(url)
+        worker.moveToThread(thread)
+        worker.result.connect(slot.result_signal, Qt.ConnectionType.QueuedConnection)
+        worker.error.connect(slot.error_signal, Qt.ConnectionType.QueuedConnection)
+        thread.started.connect(worker.run, Qt.ConnectionType.DirectConnection)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        dlg.exec_()
+        thread.quit()
+        thread.wait(2000)
+
+    def _kill_thread(self, thread, name="thread"):
+        if not thread: return
+        thread.quit()
+        if not thread.wait(500):
+            self._log(f"  ⚠ Принудительное завершение {name}...")
+            thread.terminate()
+            thread.wait(500)
+
+    def _on_stop(self):
+        if self._net_worker:
+            self._net_worker.stop()
+            self._log("⏹ Загрузка остановлена")
+        if self._test_worker:
+            self._test_worker.stop()
+            self._log("⏹ Тестирование остановлено")
+
+        if self._gh_worker:
+            self._gh_worker.stop()
+            self._log("⏹ Поиск на GitHub остановлен")
+
+        self._kill_thread(self._test_thread, "test")
+        self._test_thread = None
+        self._clean_test_worker()
+        self._kill_thread(self._net_thread, "net")
+        self._net_thread = None
+
+        self._set_busy(False)
+        self.btn_github_search.setEnabled(True)
+        self.sb_label.setText("✕ Остановлено")
+        self.btn_cancel.setEnabled(False)
+
+    def _clean_test_worker(self):
+        if self._test_worker:
+            try:
+                self._test_worker.log_signal.disconnect()
+                self._test_worker.progress_signal.disconnect()
+                self._test_worker.result_signal.disconnect()
+                self._test_worker.finished_signal.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            self._test_worker.deleteLater()
+            self._test_worker = None
+
+    def _set_busy(self, busy: bool, mode: str = ""):
+        self.btn_fetch.setEnabled(not busy)
+        self.btn_tcp_test.setEnabled(not busy and len(self.proxy_model.proxies) > 0)
+        self.btn_deep_test.setEnabled(not busy and len(self.proxy_model.proxies) > 0)
+        self.btn_stop.setEnabled(busy)
+        self.btn_cancel.setEnabled(busy)
+        self.btn_save.setEnabled(not busy and len(self.proxy_model.proxies) > 0)
+        self.btn_desktop.setEnabled(not busy and len(self.proxy_model.proxies) > 0)
+        self.btn_clear.setEnabled(not busy and len(self.proxy_model.proxies) > 0)
+        self.btn_remove_dead.setEnabled(not busy and len(self.proxy_model.proxies) > 0)
+        self.btn_add_source.setEnabled(not busy)
+        self.btn_remove_source.setEnabled(not busy)
+        self.btn_select_all.setEnabled(not busy)
+        self.btn_select_none.setEnabled(not busy)
+        self.btn_github_search.setEnabled(not busy)
+        self.gh_keyword.setEnabled(not busy)
+        if busy:
+            self.sb_label.setText("⏳ Работаю...")
+
+    # ─── TESTING ───
+
+    def _on_tcp_test(self):
+        self._start_test(deep=False)
+
+    def _on_deep_test(self):
+        if not os.path.exists(SING_BOX):
+            QMessageBox.warning(self, "Нет sing-box", f"sing-box не найден ({SING_BOX}).\nDeep-тест недоступен.")
+            return
+        self._start_test(deep=True)
+
+    def _start_test(self, deep: bool):
+        visible = []
+        self._clean_test_worker()
+        for i in range(self.filter_model.rowCount()):
+            src_idx = self.filter_model.mapToSource(self.filter_model.index(i, 0))
+            visible.append((src_idx.row(), self.proxy_model.proxies[src_idx.row()]))
+        if not visible: return
+        self._set_busy(True, "test")
+        self.progress_bar.setMaximum(len(visible))
+        mode = "deep" if deep else "tcp"
+        self._log(f"\n▶ {mode.upper()}-тест {len(visible)} видимых прокси...")
+        cfg = PERF_PRESETS.get(self._settings.get("perf_mode", "medium"))
+        self._test_thread = QThread()
+        self._test_worker = TesterWorker(deep=deep, test_threads=cfg["test_threads"], deep_threads=cfg["deep_threads"])
+        self._test_worker.moveToThread(self._test_thread)
+        self._test_worker.log_signal.connect(self._log, Qt.ConnectionType.QueuedConnection)
+        self._test_worker.progress_signal.connect(self._on_test_progress, Qt.ConnectionType.QueuedConnection)
+        self._test_worker.result_signal.connect(self._on_test_result, Qt.ConnectionType.QueuedConnection)
+        self._test_worker.finished_signal.connect(self._on_test_finished, Qt.ConnectionType.QueuedConnection)
+        self._test_thread.started.connect(lambda: self._test_worker.test_batch(visible), Qt.ConnectionType.DirectConnection)
+        self._test_thread.finished.connect(self._test_thread.deleteLater)
+        self._test_thread.start()
+
+    def _on_test_progress(self, row, c, t, n):
+        self.progress_bar.setValue(min(c, t))
+        self.sb_label.setText(f"Тест {c}/{t}: {n}")
+
+    def _on_test_result(self, row: int, ok: bool, latency: float, error: str, ttype: int):
+        if ttype == 0:  # TCP
+            self.proxy_model.update_entry(row, tcp_ok=ok, latency_ms=latency if ok else None, error_msg=error)
+        else:  # Deep
+            self.proxy_model.update_entry(row, deep_ok=ok, latency_ms=latency if ok else None, error_msg=error)
+        self._update_stats()
+        sm = self.filter_model.sourceModel()
+        if 0 <= row < sm.rowCount():
+            filt_idx = self.filter_model.mapFromSource(sm.index(row, 0))
+            if filt_idx.isValid():
+                self.table.selectRow(filt_idx.row())
+                self.table.scrollTo(filt_idx, QAbstractItemView.ScrollHint.EnsureVisible)
+
+    def _on_test_finished(self):
+        self._set_busy(False, "test")
+        self._update_stats()
+        self._log(f"\n✅ Тест завершён")
+        self._auto_save_subscription()
+        if self._test_thread:
+            self._test_thread.quit()
+            self._test_thread.wait(2000)
+            self._test_thread = None
+        self._test_worker = None
+
+    # ─── DEDUP ───
+
+    def _on_dedup(self):
+        proxies = self.proxy_model.proxies
+        if not proxies: return
+        before = len(proxies)
+        # Группируем по server:port (без DNS — не блокируем UI)
+        seen: dict[str, list[int]] = {}
+        for i, p in enumerate(proxies):
+            key = f"{p.server}:{p.port}" if p.server else f"none:{i}"
+            seen.setdefault(key, []).append(i)
+
+        to_remove = set()
+        for key, indices in seen.items():
+            if len(indices) <= 1: continue
+            scored = []
+            for idx in indices:
+                p = proxies[idx]
+                score = 0
+                if p.deep_ok is True: score = 3
+                elif p.tcp_ok is True: score = 2
+                elif p.tcp_ok is False: score = -1
+                scored.append((score, p.latency_ms or 9999, idx))
+            scored.sort(key=lambda x: (-x[0], x[1]))
+            for _, _, idx in scored[1:]:
+                to_remove.add(idx)
+
+        for idx in sorted(to_remove, reverse=True):
+            del proxies[idx]
+
+        self.proxy_model.beginResetModel()
+        self.proxy_model.endResetModel()
+        after = len(proxies)
+        self._log(f"🧹 Смарт-дедуп: {before} → {after} (удалено {before-after})")
+        self._update_stats()
+
+    # ─── CLEAR ───
+
+    def _on_clear(self):
+        if not self.proxy_model.proxies:
+            return
+        reply = QMessageBox.question(self, "Очистить таблицу",
+            "Удалить все прокси из таблицы?\nПеред новым поиском рекомендуется очистить старые результаты.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.proxy_model.clear()
+            self._update_stats()
+            self._log("🗑 Таблица очищена")
+
+    # ─── REMOVE DEAD ───
+
+    def _on_remove_dead(self):
+        proxies = self.proxy_model.proxies
+        if not proxies:
+            return
+        dead_count = sum(1 for p in proxies if p.tcp_ok is False or p.deep_ok is False)
+        if dead_count == 0:
+            QMessageBox.information(self, "Нет нерабочих", "Нерабочих прокси не найдено.")
+            return
+        reply = QMessageBox.question(self, "Удалить нерабочие",
+            f"Найдено {dead_count} нерабочих прокси (TCP или Deep-тест не пройден).\nУдалить их из таблицы?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        before = len(proxies)
+        proxies[:] = [p for p in proxies if p.tcp_ok is not False and p.deep_ok is not False]
+        self.proxy_model.beginResetModel()
+        self.proxy_model.endResetModel()
+        removed = before - len(proxies)
+        self._log(f"🗑 Удалено нерабочих: {removed}")
+        self._update_stats()
+
+    # ─── SAVE ───
+
+    def _on_save(self):
+        proxies = self.proxy_model.proxies
+        if not proxies:
+            QMessageBox.information(self, "Нет данных", "Нет прокси для сохранения.")
+            return
+
+        working = [p for p in proxies if p.deep_ok is True or p.tcp_ok is True]
+        deep_ok = [p for p in proxies if p.deep_ok is True]
+        tcp_ok = [p for p in proxies if p.tcp_ok is True and p.deep_ok is not True]
+        sni_ok = [p for p in proxies if p.sni_good]
+
+        os.makedirs(OUT_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        files = []
+
+        def save(name, data):
+            path = os.path.join(OUT_DIR, name)
+            with open(path, "w") as f:
+                f.write("\n".join(p.uri for p in data) + "\n")
+            files.append((name, len(data)))
+
+        # Simple formats
+        if deep_ok:
+            save(f"DEEP_WORKING_{ts}.txt", deep_ok)
+        if working:
+            save(f"WORKING_{ts}.txt", working)
+        save(f"ALL_{ts}.txt", proxies)
+        if sni_ok:
+            save(f"SNI_{ts}.txt", sni_ok)
+
+        for proto in ['vless', 'vmess', 'trojan', 'ss', 'hy2']:
+            pp = [p for p in proxies if p.protocol == proto]
+            if pp: save(f"{proto.upper()}_{ts}.txt", pp)
+
+        # Multi-format export
+        if deep_ok:
+            save(f"CLASH_{ts}.yaml", [])
+            with open(os.path.join(OUT_DIR, f"CLASH_{ts}.yaml"), "w") as f:
+                f.write(format_clash(deep_ok))
+            files.append((f"CLASH_{ts}.yaml", len(deep_ok)))
+
+            save(f"SINGBOX_{ts}.json", [])
+            with open(os.path.join(OUT_DIR, f"SINGBOX_{ts}.json"), "w") as f:
+                f.write(format_singbox(deep_ok))
+            files.append((f"SINGBOX_{ts}.json", len(deep_ok)))
+
+            save(f"V2RAYN_{ts}.txt", [])
+            with open(os.path.join(OUT_DIR, f"V2RAYN_{ts}.txt"), "w") as f:
+                f.write(format_v2rayn(deep_ok))
+            files.append((f"V2RAYN_{ts}.txt", len(deep_ok)))
+
+        # latest subscription (base64 v2rayN)
+        if working:
+            try:
+                with open(os.path.join(OUT_DIR, "latest.txt"), "w") as f:
+                    f.write(format_v2rayn(working))
+            except Exception:
+                pass
+
+            # Hiddify-совместимый plain text (не base64) с заголовками
+            try:
+                plain_lines = [
+                    "#profile-title: skitchen VPN",
+                    "#profile-update-interval: 1",
+                    "",
+                ]
+                for p in working:
+                    plain_lines.append(p.uri)
+                with open(os.path.join(OUT_DIR, "hiddify_sub.txt"), "w") as f:
+                    f.write("\n".join(plain_lines))
+            except Exception:
+                pass
+
+            # Sing-box JSON с встроенным bypass для локальных сетей
+            try:
+                sb = json.loads(format_singbox(working))
+                sb.setdefault("route", {}).setdefault("rules", [])
+                direct_tag = "direct"
+                for o in sb.get("outbounds", []):
+                    if o.get("type") == "direct":
+                        direct_tag = o.get("tag", "direct")
+                bypass = {"ip_cidr": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"], "outbound": direct_tag}
+                sb["route"]["rules"].insert(0, bypass)
+                with open(os.path.join(OUT_DIR, "hiddify_config.json"), "w") as f:
+                    json.dump(sb, f, indent=2)
+            except Exception:
+                pass
+
+        msg = "✅ Сохранено:\n" + "\n".join(f"  • {n} — {c} прокси" for n, c in files)
+        QMessageBox.information(self, "Сохранено", msg)
+        self._log(f"\n{msg}")
+
+        if self._http_server_proc is not None:
+            self._stop_http_server()
+            self._start_http_server()
+            self._log("  ↻ HTTP-сервер обновлён")
+
+    def _on_save_desktop(self):
+        proxies = self.proxy_model.proxies
+        working = [p for p in proxies if p.deep_ok is True or p.tcp_ok is True]
+        if not working:
+            QMessageBox.information(self, "Нет рабочих", "Нет проверенных прокси для сохранения.\nСначала запусти тест.")
+            return
+        working = [p for p in working if is_safe_proxy(p.uri)]
+        if not working:
+            QMessageBox.information(self, "Нет подходящих", "Все проверенные прокси используют REALITY или xtls-rprx.\nОни несовместимы с текущей версией Hiddify.")
+            return
+        os.makedirs(DESKTOP_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(DESKTOP_DIR, f"subscription_{ts}.txt")
+        plain_lines = [
+            "#profile-title: skitchen VPN",
+            "#profile-update-interval: 1",
+            "",
+        ]
+        for p in working:
+            plain_lines.append(p.uri)
+        with open(path, "w") as f:
+            f.write("\n".join(plain_lines) + "\n")
+
+        # Sing-box JSON (родной формат Hiddify)
+        sb_path = os.path.join(DESKTOP_DIR, f"singbox_{ts}.json")
+        try:
+            sb = {"outbounds": json.loads(format_singbox(working))}
+            with open(sb_path, "w") as f:
+                json.dump(sb, f, indent=2, ensure_ascii=False)
+        except Exception:
+            sb_path = None
+
+        self._log(f"🖥 Подписка сохранена: {path} ({len(working)} прокси)")
+        parts = [f"📄 {path} (plain text)"]
+        if sb_path: parts.append(f"📄 {sb_path} (sing-box JSON)")
+        msg = "\n".join(parts)
+        QMessageBox.information(self, "Сохранено",
+            f"Подписка сохранена:\n\n{msg}\n\n"
+            f"{len(working)} рабочих прокси.\n\n"
+            f"📱 Импорт в Hiddify:\n"
+            f"1. Открой Hiddify → «+» → «Импорт из файла»\n"
+            f"2. Выбери {sb_path or path}\n"
+            f"3. Sing-box JSON работает точнее — это родной формат Hiddify.\n"
+            f"   Если plain text не сработал, попробуй JSON.")
+
+    # ─── HTTP SERVER ───
+
+    def _on_toggle_server(self, checked: bool):
+        if checked: self._start_http_server()
+        else: self._stop_http_server()
+
+    def _start_http_server(self):
+        import subprocess
+        if self._http_server_proc is not None: return
+        try:
+            self._http_server_proc = subprocess.Popen(
+                ["python3", "-m", "http.server", str(self._http_port), "--bind", "0.0.0.0", "-d", OUT_DIR],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            import socket
+            host_ip = socket.gethostbyname(socket.gethostname())
+            self._log(f"🌐 HTTP: http://127.0.0.1:{self._http_port}/latest.txt (base64 v2rayN)")
+            self._log(f"🌐 HTTP: http://127.0.0.1:{self._http_port}/hiddify_sub.txt (plain text, для Hiddify)")
+            self._log(f"🌐 HTTP: http://{host_ip}:{self._http_port}/hiddify_sub.txt (локальная сеть)")
+
+            # Пробуем безопасно добавить bypass в current-config.json (если Hiddify не запущен или перезапущен)
+            try:
+                hconf = os.path.expanduser("~/.local/share/hiddify/data/current-config.json")
+                if os.path.exists(hconf):
+                    with open(hconf) as _f:
+                        _d = json.load(_f)
+                    _rules = _d.setdefault("route", {}).setdefault("rules", [])
+                    _has = any("127.0.0.0/8" in str(r.get("ip_cidr", [])) for r in _rules)
+                    if not _has:
+                        _dtag = "direct"
+                        for _o in _d.get("outbounds", []):
+                            if "direct" in _o.get("tag", "").lower():
+                                _dtag = _o["tag"]
+                        _rules.insert(0, {"ip_cidr": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"], "outbound": _dtag})
+                        _d["route"]["rules"] = _rules
+                        with open(hconf, "w") as _f:
+                            json.dump(_d, _f, indent=2)
+                        self._log("  ✓ Bypass 127.0.0.0/8 добавлен в current-config.json")
+                    else:
+                        self._log("  ✓ Bypass уже есть в current-config.json")
+            except Exception as _e:
+                self._log(f"  ℹ Не удалось проверить/добавить bypass: {_e}")
+
+            self.sb_label.setText(f"HTTP: http://127.0.0.1:{self._http_port}")
+        except Exception as e:
+            self._log(f"✗ HTTP server error: {e}")
+            self.btn_serve.setChecked(False)
+
+    def _stop_http_server(self):
+        if self._http_server_proc is not None:
+            self._http_server_proc.terminate()
+            self._http_server_proc.wait(2)
+            self._http_server_proc = None
+            self._log("🌐 HTTP-сервер остановлен")
+            self.sb_label.setText("Готов")
+
+    def _on_copy_url(self):
+        import socket
+        try:
+            host_ip = socket.gethostbyname(socket.gethostname())
+            url = f"http://{host_ip}:{self._http_port}/latest.txt"
+        except Exception:
+            url = f"http://127.0.0.1:{self._http_port}/latest.txt"
+        clipboard = QApplication.clipboard()
+        clipboard.setText(url)
+        self._log(f"📋 URL скопирован: {url}")
+
+    # ─── STATS ───
+
+    def _on_show_stats(self):
+        proxies = self.proxy_model.proxies
+        if not proxies: return
+
+        proto_counter = Counter(p.protocol for p in proxies)
+        country_counter = Counter(p.country for p in proxies if p.country)
+        tcp_ok = sum(1 for p in proxies if p.tcp_ok is True)
+        deep_ok = sum(1 for p in proxies if p.deep_ok is True)
+        sni_ok = sum(1 for p in proxies if p.sni_good)
+
+        latencies = [p.latency_ms for p in proxies if p.latency_ms is not None]
+        avg_lat = sum(latencies) / len(latencies) if latencies else 0
+
+        # Latency histogram
+        hist_buckets = {"<100ms": 0, "100-200ms": 0, "200-500ms": 0, "500ms+": 0}
+        for l in latencies:
+            if l < 100: hist_buckets["<100ms"] += 1
+            elif l < 200: hist_buckets["100-200ms"] += 1
+            elif l < 500: hist_buckets["200-500ms"] += 1
+            else: hist_buckets["500ms+"] += 1
+
+        d = QDialog(self)
+        d.setWindowTitle("📊 Статистика")
+        d.setMinimumSize(600, 500)
+        l = QVBoxLayout(d)
+
+        lines = [
+            f"┌─{'─'*40}─┐",
+            f"│  ОБЩАЯ СТАТИСТИКА",
+            f"├─{'─'*40}─┤",
+            f"│  Всего прокси:      {len(proxies)}",
+            f"│  TCP OK:            {tcp_ok}",
+            f"│  Deep OK:           {deep_ok}",
+            f"│  SNI-фильтр:        {sni_ok}",
+            f"│  Средняя задержка:  {avg_lat:.0f}ms",
+            f"├─{'─'*40}─┤",
+            f"│  ПО ПРОТОКОЛАМ",
+        ]
+        for proto, count in proto_counter.most_common():
+            lines.append(f"│    {proto:10s}: {count}")
+        lines.append(f"├─{'─'*40}─┤")
+        lines.append(f"│  ПО СТРАНАМ (топ-10)")
+        for country, count in country_counter.most_common(10):
+            lines.append(f"│    {country:15s}: {count}")
+        lines.append(f"├─{'─'*40}─┤")
+        lines.append(f"│  ГИСТОГРАММА ЗАДЕРЖЕК")
+        for bucket, count in hist_buckets.items():
+            bar = "█" * min(count, 30) + (f" ({count})" if count > 0 else "")
+            lines.append(f"│    {bucket:15s}: {bar}")
+        lines.append(f"└─{'─'*40}─┘")
+
+        t = QTextEdit()
+        t.setReadOnly(True)
+        t.setFont(QFont("monospace", 10))
+        t.setText("\n".join(lines))
+        l.addWidget(t)
+
+        b = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        b.rejected.connect(d.reject)
+        l.addWidget(b)
+        d.exec_()
+
+    # ─── SOURCE MANAGEMENT ───
+
+    def _on_add_gh_keyword(self):
+        text = self.gh_keyword.text().strip()
+        if not text:
+            return
+        if text in self.gh_selected_keywords:
+            self.gh_keyword.clear()
+            return
+        self.gh_selected_keywords.add(text)
+        btn = QPushButton(text)
+        btn.setCheckable(True)
+        btn.setChecked(True)
+        btn.setFixedHeight(24)
+        btn.setStyleSheet(
+            "QPushButton { font-size: 9px; padding: 2px 6px; border: 1px solid #6a6a6a; border-radius: 3px; background: #4a4a4a; color: #ddd; font-weight: bold; }"
+            "QPushButton:checked { background: #2e7d32; color: #fff; border-color: #a5d6a7; }"
+            "QPushButton:hover { background: #66bb6a; border-color: #a5d6a7; color: #fff; }"
+        )
+        btn.toggled.connect(lambda checked, k=text, b=btn: self._on_gh_kw_toggle(k, b, checked))
+        self.gh_kw_buttons.append((text, btn))
+        idx = len(self.gh_kw_buttons) - 1
+        self.gh_kw_grid.addWidget(btn, idx // 4, idx % 4)
+        self.gh_keyword.clear()
+        self.gh_keyword.setFocus()
+
+    def _on_gh_kw_toggle(self, keyword, btn, checked):
+        if checked:
+            self.gh_selected_keywords.add(keyword)
+        else:
+            self.gh_selected_keywords.discard(keyword)
+
+    def _on_add_source(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Добавить источник")
+        layout = QFormLayout(dialog)
+        ne = QLineEdit()
+        ue = QLineEdit()
+        layout.addRow("Название:", ne)
+        layout.addRow("URL подписки:", ue)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        layout.addRow(bb)
+        bb.accepted.connect(dialog.accept)
+        bb.rejected.connect(dialog.reject)
+        if dialog.exec_() == _Accepted:
+            name = ne.text().strip()
+            url = ue.text().strip()
+            if name and url:
+                self.sources.append((name, url, True))
+                item = QTreeWidgetItem()
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(0, Qt.CheckState.Checked)
+                item.setText(1, name)
+                item.setText(2, "⏳")
+                item.setData(1, Qt.ItemDataRole.UserRole, url)
+                self.src_list.addTopLevelItem(item)
+
+    def _on_remove_source(self):
+        # Сначала пробуем выбранные (selected), если нет — отмеченные галочкой (checked)
+        selected = self.src_list.selectedItems()
+        if not selected:
+            # Берём все checked-элементы
+            selected = [
+                self.src_list.topLevelItem(i)
+                for i in range(self.src_list.topLevelItemCount())
+                if self.src_list.topLevelItem(i).checkState(0) == Qt.CheckState.Checked
+            ]
+        if not selected:
+            QMessageBox.information(self, "Удаление", "Выбери или отметь источник для удаления.")
+            return
+        # Удаляем с конца к началу, чтобы индексы не сдвигались
+        for item in sorted(selected, key=lambda i: self.src_list.indexOfTopLevelItem(i), reverse=True):
+            name = item.text(1)
+            self.sources = [(n, u, e) for n, u, e in self.sources if n != name]
+            idx = self.src_list.indexOfTopLevelItem(item)
+            if idx >= 0:
+                self.src_list.takeTopLevelItem(idx)
+
+    def _toggle_keyword(self, kw: str):
+        words = self.gh_keyword.text().split()
+        if kw in words:
+            words.remove(kw)
+        else:
+            words.append(kw)
+        self.gh_keyword.setText(" ".join(words))
+
+    def _on_github_search(self):
+        keywords = list(self.gh_selected_keywords)
+        if not keywords:
+            QMessageBox.warning(self, "Ключевые слова", "Выбери хотя бы одно ключевое слово.")
+            return
+        self._save_proxy_settings()
+        gh_tokens = _auth_data.get("github_tokens", [])
+        if not gh_tokens:
+            QMessageBox.information(self, "GitHub токен",
+                "GitHub API без токена — лимит 60 запросов/час.\n"
+                "Поиск может быстро остановиться из-за лимита.\n"
+                "Добавь токен в Settings → GitHub API → Token для нормальной работы.")
+        self.gh_search_log.clear()
+        self.gh_search_log.append("▶ Запуск поиска на GitHub...")
+        period_map = {
+            "25 мин": 25/1440, "1 час": 1/24, "2 ч": 2/24, "4 ч": 4/24,
+            "6 ч": 6/24, "8 ч": 8/24, "10 ч": 10/24, "12 ч": 12/24,
+            "14 ч": 14/24, "16 ч": 16/24, "18 ч": 18/24, "20 ч": 20/24,
+            "22 ч": 22/24, "24 ч": 1,
+            "1 день": 1, "2 дня": 2, "3 дня": 3, "4 дня": 4,
+            "5 дней": 5, "6 дней": 6, "7 дней": 7,
+        }
+        time_days = period_map.get(self.gh_period_combo.currentText(), 1)
+        range_txt = self.gh_period_combo.currentText()
+        _debug(f"_on_github_search: keywords={keywords}, period={time_days}d")
+        self._log(f"▶ GitHub поиск: {len(keywords)} ключевых слов за {range_txt}")
+        self._log(f"▶ GitHub поиск: {len(keywords)} ключевых слов за {range_txt}")
+        self.sb_label.setText("Поиск на GitHub...")
+        self.gh_count_label.setText("0")
+        self.btn_github_search.setEnabled(False)
+        self._set_busy(True, "gh_search")
+
+        self._gh_thread = QThread()
+        self._gh_thread.setObjectName("gh_search_thread")
+        known_urls = set(u for _,u,_ in self.sources)
+        cfg = PERF_PRESETS.get(self._settings.get("perf_mode", "medium"))
+        self._gh_worker = GitHubSearchWorker(keywords, known_urls, time_filter_days=time_days, github_tokens=gh_tokens, max_repos=cfg["max_repos"], max_files=cfg["max_files"])
+        self._gh_worker.moveToThread(self._gh_thread)
+        self._gh_search_keywords = keywords  # сохраняем для _on_gh_result
+        self._gh_result_conn = self._gh_worker.result_signal.connect(self._on_gh_result, Qt.ConnectionType.QueuedConnection)
+        self._gh_worker.error_signal.connect(self._on_gh_search_error, Qt.ConnectionType.QueuedConnection)
+        self._gh_worker.progress_signal.connect(self._on_gh_progress, Qt.ConnectionType.QueuedConnection)
+        self._gh_worker.count_signal.connect(self.gh_count_label.setNum, Qt.ConnectionType.QueuedConnection)
+        self._gh_thread.started.connect(self._gh_worker.run, Qt.ConnectionType.DirectConnection)
+        _debug(f"  thread started, worker={id(self._gh_worker)}")
+        self._gh_thread.start()
+
+    def _cleanup_gh(self):
+        if self._gh_worker:
+            try:
+                self._gh_worker.result_signal.disconnect()
+            except Exception:
+                pass
+            try:
+                self._gh_worker.error_signal.disconnect()
+            except Exception:
+                pass
+            try:
+                self._gh_worker.progress_signal.disconnect()
+            except Exception:
+                pass
+            self._gh_worker.deleteLater()
+        if self._gh_thread:
+            self._kill_thread(self._gh_thread, "gh")
+            self._gh_thread.deleteLater()
+            self._gh_thread = None
+        self._gh_worker = None
+
+    def _on_gh_result(self, found: list):
+        kw_str = ", ".join(getattr(self, '_gh_search_keywords', ['?']))
+        _debug(f"_on_gh_result: keywords={kw_str}, found={len(found) if found else 0}")
+        self._on_gh_search_done(kw_str, found)
+
+    def _on_gh_progress(self, msg: str):
+        self.sb_label.setText(msg)
+        self.gh_search_log.append(msg)
+        sb = self.gh_search_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_gh_search_error(self, err: str):
+        _debug(f"_on_gh_search_error: {err}")
+        self._cleanup_gh()
+        self._log(f"  ✗ [search] {err}")
+        self.btn_github_search.setEnabled(True)
+        self._set_busy(False)
+        self.sb_label.setText("Ошибка")
+        QMessageBox.warning(self, "Ошибка поиска GitHub",
+            f"GitHub API не отвечает.\n{err}\n\nВозможно, превышен лимит запросов (без токена — 60/час).\nДобавь GitHub Personal Access Token в Settings → GitHub API.")
+
+    def _on_gh_search_done(self, keyword: str, found: list[dict]):
+        _debug(f"_on_gh_search_done: kw={keyword}, found={len(found) if found else 0}")
+        try:
+            self._on_gh_search_done_impl(keyword, found)
+        except Exception as e:
+            _crash_log()
+            self._log(f"  ✗ [search] Ошибка: {e}")
+            import traceback
+            self._log(traceback.format_exc())
+            self.btn_github_search.setEnabled(True)
+            self._set_busy(False)
+
+    def _on_gh_search_done_impl(self, keyword: str, found: list[dict]):
+        _debug("_on_gh_search_done_impl: start")
+        _debug("  enabling btn_github_search")
+        self.btn_github_search.setEnabled(True)
+        _debug("  calling _set_busy(False)")
+        self._set_busy(False)
+        _debug("  set_busy done, sb_label")
+        self.sb_label.setText("Готов")
+        _debug("  sb_label done")
+
+        if not found:
+            _debug("  not found, showing dialog")
+            QMessageBox.information(self, "Поиск", "Ничего не найдено.\nПопробуй другие слова: vless, v2ray, proxy, subscription, vpn-configs.")
+            _debug("  dialog closed, cleanup")
+            self._log("  Ничего не найдено.")
+            self._cleanup_gh()
+            _debug("  cleanup done")
+            return
+
+        now = datetime.now().timestamp()
+        period_map = {
+            "25 мин": 25/1440, "1 час": 1/24, "2 ч": 2/24, "4 ч": 4/24,
+            "6 ч": 6/24, "8 ч": 8/24, "10 ч": 10/24, "12 ч": 12/24,
+            "14 ч": 14/24, "16 ч": 16/24, "18 ч": 18/24, "20 ч": 20/24,
+            "22 ч": 22/24, "24 ч": 1,
+            "1 день": 1, "2 дня": 2, "3 дня": 3, "4 дня": 4,
+            "5 дней": 5, "6 дней": 6, "7 дней": 7,
+        }
+        time_days = period_map.get(self.gh_period_combo.currentText(), 1)
+        recent_threshold = time_days * 86400
+        new_sources = []
+        for item in found:
+            try:
+                uts = datetime.strptime(item["updated"].replace("Z","+00:00")[:19],"%Y-%m-%dT%H:%M:%S").timestamp()
+                recent = (now - uts) < recent_threshold
+            except:
+                recent = False
+            new_sources.append({
+                "name": item["name"],
+                "file_url": item["file_url"],
+                "repo_url": item["repo_url"],
+                "updated": item["updated"],
+                "stars": item["stars"],
+                "is_recent": recent,
+                "size": item.get("size", 0),
+            })
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Найдено {len(new_sources)} файлов подписок на GitHub")
+        dialog.setMinimumSize(800, 500)
+        layout = QVBoxLayout(dialog)
+
+        info = QLabel(f"По запросу «{keyword}». Свежие выделены зелёным. 📦 = вложенные ссылки (найдены внутри файлов). OK → добавить в источники.")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        tree = QTreeWidget()
+        tree.setHeaderLabels(["", "Название", "URL", "Обновлён", "⭐"])
+        tree.setColumnWidth(0, 30)
+        tree.setColumnWidth(1, 280)
+        tree.setColumnWidth(2, 350)
+        tree.setColumnWidth(3, 140)
+        tree.setRootIsDecorated(False)
+
+        recent_c = 0
+        for s in new_sources:
+            item = QTreeWidgetItem()
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked if s["is_recent"] else Qt.CheckState.Unchecked)
+            item.setText(1, s["name"])
+            item.setText(2, s["file_url"])
+            item.setText(3, s["updated"][:19])
+            item.setText(4, str(s["stars"]))
+            item.setData(1, Qt.ItemDataRole.UserRole, s)
+            if s["is_recent"]:
+                recent_c += 1
+                for c in range(5): item.setBackground(c, QBrush(QColor("#e8f5e9")))
+            tree.addTopLevelItem(item)
+
+        layout.addWidget(tree)
+
+        # Кнопки выбора
+        btn_row = QHBoxLayout()
+        btn_recent = QPushButton(f"✓ Свежие ({recent_c})")
+        btn_recent.setToolTip("Отметить только обновлённые за последние 6 часов")
+        btn_all = QPushButton("✓ Все")
+        btn_all.setToolTip("Отметить все найденные источники")
+        btn_none = QPushButton("✗ Снять")
+        btn_none.setToolTip("Снять отметки со всех")
+
+        def sr():
+            for i in range(tree.topLevelItemCount()):
+                it = tree.topLevelItem(i)
+                it.setCheckState(0, Qt.CheckState.Checked if it.data(1, Qt.ItemDataRole.UserRole)["is_recent"] else Qt.CheckState.Unchecked)
+        def sa():
+            for i in range(tree.topLevelItemCount()):
+                tree.topLevelItem(i).setCheckState(0, Qt.CheckState.Checked)
+        def sn():
+            for i in range(tree.topLevelItemCount()):
+                tree.topLevelItem(i).setCheckState(0, Qt.CheckState.Unchecked)
+
+        btn_recent.clicked.connect(sr)
+        btn_all.clicked.connect(sa)
+        btn_none.clicked.connect(sn)
+        btn_row.addWidget(btn_recent)
+        btn_row.addWidget(btn_all)
+        btn_row.addWidget(btn_none)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        layout.addWidget(bb)
+        added = []
+
+        def on_ok():
+            _debug("  on_ok: start")
+            for i in range(tree.topLevelItemCount()):
+                it = tree.topLevelItem(i)
+                if it.checkState(0) == Qt.CheckState.Checked:
+                    d = it.data(1, Qt.ItemDataRole.UserRole)
+                    _debug(f"  on_ok: checked #{i} {d.get('name','?') if isinstance(d,dict) else type(d).__name__}")
+                    added.append(d)
+            _debug(f"  on_ok: total checked={len(added)}")
+            QTimer.singleShot(0, dialog.accept)
+            _debug("  on_ok: scheduled accept via timer")
+
+        bb.accepted.connect(on_ok)
+        bb.rejected.connect(dialog.reject)
+
+        _debug("_on_gh_search_done_impl: showing dialog")
+        try:
+            result = dialog.exec_()
+        except Exception as e:
+            _crash_log(f"dialog.exec_() exception: {e}")
+            import traceback
+            _crash_log(traceback.format_exc())
+            self._log(f"  ✗ dialog.exec_() error: {e}")
+            self.sb_label.setText("Ошибка диалога")
+            self.btn_github_search.setEnabled(True)
+            self._set_busy(False)
+            self._cleanup_gh()
+            return
+        _debug(f"_on_gh_search_done_impl: dialog.exec_() returned {result}")
+        if result == _Accepted:
+            _debug(f"_on_gh_search_done_impl: dialog accepted, added={len(added)}")
+            count = 0
+            known = set(n for n,_,_ in self.sources)
+            for s in added:
+                if not isinstance(s, dict) or "name" not in s:
+                    continue
+                if s["name"] not in known:
+                    known.add(s["name"])
+                    try:
+                        self.sources.append((s["name"], s["file_url"], True))
+                        item = QTreeWidgetItem()
+                        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        item.setCheckState(0, Qt.CheckState.Checked)
+                        item.setText(1, s["name"])
+                        item.setText(2, "⏳")
+                        item.setData(1, Qt.ItemDataRole.UserRole, s["file_url"])
+                        self.src_list.addTopLevelItem(item)
+                        count += 1
+                    except Exception as e:
+                        self._log(f"  ✗ ошибка добавления {s.get('name','?')}: {e}")
+            self._log(f"  ✓ Добавлено {count} новых источников")
+            if count:
+                self._settings["sources"] = [(n, u, e) for n, u, e in self.sources]
+                _save_settings(self._settings)
+                _debug(f"_on_gh_search_done_impl: showing info dialog, count={count}")
+                QMessageBox.information(self, "Готово", f"Добавлено {count} источников.\nНажми «⬇ Загрузить» чтобы получить прокси.")
+        _debug("_on_gh_search_done_impl: cleanup")
+        self._cleanup_gh()
+        _debug("_on_gh_search_done_impl: end")
+
+
+class _ProxyTestWorker(QObject):
+    result_signal = Signal(bool, float, str)  # ok, ms, error
+
+    def __init__(self, host, port, ptype):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.ptype = ptype
+
+    @Slot()
+    def run(self):
+        try:
+            start = time.time()
+            if self.ptype == "socks5":
+                s = socks.socksocket()
+                s.set_proxy(socks.SOCKS5, self.host, int(self.port))
+                s.settimeout(5)
+                s.connect(("example.com", 80))
+                s.sendall(b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+                s.recv(1024)
+                s.close()
+            else:
+                purl = f"http://{self.host}:{self.port}"
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({"http": purl, "https": purl})
+                )
+                with opener.open("http://example.com", timeout=5):
+                    pass
+            ms = (time.time() - start) * 1000
+            self.result_signal.emit(True, ms, "")
+        except Exception as e:
+            self.result_signal.emit(False, 0, str(e)[:80])
+
+
+class GitHubSearchWorker(QObject):
+    result_signal = Signal(list)
+    error_signal = Signal(str)
+    progress_signal = Signal(str)
+    count_signal = Signal(int)
+
+    def __init__(self, keywords: list[str], known_sources: list[str], time_filter_days: int = 0, github_tokens: list[str] | None = None, scanned_repos: set | None = None, max_repos: int = 12, max_files: int = 50):
+        super().__init__()
+        self.keywords = keywords
+        self.known = set(known_sources)
+        self.time_filter_days = time_filter_days
+        self.github_tokens = github_tokens or []
+        self.scanned = scanned_repos or set()
+        self.newly_scanned: list[str] = []
+        self.max_repos = max_repos
+        self.max_files = max_files
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+        socket.setdefaulttimeout(0.5)
+
+    @Slot()
+    def run(self):
+        try:
+            results = []
+            seen = set()
+            tokens = list(self.github_tokens)  # копия, будем перебирать
+            tokens.append("")  # пустой = без токена (60 req/h)
+
+            _proxies = {"http": "http://127.0.0.1:12334", "https": "http://127.0.0.1:12334"}
+            _http_fb = urllib.request.build_opener(urllib.request.ProxyHandler(_proxies))
+
+            def _api(url, timeout=5):
+                attempts = [
+                    ("fallback http proxy", _http_fb),
+                ]
+                s = _load_settings()
+                if s.get("proxy_enabled"):
+                    ptype = s.get("proxy_type", "http")
+                    host = s.get("proxy_host", "127.0.0.1")
+                    port = s.get("proxy_port", 12334)
+                    if ptype == "socks5":
+                        class _SocksOpener(urllib.request.HTTPHandler):
+                            def http_open(self, req):
+                                def build(host, port=None, timeout=0, **kwargs):
+                                    conn = socks.socksocket()
+                                    conn.set_proxy(socks.SOCKS5, host, port)
+                                    return conn
+                                return self.do_open(build, req)
+                        attempts.append(("socks5", urllib.request.build_opener(_SocksOpener())))
+                    else:
+                        url_p = f"http://{host}:{port}"
+                        attempts.append(("http proxy", urllib.request.build_opener(urllib.request.ProxyHandler({"http": url_p, "https": url_p}))))
+                base_agent = {"User-Agent":"proxy-fetcher/1.0","Accept":"application/vnd.github.v3+json"}
+                agent = dict(base_agent)
+                for ti, token in enumerate(tokens):
+                    agent = dict(base_agent)
+                    if token:
+                        agent["Authorization"] = f"token {token}"
+                    ok = False
+                    for label, opener in attempts:
+                        if self._stop: return None
+                        req = urllib.request.Request(url, headers=agent)
+                        try:
+                            with opener.open(req, timeout=timeout) as resp:
+                                return resp.read()
+                        except urllib.error.HTTPError as e:
+                            body = e.read().decode("utf-8", errors="replace")[:200]
+                            if e.code in (401, 403):
+                                if ti < len(tokens) - 1:
+                                    self.progress_signal.emit(f"↻ Токен #{ti+1} ошибка {e.code}, пробую следующий...")
+                                    ok = True
+                                    break  # перейти к следующему токену
+                            self.progress_signal.emit(f"⚠️ {label}: HTTP {e.code} — {body}")
+                            continue
+                        except Exception:
+                            continue
+                    if ok:
+                        continue  # токен не сработал, пробуем следующий
+                    # Прокси не сработали — пробуем прямой запрос с этим же токеном
+                    if not self._stop:
+                        try:
+                            req = urllib.request.Request(url, headers=agent)
+                            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                                return resp.read()
+                        except urllib.error.HTTPError as e:
+                            body = e.read().decode("utf-8", errors="replace")[:200]
+                            if e.code in (401, 403) and ti < len(tokens) - 1:
+                                self.progress_signal.emit(f"↻ Токен #{ti+1} ошибка {e.code} (direct), пробую следующий...")
+                                ok = True
+                                continue
+                            self.progress_signal.emit(f"⚠️ direct (токен #{ti+1}): HTTP {e.code} — {body}")
+                            return None
+                        except Exception as e:
+                            self.progress_signal.emit(f"⚠️ direct (токен #{ti+1}): {type(e).__name__} — {e}")
+                            return None
+                return None
+
+            if self.time_filter_days > 0:
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                time_qual = f" pushed:>{cutoff}"
+            else:
+                time_qual = ""
+
+            all_repos = []
+            for kw in self.keywords:
+                if self._stop:
+                    break
+                self.progress_signal.emit(f"🔍 Поиск по запросу: {kw}")
+                try:
+                    q = urllib.parse.quote(f"{kw}{time_qual}")
+                    url = f"https://api.github.com/search/repositories?q={q}&sort=updated&per_page=15"
+                    self.progress_signal.emit(f"  URL: {url}")
+                    data = _api(url, timeout=8)
+                    if data is None:
+                        self.progress_signal.emit(f"⚠️ GitHub API недоступен для «{kw}»")
+                        continue
+                    repos = json.loads(data).get("items", [])
+                    self.progress_signal.emit(f"📦 Запрос «{kw}»: {len(repos)} репозиториев")
+                    all_repos.extend(repos)
+                except Exception as e:
+                    self.progress_signal.emit(f"❌ Ошибка для «{kw}»: {e}")
+                    continue
+
+            # Дедупликация репозиториев по full_name
+            seen_repos = set()
+            unique_repos = []
+            for repo in all_repos:
+                full = repo.get("full_name", "")
+                if full not in seen_repos:
+                    seen_repos.add(full)
+                    unique_repos.append(repo)
+
+            self.progress_signal.emit(f"📊 Найдено уникальных репозиториев: {len(unique_repos)}")
+
+            for idx, repo in enumerate(unique_repos):
+                if self._stop: break
+                if idx >= self.max_repos: break
+
+                full = repo.get("full_name", "")
+                branch = repo.get("default_branch", "main")
+                updated = repo.get("updated_at", "")
+                stars = repo.get("stargazers_count", 0)
+                repo_url = repo.get("html_url", "")
+                if repo_url in self.known or full in self.known:
+                    self.progress_signal.emit(f"⏭ Пропуск {full} (уже в источниках)")
+                    continue
+                if full in self.scanned:
+                    self.progress_signal.emit(f"⏭ Пропуск {full} (уже просканирован)")
+                    continue
+                self.newly_scanned.append(full)
+
+                self.progress_signal.emit(f"📂 {full} ({stars}⭐)...")
+                file_count = 0
+
+                def _walk(api_url, rel_prefix, current_branch):
+                    nonlocal file_count
+                    if file_count >= self.max_files:
+                        return
+                    d = _api(api_url, timeout=5)
+                    if not d:
+                        self.progress_signal.emit(f"  ⚠️ Не удалось получить содержимое {api_url[:60]}...")
+                        return
+                    try:
+                        entries = json.loads(d)
+                        if not isinstance(entries, list):
+                            self.progress_signal.emit(f"  ⚠️ Неожиданный формат ответа от GitHub API")
+                            return
+                    except Exception as e:
+                        self.progress_signal.emit(f"  ⚠️ Ошибка парсинга: {e}")
+                        return
+                    for entry in entries:
+                        if self._stop or file_count >= self.max_files: break
+                        if entry.get("type") == "dir":
+                            sub = entry['name']
+                            _walk(entry.get("url", ""), f"{rel_prefix}/{sub}" if rel_prefix else sub, current_branch)
+                        elif entry.get("type") != "file":
+                            continue
+                        else:
+                            fname = entry.get("name", "")
+                            fext = fname.lower().rsplit('.', 1)[-1] if '.' in fname else ''
+                            if fext not in ('txt', 'yaml', 'yml', 'json', 'conf', 'cfg', 'ini', 'list',
+                                            'sub', 'sublist', 'uri', 'urls', 'proxy', 'config', 'node', ''):
+                                continue
+                            fname_lower = fname.lower()
+                            skip_prefixes = ('readme', 'license', 'changelog', 'changes', 'todo', 'requirements', 'contributing')
+                            skip_names = {'readme.txt', 'license.txt', 'changelog.txt', 'todo.txt', 'requirements.txt',
+                                          'readme.md', 'license', 'changelog.md', 'contributing.md'}
+                            if fname_lower in skip_names or any(fname_lower.startswith(p) for p in skip_prefixes):
+                                continue
+
+                            if fext in ('yml', 'yaml') and rel_prefix and '.github' in rel_prefix:
+                                self.progress_signal.emit(f"  ⏭ {fname} — CI/workflow файл")
+                                continue
+
+                            path_parts = [full, current_branch]
+                            if rel_prefix:
+                                path_parts.append(rel_prefix)
+                            path_parts.append(fname)
+                            raw = "https://raw.githubusercontent.com/" + "/".join(path_parts)
+                            if raw in seen: continue
+                            if raw in self.known:
+                                self.progress_signal.emit(f"  ⏭ {fname} (уже в источниках)")
+                                continue
+
+                            fsize = entry.get("size", 0)
+                            if fsize < 20 or fsize > 5242880:
+                                self.progress_signal.emit(f"  ⏭ Пропуск {fname} (размер: {fsize})")
+                                continue
+
+                            full_path = f"{full}/{rel_prefix}/{fname}" if rel_prefix else f"{full}/{fname}"
+                            self.progress_signal.emit(f"📄 {full_path} ({fsize} bytes)...")
+                            # Используем API вместо raw.githubusercontent.com (SSL проблемы)
+                            api_file_url = entry.get("url", "")
+                            content = _api(api_file_url, timeout=10)
+                            if not content:
+                                self.progress_signal.emit(f"  ⚠️ Не удалось скачать {raw[:80]}...")
+                                continue
+                            text = ""
+                            try:
+                                fj = json.loads(content)
+                                if "content" in fj:
+                                    text = base64.b64decode(fj["content"]).decode("utf-8", errors="replace")[:500000]
+                                else:
+                                    text = content.decode("utf-8", errors="replace")[:500000]
+                            except Exception:
+                                text = content.decode("utf-8", errors="replace")[:500000]
+                            has_proxy = bool(re.search(r'(?:vless|vmess|trojan|ss|hysteria2?|hy2|tuic|socks4|socks5?)://', text, re.IGNORECASE))
+                            has_raw = 'raw.githubusercontent.com' in text or 'github.com' in text
+                            has_ipport = bool(re.search(r'(?:\d{1,3}\.){3}\d{1,3}:\d+', text)) or bool(re.search(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+', text, re.IGNORECASE))
+                            has_json_proxy = (text.strip().startswith('{') or text.strip().startswith('[')) and (
+                                bool(re.search(r'"(?:type|protocol)"\s*:\s*"(?:vless|vmess|trojan|ss|shadowsocks|hysteria|hy2|tuic|socks|http|wireguard)"', text, re.IGNORECASE)) or
+                                (bool(re.search(r'"(?:server|address|add)"\s*:\s*"[^"]+"', text)) and bool(re.search(r'"(?:port|server_port)"\s*:\s*\d+', text)))
+                            )
+                            if not has_proxy and not has_raw and not has_ipport and not has_json_proxy:
+                                self.progress_signal.emit(f"  ⏭ {fname} не содержит прокси или ссылок GitHub")
+                                continue
+                            seen.add(raw)
+                            file_count += 1
+                            self.progress_signal.emit(f"  ✓ Найден файл с прокси: {fname}")
+
+                            is_raw_list = has_raw and not has_proxy
+                            label = full_path
+                            results.append({
+                                "name": label,
+                                "file_url": raw,
+                                "repo_url": repo_url,
+                                "updated": updated,
+                                "stars": stars,
+                                "size": fsize,
+                            })
+                            self.count_signal.emit(len(results))
+
+                            if is_raw_list:
+                                for m in re.finditer(r'https://raw\.githubusercontent\.com/[^\s<>"\'\\]+\.txt', text):
+                                    if self._stop: break
+                                    eurl = m.group(0).rstrip("/.,;:!?)")
+                                    if eurl in seen: continue
+                                    seen.add(eurl)
+                                    eparts = eurl.replace("https://raw.githubusercontent.com/", "").split("/")
+                                    ename = f"📦 {full}/{fname} → {eparts[-1]}" if len(eparts) >= 3 else f"📦 {full}/{fname} → (url)"
+                                    results.append({
+                                        "name": ename,
+                                        "file_url": eurl,
+                                        "repo_url": repo_url,
+                                        "updated": updated,
+                                        "stars": stars,
+                                        "size": 0,
+                                        "embedded": True,
+                                    })
+
+                try:
+                    _walk(f"https://api.github.com/repos/{full}/contents?ref={branch}", "", branch)
+                except Exception:
+                    continue
+
+            results.sort(key=lambda r: r.get("embedded", False))
+            if self._stop:
+                self.progress_signal.emit(f"⏹ Поиск остановлен. Найдено: {len(results)}")
+            else:
+                self.progress_signal.emit(f"✅ Поиск завершён. Найдено: {len(results)}")
+            self.result_signal.emit(results)
+        except Exception as e:
+            import traceback
+            err = f"Критическая ошибка поиска: {e}\n{traceback.format_exc()}"
+            self.error_signal.emit(err)
+
+
+# ═══════════════════════════════════════════════════════════
+#  ЗАПУСК
+# ═══════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════
+#  ДИЗАЙН — HACKER STYLE 2026
+# ═══════════════════════════════════════════════════════════
+
+SOFT_DARK_STYLE = """
+/* ── Глобальный фон ── */
+QMainWindow, QWidget {
+    background-color: #2a2a2a;
+    color: #f0f0f0;
+    font-family: "Ubuntu", "Noto Sans", "Segoe UI", "Roboto", sans-serif;
+    font-size: 11px;
+}
+
+/* ── Табы ── */
+QTabWidget::pane {
+    border: 1px solid #555;
+    border-radius: 4px;
+    background-color: #2e2e2e;
+    top: -1px;
+}
+QTabBar::tab {
+    background-color: #2a2a2a;
+    color: #aaa;
+    border: 1px solid #555;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    padding: 6px 16px;
+    font-size: 11px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected {
+    background-color: #2e2e2e;
+    color: #a5d6a7;
+    border-color: #555;
+    font-weight: bold;
+}
+QTabBar::tab:hover {
+    background-color: #353535;
+    color: #fff;
+}
+
+/* ── Группы ── */
+QGroupBox {
+    background-color: #303030;
+    border: 1px solid #555;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding: 12px 8px 8px 8px;
+    font-weight: bold;
+    color: #f0f0f0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 1px 8px;
+    background-color: #303030;
+    border: 1px solid #555;
+    border-bottom: none;
+    border-radius: 3px 3px 0 0;
+    color: #a5d6a7;
+    font-size: 10px;
+}
+
+/* ── Кнопки ── */
+QPushButton {
+    background-color: #444;
+    color: #f0f0f0;
+    border: 1px solid #777;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 10px;
+    min-height: 24px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #66bb6a;
+    border: 1px solid #a5d6a7;
+    color: #fff;
+}
+QPushButton:pressed {
+    background-color: #43a047;
+    border: 1px solid #81c784;
+}
+QPushButton:disabled {
+    background-color: #333;
+    color: #666;
+    border: 1px solid #484848;
+}
+QPushButton:checked {
+    background-color: #2e7d32;
+    border: 1px solid #a5d6a7;
+    color: #fff;
+}
+
+/* Кнопка отмены */
+QPushButton#btn_cancel {
+    background-color: #5c0000;
+    color: #ff8a80;
+    border: 1px solid #b71c1c;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+QPushButton#btn_cancel:hover {
+    background-color: #8b0000;
+    color: #fff;
+    border: 1px solid #ff5252;
+}
+
+/* ── Поля ввода ── */
+QLineEdit, QSpinBox {
+    background-color: #222;
+    color: #f0f0f0;
+    border: 1px solid #666;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 10px;
+    selection-background-color: #4caf50;
+}
+QLineEdit:focus, QSpinBox:focus {
+    border: 1px solid #a5d6a7;
+    background-color: #252525;
+}
+QLineEdit::placeholder {
+    color: #666;
+}
+
+/* ── Выпадающие списки ── */
+QComboBox {
+    background-color: #222;
+    color: #f0f0f0;
+    border: 1px solid #666;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 10px;
+    min-height: 20px;
+}
+QComboBox:hover {
+    border: 1px solid #a5d6a7;
+    background-color: #2a2a2a;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 16px;
+}
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #a5d6a7;
+    margin-right: 4px;
+}
+QComboBox QAbstractItemView {
+    background-color: #222;
+    color: #f0f0f0;
+    border: 1px solid #a5d6a7;
+    selection-background-color: #4caf50;
+    selection-color: #fff;
+    outline: none;
+}
+
+/* ── Чекбоксы ── */
+QCheckBox {
+    spacing: 4px;
+    color: #f0f0f0;
+    font-size: 10px;
+}
+QCheckBox::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #777;
+    border-radius: 2px;
+    background-color: #222;
+}
+QCheckBox::indicator:checked {
+    background-color: #4caf50;
+    border: 1px solid #4caf50;
+}
+QCheckBox::indicator:hover {
+    border: 1px solid #a5d6a7;
+}
+
+/* ── Таблица прокси ── */
+QTableView {
+    background-color: #222;
+    alternate-background-color: #2a2a2a;
+    border: 1px solid #555;
+    border-radius: 4px;
+    gridline-color: #333;
+    selection-background-color: #2e5a2e;
+    selection-color: #fff;
+    font-size: 10px;
+}
+QTableView::item {
+    padding: 2px 4px;
+    border-bottom: 1px solid #2a2a2a;
+}
+QTableView::item:hover {
+    background-color: #2a2a2a;
+}
+QHeaderView::section {
+    background-color: #333;
+    color: #ccc;
+    border: none;
+    border-bottom: 1px solid #555;
+    border-right: 1px solid #2a2a2a;
+    padding: 4px 6px;
+    font-weight: bold;
+    font-size: 9px;
+}
+QHeaderView::section:hover {
+    background-color: #3a3a3a;
+    color: #a5d6a7;
+}
+
+/* ── Дерево источников ── */
+QTreeWidget {
+    background-color: #222;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #f0f0f0;
+    font-size: 10px;
+    outline: none;
+}
+QTreeWidget::item {
+    padding: 2px 2px;
+    border-bottom: 1px solid #2a2a2a;
+}
+QTreeWidget::item:hover {
+    background-color: #2a2a2a;
+}
+QTreeWidget::item:selected {
+    background-color: #2e5a2e;
+    color: #fff;
+}
+QTreeWidget QHeaderView::section {
+    background-color: #333;
+    color: #ccc;
+    border: none;
+    border-bottom: 1px solid #555;
+    padding: 3px 4px;
+    font-size: 9px;
+}
+QTreeWidget::indicator {
+    width: 13px;
+    height: 13px;
+    border: 1px solid #777;
+    border-radius: 2px;
+    background-color: #222;
+}
+QTreeWidget::indicator:checked {
+    background-color: #4caf50;
+    border: 1px solid #4caf50;
+}
+
+/* ── Таблица ключей ── */
+QTableWidget {
+    background-color: #222;
+    alternate-background-color: #2a2a2a;
+    border: 1px solid #555;
+    border-radius: 4px;
+    gridline-color: #333;
+    selection-background-color: #2e5a2e;
+    selection-color: #fff;
+    font-size: 10px;
+}
+QTableWidget::item {
+    padding: 2px 4px;
+}
+QTableWidget::item:hover {
+    background-color: #2a2a2a;
+}
+QTableWidget QHeaderView::section {
+    background-color: #333;
+    color: #ccc;
+    border: none;
+    border-bottom: 1px solid #555;
+    padding: 4px 6px;
+    font-weight: bold;
+    font-size: 9px;
+}
+
+/* ── Прогресс-бар ── */
+QProgressBar {
+    background-color: #222;
+    border: 1px solid #555;
+    border-radius: 3px;
+    text-align: center;
+    color: #f0f0f0;
+    font-size: 9px;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #388e3c, stop:0.5 #4caf50, stop:1 #66bb6a);
+    border-radius: 2px;
+}
+
+/* ── Текстовый лог ── */
+QTextEdit {
+    background-color: #1a1a1a;
+    color: #c8e6c9;
+    border: 1px solid #555;
+    border-radius: 4px;
+    font-family: "Ubuntu Mono", "Noto Mono", "Consolas", monospace;
+    font-size: 9px;
+    padding: 4px;
+    selection-background-color: #4caf50;
+}
+
+/* ── Статусбар ── */
+QStatusBar {
+    background-color: #222;
+    color: #ccc;
+    border-top: 1px solid #555;
+    font-size: 9px;
+    padding: 2px 8px;
+}
+QStatusBar::item {
+    border: none;
+}
+
+/* ── Скроллбары ── */
+QScrollBar:vertical {
+    background-color: #222;
+    width: 8px;
+    border: none;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical {
+    background-color: #666;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #4caf50;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QScrollBar:horizontal {
+    background-color: #222;
+    height: 8px;
+    border: none;
+    border-radius: 4px;
+}
+QScrollBar::handle:horizontal {
+    background-color: #666;
+    border-radius: 4px;
+    min-width: 24px;
+}
+QScrollBar::handle:horizontal:hover {
+    background-color: #4caf50;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+/* ── Сплиттер ── */
+QSplitter::handle {
+    background-color: #555;
+}
+QSplitter::handle:hover {
+    background-color: #4caf50;
+}
+QSplitter::handle:horizontal {
+    width: 3px;
+}
+QSplitter::handle:vertical {
+    height: 3px;
+}
+
+/* ── Диалоги ── */
+QDialog {
+    background-color: #2e2e2e;
+    color: #f0f0f0;
+}
+QDialog QLabel {
+    color: #f0f0f0;
+    font-size: 10px;
+}
+QDialog QPushButton {
+    min-width: 70px;
+}
+QDialogButtonBox QPushButton {
+    min-width: 70px;
+}
+
+/* ── Списки ── */
+QListWidget {
+    background-color: #222;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #f0f0f0;
+    font-size: 10px;
+    outline: none;
+}
+QListWidget::item {
+    padding: 4px 6px;
+    border-bottom: 1px solid #2a2a2a;
+}
+QListWidget::item:hover {
+    background-color: #2a2a2a;
+}
+QListWidget::item:selected {
+    background-color: #2e5a2e;
+    color: #fff;
+}
+
+/* ── Подсказки ── */
+QToolTip {
+    background-color: #222;
+    color: #a5d6a7;
+    border: 1px solid #a5d6a7;
+    border-radius: 3px;
+    padding: 4px 8px;
+    font-size: 10px;
+}
+
+/* ── Меню ── */
+QMenuBar {
+    background-color: #222;
+    color: #f0f0f0;
+    border-bottom: 1px solid #555;
+    padding: 2px;
+    font-size: 10px;
+}
+QMenuBar::item {
+    padding: 4px 8px;
+    border-radius: 3px;
+}
+QMenuBar::item:selected {
+    background-color: #333;
+}
+QMenu {
+    background-color: #2e2e2e;
+    color: #f0f0f0;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px;
+    font-size: 10px;
+}
+QMenu::item {
+    padding: 4px 20px 4px 20px;
+    border-radius: 3px;
+}
+QMenu::item:selected {
+    background-color: #2e5a2e;
+    color: #fff;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #555;
+    margin: 4px 8px;
+}
+"""
+
+
+def main():
+    def _my_excepthook(tp, val, tb):
+        _crash_log(exc_info=(tp, val, tb))
+        sys.__excepthook__(tp, val, tb)
+    sys.excepthook = _my_excepthook
+    app = QApplication(sys.argv)
+    app.setApplicationName("Proxy Fetcher v2")
+    app.setStyle("Fusion")
+    app.setStyleSheet(SOFT_DARK_STYLE)
+    w = MainWindow()
+    w.show()
+    exit_code = app.exec() if hasattr(app, "exec") else app.exec_()
+    sys.exit(exit_code)
+
+if __name__ == "__main__":
+    main()
