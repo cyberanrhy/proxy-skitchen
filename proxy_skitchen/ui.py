@@ -888,7 +888,7 @@ class TestPage(WizardPage):
 
         # Reset source table
         self.src_table.setRowCount(0)
-        for name, _ in sources:
+        for name, _url in sources:
             self._add_source_row(name)
 
         self.progress_bar.setMaximum(len(sources))
