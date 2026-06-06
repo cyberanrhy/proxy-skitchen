@@ -496,6 +496,51 @@ class GitHubSearchWorker(QObject):
                             return results
         return results
 
+    def _check_file(self, item: dict, full_name: str, branch: str) -> list[dict]:
+        results = []
+        download_url = item.get("download_url", "")
+        if not download_url:
+            return results
+        name = item.get("name", "")
+        path = item.get("path", "")
+        size = item.get("size", 0) or 0
+        if size > 5 * 1024 * 1024:
+            return results
+        url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{path}"
+        file_url = item.get("download_url", url)
+        try:
+            cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
+            if _settings_data.get("proxy_enabled", True):
+                cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
+            cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
+            result = subprocess.run(cmd, capture_output=True, timeout=15)
+            if result.returncode != 0:
+                return results
+            body = result.stdout.decode("utf-8", errors="ignore")
+            embedded_links = []
+            for line in body.splitlines():
+                line = line.strip()
+                if is_proxy_uri(line):
+                    if line not in self.known_sources:
+                        self.known_sources.add(line)
+                        embedded_links.append(line)
+            entry = {
+                "file_url": file_url,
+                "name": f"{full_name}/{path}",
+                "repo_url": f"https://github.com/{full_name}",
+                "size": size,
+                "stars": 0,
+                "updated": "",
+                "embedded": False,
+            }
+            if embedded_links:
+                entry["count"] = len(embedded_links)
+                self.progress_signal.emit(f"      🔗 {len(embedded_links)} proxies in {name}")
+            results.append(entry)
+        except Exception:
+            pass
+        return results
+
     def _walk_explicit(self, repo_url: str) -> list[dict]:
         m = re.match(r'(?:https?://github\.com/)?([^/]+/[^/]+?)(?:\.git)?$', repo_url)
         if not m:
