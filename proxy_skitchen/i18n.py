@@ -34,6 +34,19 @@ STRINGS: dict[str, dict[str, str]] = {
         "sources.btn.clear": "✕ Очистить",
         "sources.btn.fetch": "▶ Скачать и проверить",
         "sources.context.remove": "🗑 Удалить",
+        
+        "preset.vless": "vless подписка",
+        "preset.vmess": "vmess подписка",
+        "preset.trojan": "trojan подписка",
+        "preset.ss": "shadowsocks подписка",
+        "preset.v2ray_cfg": "v2ray конфиг",
+        "preset.v2ray_sub": "v2ray подписка",
+        "preset.proxy": "proxy подписка",
+        "preset.clash": "clash подписка",
+        "preset.singbox": "sing-box подписка",
+        "preset.free": "бесплатные прокси",
+        "preset.xray": "xray конфиг",
+        "preset.hysteria2": "hysteria2 подписка",
 
         # ── period combo (нейтральные) ──
         "period.1h": "1h",
@@ -185,6 +198,19 @@ STRINGS: dict[str, dict[str, str]] = {
         "sources.btn.clear": "✕ Clear",
         "sources.btn.fetch": "▶ Download & Test",
         "sources.context.remove": "🗑 Remove",
+
+        "preset.vless": "vless subscription",
+        "preset.vmess": "vmess subscription",
+        "preset.trojan": "trojan subscription",
+        "preset.ss": "shadowsocks subscription",
+        "preset.v2ray_cfg": "v2ray config",
+        "preset.v2ray_sub": "v2ray subscription",
+        "preset.proxy": "proxy subscription",
+        "preset.clash": "clash subscription",
+        "preset.singbox": "sing-box subscription",
+        "preset.free": "free proxy config",
+        "preset.xray": "xray config",
+        "preset.hysteria2": "hysteria2 subscription",
 
         # ── period combo (нейтральные) ──
         "period.1h": "1h",
