@@ -336,7 +336,6 @@ class GitHubSearchWorker(QObject):
 
     def _api(self, url: str, timeout: int = 10) -> Optional[dict]:
         tokens = list(self.github_tokens)
-        proxy_enabled = _settings_data.get("proxy_enabled", True)
         for attempt in range(max(1, len(tokens) + 1)):
             if self._stop:
                 return None
@@ -346,44 +345,47 @@ class GitHubSearchWorker(QObject):
                 self._token_idx += 1
             else:
                 token = None
-            cmd = ["curl", "-s", "--connect-timeout", "8", "--max-time", str(timeout)]
-            if proxy_enabled:
-                cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
-            cmd.extend(["-H", "Accept: application/vnd.github.v3+json",
-                        "-H", "User-Agent: proxy-skitchen/2.0"])
-            if token:
-                cmd.extend(["-H", f"Authorization: token {token}"])
-            cmd.append(url)
-            try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                with self._procs_lock:
-                    self._procs.append(proc)
+            for use_proxy in [False, True]:
+                if self._stop:
+                    return None
+                cmd = ["curl", "-s", "--connect-timeout", "8", "--max-time", str(timeout)]
+                if use_proxy:
+                    cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
+                cmd.extend(["-H", "Accept: application/vnd.github.v3+json",
+                            "-H", "User-Agent: proxy-skitchen/2.0"])
+                if token:
+                    cmd.extend(["-H", f"Authorization: token {token}"])
+                cmd.append(url)
                 try:
-                    out, err = proc.communicate(timeout=timeout + 5)
-                    if self._stop:
-                        return None
-                    if proc.returncode != 0:
-                        self.progress_signal.emit(f"  ⚠ curl err: {err.decode()[:80]}")
-                        continue
-                    data = json.loads(out)
-                    if isinstance(data, dict) and data.get("message"):
-                        self.progress_signal.emit(f"  ⚠ API: {data['message'][:60]}")
-                        if "rate" in data["message"].lower():
-                            time.sleep(2)
-                        continue
-                    return data
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(2)
-                    self.progress_signal.emit(f"  ⚠ timeout")
-                    continue
-                finally:
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     with self._procs_lock:
-                        if proc in self._procs:
-                            self._procs.remove(proc)
-            except json.JSONDecodeError:
-                self.progress_signal.emit(f"  ⚠ bad json")
-                continue
+                        self._procs.append(proc)
+                    try:
+                        out, err = proc.communicate(timeout=timeout + 5)
+                        if self._stop:
+                            return None
+                        if proc.returncode != 0:
+                            self.progress_signal.emit(f"  ⚠ curl err: {err.decode()[:80]}")
+                            continue
+                        data = json.loads(out)
+                        if isinstance(data, dict) and data.get("message"):
+                            self.progress_signal.emit(f"  ⚠ API: {data['message'][:60]}")
+                            if "rate" in data["message"].lower():
+                                time.sleep(2)
+                            continue
+                        return data
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait(2)
+                        self.progress_signal.emit(f"  ⚠ timeout")
+                        continue
+                    finally:
+                        with self._procs_lock:
+                            if proc in self._procs:
+                                self._procs.remove(proc)
+                except json.JSONDecodeError:
+                    self.progress_signal.emit(f"  ⚠ bad json")
+                    continue
         return None
 
     @Slot()
