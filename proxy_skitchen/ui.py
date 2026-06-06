@@ -467,9 +467,9 @@ class SourcesPage(WizardPage):
         if not self._sources:
             return
         _debug(f"_on_fetch: {len(self._sources)} sources")
-        self._main.set_page(1)
-        _debug("_on_fetch: set_page done, starting fetch_sources")
         self._main.test_page.fetch_sources(list(self._sources))
+        self._main.set_page(1)
+        _debug("_on_fetch: set_page done")
 
     def retranslate(self):
         self.lbl_title.setText(_("sources.title"))
