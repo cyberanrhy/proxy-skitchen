@@ -85,7 +85,7 @@ class NetworkWorker(QObject):
                     except Exception:
                         proxies = None
                     if proxies is None:
-                        self.log_signal.emit(f"  ✗ {name}: не удалось загрузить")
+                        self.log_signal.emit(f"  ✗ {name}: fetch failed")
                         self.source_status.emit(name, False, 0)
                     else:
                         count = 0
@@ -121,11 +121,11 @@ class NetworkWorker(QObject):
                         if batch:
                             self.proxy_parsed.emit(batch)
                         self.source_status.emit(name, True, count)
-                        self.log_signal.emit(f"  ✓ {name}: {count} прокси")
+                        self.log_signal.emit(f"  ✓ {name}: {count} proxies")
                     done_count += 1
                 # Total timeout guard
                 if time.time() - start_time > MAX_WAIT:
-                    self.log_signal.emit(f"  ⚠ Таймаут {MAX_WAIT}с, прерываем")
+                    self.log_signal.emit(f"  ⚠ Timeout {MAX_WAIT}s, aborting")
                     break
         finally:
             _debug(f"fetch_all: done {done_count}/{total} stop={self._stop}")
@@ -409,7 +409,7 @@ class GitHubSearchWorker(QObject):
             results.sort(key=lambda r: r.get("embedded", False))
             self.result_signal.emit(results)
         except Exception as e:
-            self.error_signal.emit(f"Критическая ошибка поиска: {e}")
+            self.error_signal.emit(f"Search critical error: {e}")
         print("DEBUG: GitHubSearchWorker.run() finished", file=sys.stderr)
 
     def _search_and_walk(self, keyword: str, seen_repos: set) -> list[dict]:
@@ -451,7 +451,7 @@ class GitHubSearchWorker(QObject):
             api_url = f"https://api.github.com/repos/{full_name}/contents/{path}"
             data = self._api(api_url)
             if data is None:
-                self.progress_signal.emit(f"  ⚠ API вернула None для {path}")
+                self.progress_signal.emit(f"  ⚠ API returned None for {path}")
                 continue
             items = data if isinstance(data, list) else [data]
             if not items:
@@ -507,7 +507,7 @@ class GitHubSearchWorker(QObject):
             api_url = f"https://api.github.com/repos/{full_name}/contents/{path}"
             data = self._api(api_url)
             if data is None:
-                self.progress_signal.emit(f"    ⚠ API None для {path}")
+                self.progress_signal.emit(f"    ⚠ API None for {path}")
                 continue
             items = data if isinstance(data, list) else [data]
             if not items:
@@ -578,7 +578,7 @@ class GitHubSearchWorker(QObject):
             }
             if embedded_links:
                 entry["count"] = len(embedded_links)
-                self.progress_signal.emit(f"      🔗 {len(embedded_links)} прокси в {name}")
+                self.progress_signal.emit(f"      🔗 {len(embedded_links)} proxies in {name}")
             results.append(entry)
         except Exception:
             pass

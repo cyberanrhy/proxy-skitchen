@@ -42,7 +42,7 @@ PERF_PRESETS = {
 
 DEFAULT_SETTINGS = {
     "proxy_enabled": True, "proxy_type": "http", "proxy_host": "127.0.0.1",
-    "proxy_port": 12334, "perf_mode": "medium", "sources": [],
+    "proxy_port": 12334, "perf_mode": "medium", "sources": [], "language": "ru",
     "proxy_cache": [],
 }
 
