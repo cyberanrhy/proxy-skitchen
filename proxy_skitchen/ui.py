@@ -14,6 +14,7 @@ from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _sa
 from .parsers import is_proxy_uri, extract_uris, get_server_port
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
+from .i18n import _, LANGUAGES, current_lang, set_lang
 
 DESKTOP_DIR = os.path.expanduser("~/Рабочий стол")
 
@@ -77,29 +78,29 @@ class SourcesPage(WizardPage):
         layout.setSpacing(4)
 
         top = QHBoxLayout()
-        lbl = QLabel("🔍 <b>Шаг 1: Источники</b>")
-        top.addWidget(lbl)
+        self.lbl_title = QLabel(_("sources.title"))
+        top.addWidget(self.lbl_title)
         top.addStretch()
 
         self.btn_settings = QPushButton("⚙")
         self.btn_settings.setFixedWidth(32)
-        self.btn_settings.setToolTip("Настройки")
+        self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
         self.btn_settings.clicked.connect(self._on_settings)
         top.addWidget(self.btn_settings)
 
-        self.btn_stop = QPushButton("⏹ Стоп")
+        self.btn_stop = QPushButton(_("sources.btn.stop"))
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         top.addWidget(self.btn_stop)
         layout.addLayout(top)
 
         # GitHub search
-        gh_group = QGroupBox("GitHub поиск")
+        self.gh_group = QGroupBox(_("sources.group.github"))
         gh_grid = QGridLayout(gh_group)
 
         self.kw_input = QLineEdit()
-        self.kw_input.setPlaceholderText("vless subscription, trojan, vmess...")
-        gh_grid.addWidget(QLabel("Ключевые слова:"), 0, 0)
+        self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
+        gh_grid.addWidget(QLabel(_("sources.label.keywords")), 0, 0)
         gh_grid.addWidget(self.kw_input, 0, 1)
 
         self._presets = [
@@ -121,18 +122,18 @@ class SourcesPage(WizardPage):
         gh_grid.addWidget(presets_widget, 1, 0, 1, 2)
 
         self.period_combo = QComboBox()
-        for p in ["1 час", "2 ч", "4 ч", "6 ч", "8 ч", "12 ч", "24 ч", "3 дня", "7 дней"]:
+        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
             self.period_combo.addItem(p)
-        self.period_combo.setCurrentText("6 ч")
-        gh_grid.addWidget(QLabel("Период:"), 2, 0)
+        self.period_combo.setCurrentText(_("period.6h"))
+        gh_grid.addWidget(QLabel(_("sources.label.period")), 2, 0)
         gh_grid.addWidget(self.period_combo, 2, 1)
 
         self.repo_input = QLineEdit()
-        self.repo_input.setPlaceholderText("github.com/owner/repo (опционально)")
-        gh_grid.addWidget(QLabel("Репозиторий:"), 3, 0)
+        self.repo_input.setPlaceholderText(_("sources.input.repo.placeholder"))
+        gh_grid.addWidget(QLabel(_("sources.label.repo")), 3, 0)
         gh_grid.addWidget(self.repo_input, 3, 1)
 
-        self.btn_gh_search = QPushButton("🔍 Искать на GitHub")
+        self.btn_gh_search = QPushButton(_("sources.btn.search"))
         self.btn_gh_search.clicked.connect(self._on_github_search)
         gh_grid.addWidget(self.btn_gh_search, 4, 1)
 
@@ -160,21 +161,22 @@ class SourcesPage(WizardPage):
         layout.addWidget(gh_group)
 
         # Manual URL
-        url_group = QGroupBox("URL вручную")
+        self.url_group = QGroupBox(_("sources.group.manual_url"))
         url_row = QHBoxLayout(url_group)
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://example.com/subscription")
+        self.url_input.setPlaceholderText(_("sources.input.url.placeholder"))
         url_row.addWidget(self.url_input)
-        self.btn_add_url = QPushButton("+ Добавить")
+        self.btn_add_url = QPushButton(_("sources.btn.add_url"))
         self.btn_add_url.clicked.connect(self._on_add_url)
         url_row.addWidget(self.btn_add_url)
         layout.addWidget(url_group)
 
         # Sources list
         src_header = QHBoxLayout()
-        src_header.addWidget(QLabel("Подписки:"))
+        self.lbl_subscriptions = QLabel(_("sources.label.subscriptions"))
+        src_header.addWidget(self.lbl_subscriptions)
         src_header.addStretch()
-        self.btn_clear = QPushButton("✕ Очистить")
+        self.btn_clear = QPushButton(_("sources.btn.clear"))
         self.btn_clear.setEnabled(False)
         self.btn_clear.setFixedHeight(24)
         self.btn_clear.setStyleSheet("QPushButton { font-size: 10px; padding: 1px 8px; }")
@@ -189,7 +191,7 @@ class SourcesPage(WizardPage):
         layout.addWidget(self.src_list)
 
         nav = QHBoxLayout()
-        self.btn_fetch = QPushButton("▶ Скачать и проверить")
+        self.btn_fetch = QPushButton(_("sources.btn.fetch"))
         self.btn_fetch.setEnabled(False)
         self.btn_fetch.clicked.connect(self._on_fetch)
         nav.addStretch()
@@ -221,7 +223,7 @@ class SourcesPage(WizardPage):
         self.btn_gh_search.setEnabled(True)
         self.gh_progress_bar.setVisible(False)
         count = len(self._gh_results)
-        self.gh_status.setText(f"⏹ Остановлено ({count} файлов)")
+        self.gh_status.setText(_("gh.stopped", count=count))
         self.gh_found_label.setText(f"⏹ {count}")
         self._update_fetch_btn()
 
@@ -229,11 +231,11 @@ class SourcesPage(WizardPage):
         kw_text = self.kw_input.text().strip()
         repo_text = self.repo_input.text().strip()
         if not kw_text and not repo_text:
-            QMessageBox.warning(self, "Ключевые слова", "Введи ключевые слова или укажи репозиторий.")
+            QMessageBox.warning(self, _("msg.warning"), _("msg.no_keywords"))
             return
         keywords = [kw.strip() for kw in kw_text.replace(',', ' ').split() if kw.strip()]
-        period_map = {"1 час": 1/24, "2 ч": 2/24, "4 ч": 4/24, "6 ч": 6/24,
-                      "8 ч": 8/24, "12 ч": 12/24, "24 ч": 1, "3 дня": 3, "7 дней": 7}
+        period_map = {_("period.1h"): 1/24, _("period.2h"): 2/24, _("period.4h"): 4/24, _("period.6h"): 6/24,
+                      _("period.8h"): 8/24, _("period.12h"): 12/24, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7}
         time_days = period_map.get(self.period_combo.currentText(), 1)
         tokens = _auth_data.get("github_tokens", [])
         repos = []
@@ -259,7 +261,7 @@ class SourcesPage(WizardPage):
         self.btn_gh_search.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.gh_progress_bar.setVisible(True)
-        self.gh_status.setText(f"🔍 Поиск: {', '.join(keywords[:3])}{'...' if len(keywords) > 3 else ''}")
+        self.gh_status.setText(_("gh.searching", kw=", ".join(keywords[:3]) + ("..." if len(keywords) > 3 else "")))
         self.gh_found_label.setText("⏳")
         self._stopped = False
         self._gh_results = []
@@ -271,26 +273,24 @@ class SourcesPage(WizardPage):
         self.gh_found_label.setText(f"📄 {c}")
         stripped = msg.strip()
         if stripped.startswith('📁 explicit:'):
-            self.gh_status.setText(f"📁 Репозиторий: {stripped[12:]}")
+            self.gh_status.setText(_("gh.repo_scan", path=stripped[12:]))
         elif stripped.startswith('📄'):
             s = stripped[4:].strip() if len(stripped) > 4 else ""
-            self.gh_status.setText(f"📄 Файл: {s}")
+            self.gh_status.setText(_("gh.file_scan", path=s))
         elif stripped.startswith('🔗'):
             self.gh_status.setText(stripped)
         elif stripped.startswith('keyword:'):
             kw = stripped[8:].strip()
-            self.gh_status.setText(f"🔍 Ключевое слово: {kw}")
+            self.gh_status.setText(_("gh.keyword", kw=kw))
         elif stripped.startswith('scan') and '⭐' in stripped:
             parts = stripped.split('⭐')
             repo = parts[0].replace('scan', '').strip()
             stars = parts[1].strip() if len(parts) > 1 else ""
-            self.gh_status.setText(f"📂 Сканирую: {repo} ⭐{stars}")
+            self.gh_status.setText(_("gh.scanning", repo=repo, stars=stars))
         elif stripped.startswith('⚠'):
             self.gh_status.setText(f"⚠ {stripped[4:].strip()}")
         elif stripped.startswith('📁'):
-            parts = stripped[4:].strip().split('/', 1)
-            repo = parts[0] if parts else stripped
-            self.gh_status.setText(f"📁 {stripped[4:].strip()}")
+            self.gh_status.setText(_("gh.repo_scan", path=stripped[4:].strip()))
         else:
             self.gh_status.setText(stripped)
 
@@ -308,11 +308,11 @@ class SourcesPage(WizardPage):
             url = r.get("file_url", "")
             name = r.get("name", url)
             if r.get("embedded", False):
-                self._add_source(f"📦 {name}", url)
+                self._add_source(_("gh.embed_prefix", name=name), url)
             else:
                 self._add_source(name, url)
             added += 1
-        self.gh_status.setText(f"✅ Найдено {added} файлов")
+        self.gh_status.setText(_("gh.found_files", count=added))
         self.gh_found_label.setText(f"✅ {added}")
         self._cleanup_gh()
         self._completed = True
@@ -339,7 +339,7 @@ class SourcesPage(WizardPage):
             repo = m.group(1).rstrip('/')
             self.repo_input.setText(repo)
             self.url_input.clear()
-            self.gh_status.setText(f"📁 GitHub репозиторий: {repo} — запускаю поиск...")
+            self.gh_status.setText(_("gh.repo_url", repo=repo))
             QTimer.singleShot(100, self._on_github_search)
             return
         self._add_source(url, url)
@@ -370,7 +370,7 @@ class SourcesPage(WizardPage):
         if not item:
             return
         menu = QMenu()
-        menu.addAction("🗑 Удалить", lambda: self._remove_source(item.data(Qt.ItemDataRole.UserRole)))
+        menu.addAction(_("sources.context.remove"), lambda: self._remove_source(item.data(Qt.ItemDataRole.UserRole)))
         menu.exec_(self.src_list.mapToGlobal(pos))
 
     def _on_clear(self):
@@ -390,6 +390,32 @@ class SourcesPage(WizardPage):
         self._main.set_page(1)
         _debug("_on_fetch: set_page done, starting fetch_sources")
         self._main.test_page.fetch_sources(list(self._sources))
+
+    def retranslate(self):
+        self.lbl_title.setText(_("sources.title"))
+        self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
+        self.btn_stop.setText(_("sources.btn.stop"))
+        self.gh_group.setTitle(_("sources.group.github"))
+        self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
+        self.repo_input.setPlaceholderText(_("sources.input.repo.placeholder"))
+        self.btn_gh_search.setText(_("sources.btn.search"))
+        self.url_group.setTitle(_("sources.group.manual_url"))
+        self.url_input.setPlaceholderText(_("sources.input.url.placeholder"))
+        self.btn_add_url.setText(_("sources.btn.add_url"))
+        self.lbl_subscriptions.setText(_("sources.label.subscriptions"))
+        self.btn_clear.setText(_("sources.btn.clear"))
+        self.btn_fetch.setText(_("sources.btn.fetch"))
+        # period combo — rebuild items
+        current = self.period_combo.currentText()
+        self.period_combo.blockSignals(True)
+        self.period_combo.clear()
+        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
+            self.period_combo.addItem(p)
+        if self.period_combo.findText(current) >= 0:
+            self.period_combo.setCurrentText(current)
+        else:
+            self.period_combo.setCurrentText(_("period.6h"))
+        self.period_combo.blockSignals(False)
 
     def get_sources(self) -> list[tuple[str, str]]:
         return list(self._sources)
@@ -425,26 +451,26 @@ class TestPage(WizardPage):
         layout = QVBoxLayout(self)
 
         top = QHBoxLayout()
-        lbl = QLabel("⚡ <b>Шаг 2: Тестирование</b>")
-        top.addWidget(lbl)
+        self.lbl_title = QLabel(_("test.title"))
+        top.addWidget(self.lbl_title)
         top.addStretch()
 
-        self.btn_stop = QPushButton("⏹ Стоп")
+        self.btn_stop = QPushButton(_("test.btn.stop"))
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         top.addWidget(self.btn_stop)
 
-        self.btn_back = QPushButton("← Назад")
+        self.btn_back = QPushButton(_("test.btn.back"))
         self.btn_back.clicked.connect(lambda: self._main.set_page(0))
         top.addWidget(self.btn_back)
         layout.addLayout(top)
 
         # Source status table (small, shows each source with status)
-        src_group = QGroupBox("Источники")
+        self.src_group = QGroupBox(_("test.group.sources"))
         src_layout = QVBoxLayout(src_group)
         src_layout.setContentsMargins(4, 4, 4, 4)
         self.src_table = QTableWidget(0, 3)
-        self.src_table.setHorizontalHeaderLabels(["", "Источник", "Прокси"])
+        self.src_table.setHorizontalHeaderLabels(["", _("test.table.source"), _("test.table.proxies")])
         self.src_table.horizontalHeader().setStretchLastSection(True)
         self.src_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.src_table.setColumnWidth(0, 24)
@@ -459,9 +485,9 @@ class TestPage(WizardPage):
 
         # Stats bar
         stats_row = QHBoxLayout()
-        self.lbl_total = QLabel("📦 Всего: 0")
-        self.lbl_valid = QLabel("✅ Валид: 0")
-        self.lbl_dead = QLabel("❌ Мертв: 0")
+        self.lbl_total = QLabel(_("test.stats.total", count=0))
+        self.lbl_valid = QLabel(_("test.stats.valid", count=0))
+        self.lbl_dead = QLabel(_("test.stats.dead", count=0))
         self.lbl_current = QLabel("")
         self.lbl_current.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px; color: #7aa2f7;")
         self.lbl_fetch_progress = QLabel("")
@@ -472,15 +498,15 @@ class TestPage(WizardPage):
         stats_row.addWidget(self.lbl_current)
         stats_row.addWidget(self.lbl_fetch_progress)
 
-        self.btn_tcp = QPushButton("▶ TCP тест")
+        self.btn_tcp = QPushButton(_("test.btn.tcp"))
         self.btn_tcp.clicked.connect(self._on_tcp_test)
         stats_row.addWidget(self.btn_tcp)
 
-        self.btn_deep = QPushButton("⚡ Deep тест")
+        self.btn_deep = QPushButton(_("test.btn.deep"))
         self.btn_deep.clicked.connect(self._on_deep_test)
         stats_row.addWidget(self.btn_deep)
 
-        self.btn_delete_dead = QPushButton("🗑 Удалить мёртвые")
+        self.btn_delete_dead = QPushButton(_("test.btn.delete_dead"))
         self.btn_delete_dead.clicked.connect(self._on_delete_dead)
         self.btn_delete_dead.setEnabled(False)
         stats_row.addWidget(self.btn_delete_dead)
@@ -523,7 +549,7 @@ class TestPage(WizardPage):
         layout.addWidget(self.log_out)
 
         nav = QHBoxLayout()
-        self.btn_export = QPushButton("▶ Экспорт →")
+        self.btn_export = QPushButton(_("test.btn.export"))
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(lambda: self._main.set_page(2))
         nav.addStretch()
@@ -533,24 +559,24 @@ class TestPage(WizardPage):
     def _set_phase(self, phase: int):
         self._phase = phase
         if phase == self.PHASE_FETCH:
-            self.btn_stop.setText("⏹ Стоп загрузку")
+            self.btn_stop.setText(_("test.btn.stop_fetch"))
             self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
             self.btn_stop.setEnabled(True)
             self.btn_tcp.setEnabled(False)
             self.btn_deep.setEnabled(False)
             self.progress_bar.setVisible(True)
-            self.lbl_phase.setText("📥 Загрузка источников...")
+            self.lbl_phase.setText(_("test.phase.fetch"))
         elif phase == self.PHASE_TEST:
-            self.btn_stop.setText("⏹ Стоп тест")
+            self.btn_stop.setText(_("test.btn.stop_test"))
             self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
             self.btn_stop.setEnabled(True)
             self.btn_tcp.setEnabled(False)
             self.btn_deep.setEnabled(False)
             self.btn_export.setEnabled(False)
             self.progress_bar.setVisible(True)
-            self.lbl_phase.setText("⚡ Тестирование...")
+            self.lbl_phase.setText(_("test.phase.test"))
         else:  # IDLE
-            self.btn_stop.setText("⏹ Стоп")
+            self.btn_stop.setText(_("test.btn.stop"))
             self.btn_stop.setStyleSheet("")
             self.btn_stop.setEnabled(False)
             self.progress_bar.setVisible(False)
@@ -580,13 +606,13 @@ class TestPage(WizardPage):
             self.model.dedup_by_key()
             self._entries = self.model.proxies
             self._update_stats()
-            self._log(f"⏹ Загрузка остановлена: {len(self._entries)} прокси")
+            self._log(_("log.fetch_stopped", count=len(self._entries)))
             if self._entries:
                 self.btn_tcp.setEnabled(True)
                 self.btn_deep.setEnabled(True)
         elif self._phase == self.PHASE_TEST:
             self._cleanup_test()
-            self._log("⏹ Тест остановлен")
+            self._log(_("log.test_stopped"))
             self.model.dedup_by_key()
             self._entries = self.model.proxies
             if self._valid_cnt > 0:
@@ -618,12 +644,12 @@ class TestPage(WizardPage):
 
     def _on_delete_dead(self):
         if self._dead_cnt == 0:
-            QMessageBox.information(self, "Инфо", "Мёртвых прокси нет.")
+            QMessageBox.information(self, _("msg.info"), _("log.no_dead"))
             return
         alive = [e for e in self._entries if e.tcp_ok is True or e.deep_ok is True]
         removed = len(self._entries) - len(alive)
         if removed == 0:
-            QMessageBox.information(self, "Инфо", "Нет мёртвых прокси для удаления.")
+            QMessageBox.information(self, _("msg.info"), _("log.no_dead_to_delete"))
             return
         self._entries = alive
         self._valid_cnt = len(alive)
@@ -633,7 +659,7 @@ class TestPage(WizardPage):
         self._update_stats()
         self.btn_delete_dead.setEnabled(False)
         self.btn_export.setEnabled(self._valid_cnt > 0)
-        self._log(f"🗑 Удалено {removed} мёртвых прокси")
+        self._log(_("log.deleted_dead", count=removed))
 
     def _run_test(self, deep: bool = False):
         _debug(f"_run_test: deep={deep} entries={len(self._entries)}")
@@ -673,8 +699,8 @@ class TestPage(WizardPage):
         if 0 <= row < len(self._entries):
             e = self._entries[row]
             kind = "TCP" if ttype == 0 else "DEEP"
-            mark = "✅" if ok else "❌"
-            self.lbl_current.setText(f"#{row+1} {mark} {kind} {e.protocol} {e.host}:{e.port}")
+            mark = _("event.ok") if ok else _("event.fail")
+            self.lbl_current.setText(_("event.test_current", n=row+1, mark=mark, kind=kind, proto=e.protocol, host=e.host, port=e.port))
 
     def _on_test_count(self, c: int):
         self.progress_bar.setValue(c)
@@ -683,10 +709,10 @@ class TestPage(WizardPage):
         _debug(f"test_progress: {mode} {done}/{total}")
         now = time.time()
         if now - self._last_log_time > 0.5:
-            self._log(f"  {mode}: {done}/{total} ({threads} потоков)")
+            self._log(_("event.threads", mode=mode, done=done, total=total, threads=threads))
             self._last_log_time = now
         if not self.lbl_current.text():
-            self.lbl_current.setText(f"{mode}: {done}/{total} ({done*100//max(total,1)}%)")
+            self.lbl_current.setText(_("event.test_progress", mode=mode, done=done, total=total, pct=done*100//max(total,1)))
 
     def _on_test_finished(self):
         _debug("_on_test_finished: start")
@@ -695,16 +721,16 @@ class TestPage(WizardPage):
         self._completed = True
         self._set_phase(self.PHASE_IDLE)
         self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
-        self._log(f"✅ Тест завершён: {self._valid_cnt}/{len(self._entries)} валидных")
+        self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
         self._main.update_status_bar()
 
     def _update_stats(self):
         total = len(self._entries)
-        self.lbl_total.setText(f"📦 Всего: {total}")
-        self.lbl_valid.setText(f"✅ Валид: {self._valid_cnt}")
-        self.lbl_dead.setText(f"❌ Мертв: {self._dead_cnt}")
+        self.lbl_total.setText(_("test.stats.total", count=total))
+        self.lbl_valid.setText(_("test.stats.valid", count=self._valid_cnt))
+        self.lbl_dead.setText(_("test.stats.dead", count=self._dead_cnt))
         waiting = total - self._valid_cnt - self._dead_cnt
-        self.lbl_fetch_progress.setText(f"⏳ Ожид: {waiting}" if waiting else "")
+        self.lbl_fetch_progress.setText(_("test.stats.waiting", count=waiting) if waiting else "")
 
     def _on_source_started(self, name: str, idx: int):
         for row in range(self.src_table.rowCount()):
@@ -755,7 +781,7 @@ class TestPage(WizardPage):
         self._cleanup_net()
         self._cleanup_test()
         self._set_phase(self.PHASE_FETCH)
-        self._log(f"Загрузка {len(sources)} источников...")
+        self._log(_("log.fetch_start", count=len(sources)))
         self.model.clear()
         self._entries = []
         self._valid_cnt = 0
@@ -801,7 +827,7 @@ class TestPage(WizardPage):
     def _on_fetch_finished(self):
         _debug("on_fetch_finished: start")
         self._cleanup_net()
-        self._log(f"✅ Загружено: {len(self._entries)} прокси")
+        self._log(_("log.fetch_done", count=len(self._entries)))
         self.model.dedup_by_key()
         self._entries = self.model.proxies
         self._update_stats()
@@ -814,18 +840,15 @@ class TestPage(WizardPage):
             return
         entry = self._entries[idx.row()]
         menu = QMenu()
-        menu.addAction("📋 Копировать URI", lambda: QApplication.clipboard().setText(entry.uri))
-        details = f"{entry.protocol} {entry.host}:{entry.port}"
-        if entry.sni:
-            details += f"\nSNI: {entry.sni}"
-        if entry.country:
-            details += f"\nСтрана: {entry.country}"
-        details += f"\nTCP: {'✅' if entry.tcp_ok else '❌'}"
-        if entry.deep_ok:
-            details += "\nDeep: ⚡"
-        if entry.latency_ms:
-            details += f"\nПинг: {entry.latency_ms:.0f}ms"
-        menu.addAction("ℹ Детали", lambda: QMessageBox.information(self, "Детали прокси", details))
+        menu.addAction(_("test.context.copy_uri"), lambda: QApplication.clipboard().setText(entry.uri))
+        tcp_mark = _("event.ok") if entry.tcp_ok else _("event.fail")
+        deep_mark = "⚡" if entry.deep_ok else "—"
+        ping_str = f"{entry.latency_ms:.0f}ms" if entry.latency_ms else "—"
+        details = _("test.context.details_text",
+            proto=entry.protocol, host=entry.host, port=entry.port,
+            sni=entry.sni or "—", country=entry.country or "—",
+            tcp=tcp_mark, deep=deep_mark, ping=ping_str)
+        menu.addAction(_("test.context.details"), lambda: QMessageBox.information(self, _("test.context.details"), details))
         menu.exec_(self.proxy_table.mapToGlobal(pos))
 
     def on_enter(self):
@@ -838,6 +861,29 @@ class TestPage(WizardPage):
         self._cleanup_net()
         self._cleanup_test()
         _debug("TestPage.on_leave: done")
+
+    def retranslate(self):
+        self.lbl_title.setText(_("test.title"))
+        self.btn_stop.setText(_("test.btn.stop"))
+        self.btn_back.setText(_("test.btn.back"))
+        self.src_group.setTitle(_("test.group.sources"))
+        self.src_table.setHorizontalHeaderLabels(["", _("test.table.source"), _("test.table.proxies")])
+        self.lbl_total.setText(_("test.stats.total", count=len(self._entries)))
+        self.lbl_valid.setText(_("test.stats.valid", count=self._valid_cnt))
+        self.lbl_dead.setText(_("test.stats.dead", count=self._dead_cnt))
+        self.btn_tcp.setText(_("test.btn.tcp"))
+        self.btn_deep.setText(_("test.btn.deep"))
+        self.btn_delete_dead.setText(_("test.btn.delete_dead"))
+        self.btn_export.setText(_("test.btn.export"))
+        if self._phase == self.PHASE_FETCH:
+            self.btn_stop.setText(_("test.btn.stop_fetch"))
+            self.lbl_phase.setText(_("test.phase.fetch"))
+        elif self._phase == self.PHASE_TEST:
+            self.btn_stop.setText(_("test.btn.stop_test"))
+            self.lbl_phase.setText(_("test.phase.test"))
+        else:
+            self.lbl_phase.setText("")
+        self._update_stats()
 
     def get_entries(self) -> list[ProxyEntry]:
         return self._entries
@@ -852,11 +898,11 @@ class ExportPage(WizardPage):
         layout.setSpacing(5)
 
         top = QHBoxLayout()
-        lbl = QLabel("📤 <b>Шаг 3: Экспорт</b>")
-        top.addWidget(lbl)
+        self.lbl_title = QLabel(_("export.title"))
+        top.addWidget(self.lbl_title)
         top.addStretch()
 
-        self.btn_back = QPushButton("← Назад")
+        self.btn_back = QPushButton(_("export.btn.back"))
         self.btn_back.clicked.connect(lambda: self._main.set_page(1))
         top.addWidget(self.btn_back)
         layout.addLayout(top)
@@ -867,23 +913,23 @@ class ExportPage(WizardPage):
         layout.addWidget(self.stats_lbl)
 
         # Format selection
-        fmt_group = QGroupBox("Формат")
+        self.fmt_group = QGroupBox(_("export.group.format"))
         fmt_layout = QVBoxLayout(fmt_group)
-        self.fmt_raw = QRadioButton("📄 RAW URI (одна строка = один прокси)")
-        self.fmt_v2rayn = QRadioButton("🔤 V2RayN / base64")
-        self.fmt_singbox = QRadioButton("📦 Sing-box JSON")
-        self.fmt_clash = QRadioButton("🌐 Clash YAML")
-        self.fmt_hiddify = QRadioButton("🏠 Hiddify (RAW)")
+        self.fmt_raw = QRadioButton(_("export.radio.raw"))
+        self.fmt_v2rayn = QRadioButton(_("export.radio.v2rayn"))
+        self.fmt_singbox = QRadioButton(_("export.radio.singbox"))
+        self.fmt_clash = QRadioButton(_("export.radio.clash"))
+        self.fmt_hiddify = QRadioButton(_("export.radio.hiddify"))
         self.fmt_raw.setChecked(True)
         for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify):
             fmt_layout.addWidget(rb)
         layout.addWidget(fmt_group)
 
         # Options
-        opt_group = QGroupBox("Опции")
+        self.opt_group = QGroupBox(_("export.group.options"))
         opt_layout = QVBoxLayout(opt_group)
-        self.chk_failed = QCheckBox("Включать непроверенные (failed)")
-        self.chk_smart_names = QCheckBox("Умные имена (🇩🇪 1 - DE - VLESS - 443)")
+        self.chk_failed = QCheckBox(_("export.chk.failed"))
+        self.chk_smart_names = QCheckBox(_("export.chk.smart_names"))
         self.chk_smart_names.setChecked(True)
         opt_layout.addWidget(self.chk_failed)
         opt_layout.addWidget(self.chk_smart_names)
@@ -893,15 +939,15 @@ class ExportPage(WizardPage):
 
         # Buttons
         btn_row = QHBoxLayout()
-        self.btn_copy = QPushButton("📋 В буфер обмена")
+        self.btn_copy = QPushButton(_("export.btn.copy"))
         self.btn_copy.clicked.connect(self._on_copy)
         btn_row.addWidget(self.btn_copy)
 
-        self.btn_save = QPushButton("💾 Сохранить в файл")
+        self.btn_save = QPushButton(_("export.btn.save"))
         self.btn_save.clicked.connect(self._on_save)
         btn_row.addWidget(self.btn_save)
 
-        self.btn_save_desk = QPushButton("🖥 На рабочий стол")
+        self.btn_save_desk = QPushButton(_("export.btn.save_desktop"))
         self.btn_save_desk.clicked.connect(self._on_save_desktop)
         btn_row.addWidget(self.btn_save_desk)
         layout.addLayout(btn_row)
@@ -911,14 +957,15 @@ class ExportPage(WizardPage):
         self.preview.setReadOnly(True)
         self.preview.setMaximumHeight(120)
         self.preview.setStyleSheet("background: #000000; color: #f0f0fa; font-family: monospace; font-size: 11px;")
-        layout.addWidget(QLabel("Предпросмотр:"))
+        self.lbl_preview = QLabel(_("export.label.preview"))
+        layout.addWidget(self.lbl_preview)
         layout.addWidget(self.preview)
 
     def on_enter(self):
         entries = self._main.test_page.get_entries()
         total = len(entries)
         tcp_ok = self._main.test_page._valid_cnt
-        self.stats_lbl.setText(f"📦 Всего: {total}  |  ✅ TCP: {tcp_ok}  |  ⚡ Deep: —")
+        self.stats_lbl.setText(_("export.stats", total=total, tcp=tcp_ok, deep="—"))
         QTimer.singleShot(0, self._update_preview)
         self._main.update_status_bar()
 
@@ -959,15 +1006,32 @@ class ExportPage(WizardPage):
         else:
             self.preview.setPlainText(content)
 
+    def retranslate(self):
+        self.lbl_title.setText(_("export.title"))
+        self.btn_back.setText(_("export.btn.back"))
+        self.fmt_group.setTitle(_("export.group.format"))
+        self.fmt_raw.setText(_("export.radio.raw"))
+        self.fmt_v2rayn.setText(_("export.radio.v2rayn"))
+        self.fmt_singbox.setText(_("export.radio.singbox"))
+        self.fmt_clash.setText(_("export.radio.clash"))
+        self.fmt_hiddify.setText(_("export.radio.hiddify"))
+        self.opt_group.setTitle(_("export.group.options"))
+        self.chk_failed.setText(_("export.chk.failed"))
+        self.chk_smart_names.setText(_("export.chk.smart_names"))
+        self.btn_copy.setText(_("export.btn.copy"))
+        self.btn_save.setText(_("export.btn.save"))
+        self.btn_save_desk.setText(_("export.btn.save_desktop"))
+        self.lbl_preview.setText(_("export.label.preview"))
+
     def _on_copy(self):
         content = self._get_content()
         QApplication.clipboard().setText(content)
-        QMessageBox.information(self, "Готово", "Скопировано в буфер обмена")
+        QMessageBox.information(self, _("msg.done"), _("msg.copied"))
 
     def _on_save(self):
         ts = datetime.now().strftime("%m.%d_%H%M")
         default_name = f"sub_ski_{ts}.txt"
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить",
+        path, _ = QFileDialog.getSaveFileName(self, _("export.btn.save"),
                                               os.path.join(DESKTOP_DIR, default_name),
                                               "All files (*.*)")
         if not path:
@@ -975,7 +1039,7 @@ class ExportPage(WizardPage):
         content = self._get_content()
         with open(path, "w") as f:
             f.write(content)
-        QMessageBox.information(self, "Готово", f"Сохранено:\n{path}")
+        QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
     def _on_save_desktop(self):
         ts = datetime.now().strftime("%m.%d_%H%M")
@@ -983,13 +1047,14 @@ class ExportPage(WizardPage):
         content = self._get_content()
         with open(path, "w") as f:
             f.write(content)
-        QMessageBox.information(self, "Готово", f"Сохранено:\n{path}")
+        QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("⚙ Настройки")
+        self._main = parent
+        self.setWindowTitle(_("settings.title"))
         self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
@@ -1002,39 +1067,46 @@ class SettingsDialog(QDialog):
         gen_layout = QFormLayout(gen)
 
         self.perf_combo = QComboBox()
-        self.perf_combo.addItems(["low 🐢", "medium ⚡", "high 🚀"])
+        self.perf_combo.addItems([_("settings.perf.low"), _("settings.perf.medium"), _("settings.perf.high")])
         mode = _settings_data.get("perf_mode", "medium")
         idx = {"low": 0, "medium": 1, "high": 2}.get(mode, 1)
         self.perf_combo.setCurrentIndex(idx)
-        gen_layout.addRow("Производительность:", self.perf_combo)
+        gen_layout.addRow(_("settings.label.performance"), self.perf_combo)
 
-        self.cb_proxy = QCheckBox("Использовать прокси для загрузки")
+        self.lang_combo = QComboBox()
+        for code, label in LANGUAGES.items():
+            self.lang_combo.addItem(label, code)
+        self.lang_combo.setCurrentIndex(list(LANGUAGES.keys()).index(current_lang()))
+        self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
+        gen_layout.addRow(_("settings.label.language"), self.lang_combo)
+
+        self.cb_proxy = QCheckBox(_("settings.chk.proxy"))
         self.cb_proxy.setChecked(_settings_data.get("proxy_enabled", True))
         gen_layout.addRow(self.cb_proxy)
         self.proxy_type = QComboBox()
         self.proxy_type.addItems(["HTTP", "SOCKS5"])
         self.proxy_type.setCurrentText(_settings_data.get("proxy_type", "HTTP").upper())
-        gen_layout.addRow("Тип:", self.proxy_type)
+        gen_layout.addRow(_("settings.label.type"), self.proxy_type)
         self.proxy_host = QLineEdit(_settings_data.get("proxy_host", "127.0.0.1"))
-        gen_layout.addRow("Хост:", self.proxy_host)
+        gen_layout.addRow(_("settings.label.host"), self.proxy_host)
         self.proxy_port = QSpinBox()
         self.proxy_port.setRange(1, 65535)
         self.proxy_port.setValue(_settings_data.get("proxy_port", 12334))
-        gen_layout.addRow("Порт:", self.proxy_port)
-        tabs.addTab(gen, "Общие")
+        gen_layout.addRow(_("settings.label.port"), self.proxy_port)
+        tabs.addTab(gen, _("settings.tab.general"))
 
         # GitHub tab
         gh = QWidget()
         gh_layout = QVBoxLayout(gh)
-        gh_layout.addWidget(QLabel("GitHub Personal Access Tokens (по одному на строку):"))
+        gh_layout.addWidget(QLabel(_("settings.label.tokens")))
         self.tokens_edit = QPlainTextEdit()
-        self.tokens_edit.setPlaceholderText("ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ngho_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy")
+        self.tokens_edit.setPlaceholderText(_("settings.input.tokens.placeholder"))
         self.tokens_edit.setFixedHeight(80)
         tokens = _auth_data.get("github_tokens", [])
         self.tokens_edit.setPlainText("\n".join(tokens))
         gh_layout.addWidget(self.tokens_edit)
 
-        btn_check = QPushButton("🔍 Проверить токен")
+        btn_check = QPushButton(_("settings.btn.check_token"))
         btn_check.clicked.connect(self._on_check_token)
         gh_layout.addWidget(btn_check)
 
@@ -1048,13 +1120,20 @@ class SettingsDialog(QDialog):
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
 
+    def _on_lang_changed(self, idx: int):
+        code = self.lang_combo.itemData(idx)
+        if code and code != current_lang():
+            set_lang(code)
+            if self._main:
+                self._main.apply_language()
+
     def _on_check_token(self):
         tokens = [t.strip() for t in self.tokens_edit.toPlainText().strip().splitlines() if t.strip()]
         if not tokens:
-            self.check_result.setText("Нет токенов")
+            self.check_result.setText(_("settings.token.none"))
             return
         token = tokens[0]
-        self.check_result.setText("⏳ Проверка...")
+        self.check_result.setText(_("settings.token.checking"))
         from concurrent.futures import ThreadPoolExecutor
         pool = ThreadPoolExecutor(1)
         def _check():
@@ -1063,9 +1142,10 @@ class SettingsDialog(QDialog):
                                              headers={"Authorization": f"token {token}", "User-Agent": "proxy-skitchen"})
                 resp = urllib.request.urlopen(req, timeout=5)
                 data = json.loads(resp.read())
-                return f"✅ {data.get('login', '?')} — лимит: {resp.headers.get('X-RateLimit-Remaining', '?')}/ч"
+                limit = resp.headers.get('X-RateLimit-Remaining', '?')
+                return _("settings.token.ok", login=data.get('login', '?'), limit=limit)
             except Exception as e:
-                return f"❌ {str(e)[:60]}"
+                return _("settings.token.error", error=str(e)[:60])
         def _on_done(fut):
             result = fut.result()
             QTimer.singleShot(0, lambda: self.check_result.setText(result))
@@ -1075,7 +1155,6 @@ class SettingsDialog(QDialog):
     def _on_save(self):
         tokens = [t.strip() for t in self.tokens_edit.toPlainText().strip().splitlines() if t.strip()]
         _auth_data["github_tokens"] = tokens
-        _save_auth(_auth_data)
 
         _settings_data["perf_mode"] = {"low 🐢": "low", "medium ⚡": "medium", "high 🚀": "high"}.get(self.perf_combo.currentText(), "medium")
         _settings_data["proxy_enabled"] = self.cb_proxy.isChecked()
@@ -1089,7 +1168,7 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Proxy Skitchen")
+        self.setWindowTitle(_("main.title"))
         self.setMinimumSize(640, 480)
         self.resize(880, 600)
 
@@ -1105,7 +1184,7 @@ class MainWindow(QMainWindow):
         # Proxy toggle
         proxy_row = QHBoxLayout()
         proxy_row.setContentsMargins(0, 1, 0, 1)
-        self.proxy_toggle = QCheckBox("🔌 Прокси")
+        self.proxy_toggle = QCheckBox(_("main.proxy_toggle"))
         self.proxy_toggle.setChecked(_settings_data.get("proxy_enabled", True))
         self.proxy_toggle.toggled.connect(self._on_toggle_proxy)
         self.proxy_toggle.setStyleSheet("""
@@ -1134,16 +1213,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack)
 
         nav = QHBoxLayout()
-        self.btn_prev = QPushButton("← Шаг 1")
+        self.btn_prev = QPushButton(_("main.btn.prev"))
         self.btn_prev.clicked.connect(self._on_prev)
         self.btn_prev.setEnabled(False)
         nav.addWidget(self.btn_prev)
 
-        self.page_label = QLabel("Шаг 1/3: Источники")
+        self.page_label = QLabel(_("main.page.title.1"))
         nav.addWidget(self.page_label)
 
         nav.addStretch()
-        self.btn_next = QPushButton("Шаг 2 →")
+        self.btn_next = QPushButton(_("main.btn.next"))
         self.btn_next.clicked.connect(self._on_next)
         nav.addWidget(self.btn_next)
         layout.addLayout(nav)
@@ -1167,13 +1246,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(status_bar)
 
         self._current_page = 0
-        self._page_titles = ["Шаг 1/3: Источники", "Шаг 2/3: Тестирование", "Шаг 3/3: Экспорт"]
+        self._page_titles = [_("main.page.title.1"), _("main.page.title.2"), _("main.page.title.3")]
         self._apply_stylesheet()
 
     def _on_toggle_proxy(self, enabled: bool):
         _settings_data["proxy_enabled"] = enabled
         _save_settings(_settings_data)
-        self.proxy_toggle.setText(f"🔌 Прокси {'✅' if enabled else '❌'}")
+        self.proxy_toggle.setText(_("main.proxy_toggle_on") if enabled else _("main.proxy_toggle_off"))
 
     def update_status_bar(self):
         sp = self.source_page
@@ -1218,7 +1297,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(idx)
         self.page_label.setText(self._page_titles[idx])
         self.btn_prev.setEnabled(idx > 0)
-        self.btn_next.setText(["Шаг 2 →", "Шаг 3 →", "✅ Готово"][idx])
+        self.btn_next.setText([_("main.btn.next"), _("main.btn.next_step3"), _("main.btn.done")][idx])
         w = self.stack.currentWidget()
         if hasattr(w, 'on_enter'):
             w.on_enter()
@@ -1230,8 +1309,22 @@ class MainWindow(QMainWindow):
         if self._current_page < 2:
             self.set_page(self._current_page + 1)
         else:
-            QMessageBox.information(self, "Готово",
-                "Все шаги выполнены.\nИспользуй кнопки «Сохранить» на Шаге 3 для экспорта.")
+            QMessageBox.information(self, _("msg.done"), _("msg.all_done"))
+
+    def apply_language(self):
+        self.setWindowTitle(_("main.title"))
+        self.proxy_toggle.setText(_("main.proxy_toggle_on") if _settings_data.get("proxy_enabled", True) else _("main.proxy_toggle_off"))
+        self.btn_prev.setText(_("main.btn.prev"))
+        self.btn_next.setText(self._get_next_text())
+        self.page_label.setText(self._page_titles[self._current_page])
+        self._page_titles = [_("main.page.title.1"), _("main.page.title.2"), _("main.page.title.3")]
+        self.source_page.retranslate()
+        self.test_page.retranslate()
+        self.export_page.retranslate()
+        self.update_status_bar()
+
+    def _get_next_text(self):
+        return [_("main.btn.next"), _("main.btn.next_step3"), _("main.btn.done")][self._current_page]
 
     def closeEvent(self, event):
         self.source_page._cleanup_gh()
