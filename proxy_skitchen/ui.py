@@ -389,9 +389,9 @@ class SourcesPage(WizardPage):
         self._completed = True
         
         # Bright success indicator
-        self._status_search.setStyleSheet("color: #00ff00; font-weight: bold; padding: 1px 4px;")
-        self._status_search.setText("🔍 ✅ DONE")
-        QTimer.singleShot(3000, lambda: self._status_search.setStyleSheet(""))
+        self._main._status_search.setStyleSheet("color: #00ff00; font-weight: bold; padding: 1px 4px;")
+        self._main._status_search.setText("🔍 ✅ DONE")
+        QTimer.singleShot(3000, lambda: self._main._status_search.setStyleSheet(""))
 
     def _on_gh_error(self, err: str):
         self.gh_progress_bar.setVisible(False)
@@ -402,9 +402,9 @@ class SourcesPage(WizardPage):
         self._cleanup_gh()
         
         # Bright error indicator
-        self._status_search.setStyleSheet("color: #ff0000; font-weight: bold; padding: 1px 4px;")
-        self._status_search.setText("🔍 ❌ ERROR")
-        QTimer.singleShot(3000, lambda: self._status_search.setStyleSheet(""))
+        self._main._status_search.setStyleSheet("color: #ff0000; font-weight: bold; padding: 1px 4px;")
+        self._main._status_search.setText("🔍 ❌ ERROR")
+        QTimer.singleShot(3000, lambda: self._main._status_search.setStyleSheet(""))
 
     def _on_add_url(self):
         url = self.url_input.text().strip()
