@@ -325,6 +325,7 @@ class SourcesPage(WizardPage):
         self._gh_thread = QThread()
         self._gh_worker.moveToThread(self._gh_thread)
         self._gh_worker.result_signal.connect(self._on_gh_result)
+        self._gh_worker.partial_result_signal.connect(self._on_gh_partial)
         self._gh_worker.error_signal.connect(self._on_gh_error)
         self._gh_worker.progress_signal.connect(self._on_gh_progress)
         self._gh_worker.count_signal.connect(self._on_gh_count)
@@ -368,6 +369,17 @@ class SourcesPage(WizardPage):
     def _on_gh_count(self, count: int):
         self._gh_count = count
         self.gh_found_label.setText(f"📄 {count}")
+
+    def _on_gh_partial(self, results: list):
+        self._gh_results = results
+        for r in results:
+            url = r.get("file_url", "")
+            name = r.get("name", url)
+            if r.get("embedded", False):
+                self._add_source(_("gh.embed_prefix", name=name), url)
+            else:
+                self._add_source(name, url)
+        self._update_fetch_btn()
 
     def _on_gh_result(self, results: list):
         self.gh_progress_bar.setVisible(False)
