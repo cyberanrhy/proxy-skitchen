@@ -345,7 +345,7 @@ class GitHubSearchWorker(QObject):
                 self._token_idx += 1
             else:
                 token = None
-            for use_proxy in [False, True]:
+            for use_proxy in [False, True] if _settings_data.get("proxy_enabled", True) else [False]:
                 if self._stop:
                     return None
                 cmd = ["curl", "-s", "--connect-timeout", "8", "--max-time", str(timeout)]
