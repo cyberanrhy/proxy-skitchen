@@ -30,7 +30,7 @@
 
 ```bash
 # Клонировать
-git clone https://github.com/skitchen/proxy-skitchen.git
+git clone https://github.com/cyberanrhy/proxy-skitchen.git
 cd proxy-skitchen
 
 # Установить зависимости

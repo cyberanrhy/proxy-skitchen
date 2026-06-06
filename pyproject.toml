@@ -15,5 +15,5 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/skitchen/proxy-skitchen"
-Repository = "https://github.com/skitchen/proxy-skitchen"
+Homepage = "https://github.com/cyberanrhy/proxy-skitchen"
+Repository = "https://github.com/cyberanrhy/proxy-skitchen"
