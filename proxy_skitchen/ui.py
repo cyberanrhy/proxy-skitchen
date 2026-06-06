@@ -10,7 +10,7 @@ def _debug(msg: str):
         pass
 
 from .compat import *
-from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS
+from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme
 from .parsers import is_proxy_uri, extract_uris, get_server_port
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
@@ -75,103 +75,145 @@ class SourcesPage(WizardPage):
         self._gh_worker = None
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
+        layout.setContentsMargins(8, 4, 8, 4)
 
+        # ── Top bar ──
         top = QHBoxLayout()
         self.lbl_title = QLabel(_("sources.title"))
         top.addWidget(self.lbl_title)
         top.addStretch()
+        self.btn_lang_ru = QPushButton("RU")
+        self.btn_lang_ru.setFixedSize(28, 22)
+        self.btn_lang_ru.setStyleSheet("QPushButton { font-size: 10px; font-weight: bold; padding: 0px; }")
+        self.btn_lang_ru.setToolTip("Русский")
+        self.btn_lang_ru.clicked.connect(lambda: self._switch_lang("ru"))
+        top.addWidget(self.btn_lang_ru)
+        self.btn_lang_en = QPushButton("EN")
+        self.btn_lang_en.setFixedSize(28, 22)
+        self.btn_lang_en.setStyleSheet("QPushButton { font-size: 10px; font-weight: bold; padding: 0px; }")
+        self.btn_lang_en.setToolTip("English")
+        self.btn_lang_en.clicked.connect(lambda: self._switch_lang("en"))
+        top.addWidget(self.btn_lang_en)
+
+        self.btn_theme_dark = QPushButton("🌙")
+        self.btn_theme_dark.setFixedSize(28, 22)
+        self.btn_theme_dark.setStyleSheet("QPushButton { font-size: 10px; padding: 0px; }")
+        self.btn_theme_dark.setToolTip("Dark Theme")
+        self.btn_theme_dark.clicked.connect(lambda: self._main._switch_theme("dark"))
+        top.addWidget(self.btn_theme_dark)
+
+        self.btn_theme_light = QPushButton("☀️")
+        self.btn_theme_light.setFixedSize(28, 22)
+        self.btn_theme_light.setStyleSheet("QPushButton { font-size: 10px; padding: 0px; }")
+        self.btn_theme_light.setToolTip("Light Theme")
+        self.btn_theme_light.clicked.connect(lambda: self._main._switch_theme("light"))
+        top.addWidget(self.btn_theme_light)
 
         self.btn_settings = QPushButton("⚙")
         self.btn_settings.setFixedWidth(32)
         self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
         self.btn_settings.clicked.connect(self._on_settings)
         top.addWidget(self.btn_settings)
-
         self.btn_stop = QPushButton(_("sources.btn.stop"))
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         top.addWidget(self.btn_stop)
         layout.addLayout(top)
 
-        # GitHub search
+        # ── GitHub search ──
         self.gh_group = QGroupBox(_("sources.group.github"))
-        gh_grid = QGridLayout(gh_group)
+        gh_body = QVBoxLayout(self.gh_group)
+        gh_body.setSpacing(4)
 
+        # Row: keywords + period
+        kw_row = QHBoxLayout()
+        self.lbl_keywords = QLabel(_("sources.label.keywords"))
+        kw_row.addWidget(self.lbl_keywords)
         self.kw_input = QLineEdit()
         self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
-        gh_grid.addWidget(QLabel(_("sources.label.keywords")), 0, 0)
-        gh_grid.addWidget(self.kw_input, 0, 1)
-
-        self._presets = [
-            "vless subscription", "vmess subscription", "trojan subscription",
-            "shadowsocks subscription", "v2ray config", "v2ray subscription",
-            "proxy subscription", "clash subscription", "sing-box subscription",
-            "free proxy config", "xray config", "hysteria2 subscription",
-        ]
-        presets_layout = QHBoxLayout()
-        presets_layout.setSpacing(4)
-        for kw in self._presets:
-            btn = QPushButton(kw)
-            btn.setFixedHeight(24)
-            btn.setStyleSheet("QPushButton { font-size: 10px; padding: 1px 6px; }")
-            btn.clicked.connect(lambda checked, kw=kw: self._on_preset(kw))
-            presets_layout.addWidget(btn)
-        presets_widget = QWidget()
-        presets_widget.setLayout(presets_layout)
-        gh_grid.addWidget(presets_widget, 1, 0, 1, 2)
-
+        kw_row.addWidget(self.kw_input, 1)
+        kw_row.addSpacing(6)
+        self.lbl_period = QLabel(_("sources.label.period"))
+        kw_row.addWidget(self.lbl_period)
         self.period_combo = QComboBox()
         for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
             self.period_combo.addItem(p)
         self.period_combo.setCurrentText(_("period.6h"))
-        gh_grid.addWidget(QLabel(_("sources.label.period")), 2, 0)
-        gh_grid.addWidget(self.period_combo, 2, 1)
+        self.period_combo.setStyleSheet("QComboBox { border: 1px solid #7aa2f7; background-color: #1f2335; }")
+        kw_row.addWidget(self.period_combo)
+        gh_body.addLayout(kw_row)
 
-        self.repo_input = QLineEdit()
-        self.repo_input.setPlaceholderText(_("sources.input.repo.placeholder"))
-        gh_grid.addWidget(QLabel(_("sources.label.repo")), 3, 0)
-        gh_grid.addWidget(self.repo_input, 3, 1)
+        # Row: preset buttons (2 rows)
+        self._presets = [
+            _("preset.vless"), _("preset.vmess"), _("preset.trojan"),
+            _("preset.ss"), _("preset.v2ray_cfg"), _("preset.v2ray_sub"),
+            _("preset.proxy"), _("preset.clash"), _("preset.singbox"),
+            _("preset.free"), _("preset.xray"), _("preset.hysteria2"),
+        ]
+        pw = QWidget()
+        pw.setStyleSheet("QWidget { background: transparent; }")
+        pw_vbox = QVBoxLayout(pw)
+        pw_vbox.setContentsMargins(0, 0, 0, 0)
+        pw_vbox.setSpacing(2)
+        
+        half = len(self._presets) // 2
+        for row_idx in range(2):
+            row_layout = QHBoxLayout()
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(2)
+            
+            start = row_idx * half
+            end = start + half
+            for kw in self._presets[start:end]:
+                btn = QPushButton(kw)
+                btn.setFixedHeight(22)
+                btn.setStyleSheet("QPushButton { font-size: 8px; padding: 0px 4px; }")
+                btn.clicked.connect(lambda checked, kw=kw: self._on_preset(kw))
+                row_layout.addWidget(btn)
+            pw_vbox.addLayout(row_layout)
+        gh_body.addWidget(pw)
 
+        # Row: Search button
         self.btn_gh_search = QPushButton(_("sources.btn.search"))
         self.btn_gh_search.clicked.connect(self._on_github_search)
-        gh_grid.addWidget(self.btn_gh_search, 4, 1)
+        gh_body.addWidget(self.btn_gh_search)
 
-        # Progress bar + status for search
+        # Progress + status
         self.gh_progress = QWidget()
-        gh_prog_layout = QVBoxLayout(self.gh_progress)
-        gh_prog_layout.setContentsMargins(0, 0, 0, 0)
-        gh_prog_layout.setSpacing(2)
-        prog_row = QHBoxLayout()
+        gp = QVBoxLayout(self.gh_progress)
+        gp.setContentsMargins(0, 0, 0, 0)
+        gp.setSpacing(1)
+        pr = QHBoxLayout()
         self.gh_progress_bar = QProgressBar()
         self.gh_progress_bar.setVisible(False)
         self.gh_progress_bar.setMaximum(0)
-        self.gh_progress_bar.setFixedHeight(8)
-        prog_row.addWidget(self.gh_progress_bar)
+        self.gh_progress_bar.setFixedHeight(6)
+        pr.addWidget(self.gh_progress_bar)
         self.gh_found_label = QLabel("")
         self.gh_found_label.setStyleSheet("color: #7aa2f7; font-weight: 700;")
-        prog_row.addWidget(self.gh_found_label)
-        gh_prog_layout.addLayout(prog_row)
+        pr.addWidget(self.gh_found_label)
+        gp.addLayout(pr)
         self.gh_status = QLabel("")
         self.gh_status.setWordWrap(True)
-        self.gh_status.setMaximumHeight(40)
-        self.gh_status.setStyleSheet("color: #9aa5ce; font-size: 11px; padding: 2px 4px;")
-        gh_prog_layout.addWidget(self.gh_status)
-        gh_grid.addWidget(self.gh_progress, 5, 1)
-        layout.addWidget(gh_group)
+        self.gh_status.setStyleSheet("color: #9aa5ce; font-size: 11px;")
+        gp.addWidget(self.gh_status)
+        gh_body.addWidget(self.gh_progress)
 
-        # Manual URL
+        layout.addWidget(self.gh_group)
+
+        # ── Manual URL ──
         self.url_group = QGroupBox(_("sources.group.manual_url"))
-        url_row = QHBoxLayout(url_group)
+        url_row = QHBoxLayout(self.url_group)
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(_("sources.input.url.placeholder"))
         url_row.addWidget(self.url_input)
         self.btn_add_url = QPushButton(_("sources.btn.add_url"))
         self.btn_add_url.clicked.connect(self._on_add_url)
         url_row.addWidget(self.btn_add_url)
-        layout.addWidget(url_group)
+        layout.addWidget(self.url_group)
 
-        # Sources list
+        # ── Sources list ──
         src_header = QHBoxLayout()
         self.lbl_subscriptions = QLabel(_("sources.label.subscriptions"))
         src_header.addWidget(self.lbl_subscriptions)
@@ -188,7 +230,7 @@ class SourcesPage(WizardPage):
         self.src_list.setAlternatingRowColors(True)
         self.src_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(self._on_src_context)
-        layout.addWidget(self.src_list)
+        layout.addWidget(self.src_list, 1)
 
         nav = QHBoxLayout()
         self.btn_fetch = QPushButton(_("sources.btn.fetch"))
@@ -198,10 +240,38 @@ class SourcesPage(WizardPage):
         nav.addWidget(self.btn_fetch)
         layout.addLayout(nav)
 
+        self._refresh_toolbar_buttons()
+
     def _cleanup_gh(self):
         _cleanup_thread(getattr(self, '_gh_thread', None), getattr(self, '_gh_worker', None))
         self._gh_thread = None
         self._gh_worker = None
+
+    def _switch_lang(self, code: str):
+        if code != current_lang():
+            set_lang(code)
+            self._main.apply_language()
+            self._refresh_toolbar_buttons()
+
+    def _refresh_toolbar_buttons(self):
+        lang = current_lang()
+        self.btn_lang_ru.setStyleSheet(
+            "QPushButton { font-size: 10px; font-weight: bold; padding: 0px; background: %s; }"
+            % ("#3b82f6; color: white" if lang == "ru" else "transparent")
+        )
+        self.btn_lang_en.setStyleSheet(
+            "QPushButton { font-size: 10px; font-weight: bold; padding: 0px; background: %s; }"
+            % ("#3b82f6; color: white" if lang == "en" else "transparent")
+        )
+        theme = current_theme()
+        self.btn_theme_dark.setStyleSheet(
+            "QPushButton { font-size: 10px; padding: 0px; background: %s; }"
+            % ("#3b82f6; color: white" if theme == "dark" else "transparent")
+        )
+        self.btn_theme_light.setStyleSheet(
+            "QPushButton { font-size: 10px; padding: 0px; background: %s; }"
+            % ("#3b82f6; color: white" if theme == "light" else "transparent")
+        )
 
     def _on_settings(self):
         dlg = SettingsDialog(self._main)
@@ -229,7 +299,7 @@ class SourcesPage(WizardPage):
 
     def _on_github_search(self):
         kw_text = self.kw_input.text().strip()
-        repo_text = self.repo_input.text().strip()
+        repo_text = _settings_data.get("default_repo", "").strip()
         if not kw_text and not repo_text:
             QMessageBox.warning(self, _("msg.warning"), _("msg.no_keywords"))
             return
@@ -395,9 +465,11 @@ class SourcesPage(WizardPage):
         self.lbl_title.setText(_("sources.title"))
         self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
         self.btn_stop.setText(_("sources.btn.stop"))
+        self._refresh_toolbar_buttons()
         self.gh_group.setTitle(_("sources.group.github"))
+        self.lbl_keywords.setText(_("sources.label.keywords"))
         self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
-        self.repo_input.setPlaceholderText(_("sources.input.repo.placeholder"))
+        self.lbl_period.setText(_("sources.label.period"))
         self.btn_gh_search.setText(_("sources.btn.search"))
         self.url_group.setTitle(_("sources.group.manual_url"))
         self.url_input.setPlaceholderText(_("sources.input.url.placeholder"))
@@ -467,7 +539,7 @@ class TestPage(WizardPage):
 
         # Source status table (small, shows each source with status)
         self.src_group = QGroupBox(_("test.group.sources"))
-        src_layout = QVBoxLayout(src_group)
+        src_layout = QVBoxLayout(self.src_group)
         src_layout.setContentsMargins(4, 4, 4, 4)
         self.src_table = QTableWidget(0, 3)
         self.src_table.setHorizontalHeaderLabels(["", _("test.table.source"), _("test.table.proxies")])
@@ -481,7 +553,7 @@ class TestPage(WizardPage):
         self.src_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.src_table.setAlternatingRowColors(True)
         src_layout.addWidget(self.src_table)
-        layout.addWidget(src_group)
+        layout.addWidget(self.src_group)
 
         # Stats bar
         stats_row = QHBoxLayout()
@@ -914,7 +986,7 @@ class ExportPage(WizardPage):
 
         # Format selection
         self.fmt_group = QGroupBox(_("export.group.format"))
-        fmt_layout = QVBoxLayout(fmt_group)
+        fmt_layout = QVBoxLayout(self.fmt_group)
         self.fmt_raw = QRadioButton(_("export.radio.raw"))
         self.fmt_v2rayn = QRadioButton(_("export.radio.v2rayn"))
         self.fmt_singbox = QRadioButton(_("export.radio.singbox"))
@@ -923,17 +995,17 @@ class ExportPage(WizardPage):
         self.fmt_raw.setChecked(True)
         for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify):
             fmt_layout.addWidget(rb)
-        layout.addWidget(fmt_group)
+        layout.addWidget(self.fmt_group)
 
         # Options
         self.opt_group = QGroupBox(_("export.group.options"))
-        opt_layout = QVBoxLayout(opt_group)
+        opt_layout = QVBoxLayout(self.opt_group)
         self.chk_failed = QCheckBox(_("export.chk.failed"))
         self.chk_smart_names = QCheckBox(_("export.chk.smart_names"))
         self.chk_smart_names.setChecked(True)
         opt_layout.addWidget(self.chk_failed)
         opt_layout.addWidget(self.chk_smart_names)
-        layout.addWidget(opt_group)
+        layout.addWidget(self.opt_group)
 
         layout.addStretch()
 
@@ -1106,6 +1178,11 @@ class SettingsDialog(QDialog):
         self.tokens_edit.setPlainText("\n".join(tokens))
         gh_layout.addWidget(self.tokens_edit)
 
+        gh_layout.addWidget(QLabel(_("settings.label.default_repo")))
+        self.default_repo = QLineEdit(_settings_data.get("default_repo", ""))
+        self.default_repo.setPlaceholderText("github.com/owner/repo")
+        gh_layout.addWidget(self.default_repo)
+
         btn_check = QPushButton(_("settings.btn.check_token"))
         btn_check.clicked.connect(self._on_check_token)
         gh_layout.addWidget(btn_check)
@@ -1161,6 +1238,7 @@ class SettingsDialog(QDialog):
         _settings_data["proxy_type"] = self.proxy_type.currentText().lower()
         _settings_data["proxy_host"] = self.proxy_host.text().strip()
         _settings_data["proxy_port"] = self.proxy_port.value()
+        _settings_data["default_repo"] = self.default_repo.text().strip()
         _save_settings(_settings_data)
         self.accept()
 
@@ -1192,14 +1270,14 @@ class MainWindow(QMainWindow):
                 spacing: 6px; font-size: 12px; color: #c0caf5;
             }
             QCheckBox::indicator {
-                width: 36px; height: 18px; border-radius: 9px;
-                border: 1px solid #3b3d5c;
+                width: 40px; height: 20px; border-radius: 10px;
+                border: 2px solid #7aa2f7;
             }
             QCheckBox::indicator:checked {
                 background: #7aa2f7; border-color: #7aa2f7;
             }
             QCheckBox::indicator:unchecked {
-                background: #2a2b3e; border-color: #3b3d5c;
+                background: #1f2335; border-color: #7aa2f7;
             }
         """)
         proxy_row.addWidget(self.proxy_toggle)
@@ -1231,13 +1309,13 @@ class MainWindow(QMainWindow):
         status_bar = QHBoxLayout()
         status_bar.setContentsMargins(2, 1, 2, 2)
         self._status_search = QLabel("🔍 ⏹")
-        self._status_search.setStyleSheet("padding: 2px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 3px; font-size: 11px;")
+        self._status_search.setObjectName("StatusBarLabel")
         self._status_fetch = QLabel("📥 ⏹")
-        self._status_fetch.setStyleSheet("padding: 2px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 3px; font-size: 11px;")
+        self._status_fetch.setObjectName("StatusBarLabel")
         self._status_test = QLabel("⚡ ⏹")
-        self._status_test.setStyleSheet("padding: 2px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 3px; font-size: 11px;")
+        self._status_test.setObjectName("StatusBarLabel")
         self._status_export = QLabel("📤 ⏹")
-        self._status_export.setStyleSheet("padding: 2px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 3px; font-size: 11px;")
+        self._status_export.setObjectName("StatusBarLabel")
         status_bar.addWidget(self._status_search)
         status_bar.addWidget(self._status_fetch)
         status_bar.addWidget(self._status_test)
@@ -1247,7 +1325,7 @@ class MainWindow(QMainWindow):
 
         self._current_page = 0
         self._page_titles = [_("main.page.title.1"), _("main.page.title.2"), _("main.page.title.3")]
-        self._apply_stylesheet()
+        self.apply_theme()
 
     def _on_toggle_proxy(self, enabled: bool):
         _settings_data["proxy_enabled"] = enabled
@@ -1311,16 +1389,22 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, _("msg.done"), _("msg.all_done"))
 
+    def apply_theme(self):
+        theme = current_theme()
+        colors = THEMES[theme]
+        QApplication.instance().setStyleSheet(get_style_string(colors))
+        self.apply_language()
+
     def apply_language(self):
-        self.setWindowTitle(_("main.title"))
-        self.proxy_toggle.setText(_("main.proxy_toggle_on") if _settings_data.get("proxy_enabled", True) else _("main.proxy_toggle_off"))
-        self.btn_prev.setText(_("main.btn.prev"))
-        self.btn_next.setText(self._get_next_text())
-        self.page_label.setText(self._page_titles[self._current_page])
-        self._page_titles = [_("main.page.title.1"), _("main.page.title.2"), _("main.page.title.3")]
         self.source_page.retranslate()
         self.test_page.retranslate()
         self.export_page.retranslate()
+
+    def _switch_theme(self, theme: str):
+        if theme != current_theme():
+            set_theme(theme)
+            self.apply_theme()
+            self.source_page._refresh_toolbar_buttons()
         self.update_status_bar()
 
     def _get_next_text(self):
@@ -1332,72 +1416,42 @@ class MainWindow(QMainWindow):
         self.test_page._cleanup_test()
         event.accept()
 
-    def _apply_stylesheet(self):
-        self.setStyleSheet("""
-            QMainWindow { background: #000000; }
-            QWidget { color: #f0f0fa; font-size: 13px; }
-            QLabel { color: #f0f0fa; }
-            QPushButton {
-                background: rgba(240, 240, 250, 0.08); color: #f0f0fa;
-                border: 1px solid rgba(240, 240, 250, 0.35);
-                padding: 4px 12px; border-radius: 4px; min-height: 20px;
-                font-weight: 700; text-transform: uppercase; letter-spacing: 0.10em;
-            }
-            QPushButton:hover { background: rgba(240, 240, 250, 0.15); border-color: rgba(240, 240, 250, 0.5); }
-            QPushButton:disabled { background: transparent; color: #545457; border-color: #404040; }
-            QPushButton:pressed { background: rgba(240, 240, 250, 0.2); }
-            QLineEdit, QPlainTextEdit, QTextEdit {
-                background: #0a0a0a; color: #f0f0fa; border: 1px solid #404040;
-                border-radius: 3px; padding: 4px 8px;
-            }
-            QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {
-                border-color: rgba(240, 240, 250, 0.35);
-            }
-            QComboBox {
-                background: #0a0a0a; color: #f0f0fa; border: 1px solid #404040;
-                border-radius: 3px; padding: 4px 8px; min-height: 24px;
-            }
-            QComboBox:focus { border-color: rgba(240, 240, 250, 0.35); }
-            QComboBox::drop-down { border: none; width: 20px; }
-            QComboBox QAbstractItemView { background: #000000; color: #f0f0fa; selection-background-color: #1a1a1f; }
-            QGroupBox {
-                border: 1px solid #404040; border-radius: 4px; margin-top: 10px;
-                padding: 10px 6px 6px 6px; font-weight: 700;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #f0f0fa; }
-            QTableView, QTableWidget {
-                background: #000000; alternate-background-color: #0a0a0a;
-                gridline-color: #1a1a1f; selection-background-color: #1a1a1f;
-                border: 1px solid #404040; border-radius: 3px;
-            }
-            QHeaderView::section {
-                background: #0a0a0a; color: #f0f0fa; border: none;
-                border-right: 1px solid #404040; padding: 4px 8px;
-                font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
-            }
-            QListWidget {
-                background: #0a0a0a; border: 1px solid #404040; border-radius: 3px;
-            }
-            QListWidget::item { padding: 4px 8px; }
-            QListWidget::item:alternate { background: #000000; }
-            QListWidget::item:selected { background: #1a1a1f; }
-            QProgressBar {
-                background: #0a0a0a; border: 1px solid #404040; border-radius: 3px;
-                text-align: center; color: #f0f0fa; height: 18px;
-            }
-            QProgressBar::chunk { background: rgba(240, 240, 250, 0.2); border-radius: 2px; }
-            QTabWidget::pane { border: 1px solid #404040; border-radius: 3px; }
-            QTabBar::tab {
-                background: #000000; color: #545457; border: 1px solid #404040;
-                padding: 5px 12px; margin-right: 2px;
-                font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
-            }
-            QTabBar::tab:selected { background: #0a0a0a; color: #f0f0fa; border-color: #545457; }
-            QRadioButton, QCheckBox { spacing: 6px; color: #f0f0fa; }
-            QScrollBar:vertical {
-                background: #000000; width: 10px; border: none;
-            }
-            QScrollBar::handle:vertical { background: #404040; border-radius: 4px; min-height: 20px; }
-            QScrollBar::handle:vertical:hover { background: #545457; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        """)
+def get_style_string(colors: dict) -> str:
+    return f"""
+        QMainWindow {{ background-color: {colors['bg']}; }}
+        QWidget {{ background-color: {colors['bg']}; color: {colors['fg']}; }}
+        QLabel {{ color: {colors['fg']}; }}
+        QPushButton {{
+            background-color: {colors['button_bg']}; color: {colors['fg']};
+            border: 1px solid {colors['border']};
+            padding: 4px 12px; border-radius: 4px; min-height: 20px;
+            font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+        }}
+        QPushButton:hover {{ background-color: {colors['accent']}; color: white; border-color: {colors['accent']}; }}
+        QPushButton:disabled {{ background-color: transparent; color: #545457; border-color: {colors['border']}; }}
+        QLineEdit, QComboBox {{
+            background-color: {colors['input_bg']}; color: {colors['fg']};
+            border: 1px solid {colors['border']}; border-radius: 3px; padding: 4px 8px;
+        }}
+        QGroupBox {{
+            border: 1px solid {colors['border']}; border-radius: 4px; margin-top: 10px;
+            padding: 10px 6px 6px 6px; font-weight: 700;
+        }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; color: {colors['fg']}; }}
+        QProgressBar {{
+            background-color: {colors['input_bg']}; border: 1px solid {colors['border']};
+            text-align: center; color: {colors['fg']}; height: 18px;
+        }}
+        QProgressBar::chunk {{ background-color: {colors['accent']}; }}
+        QListWidget, QTableWidget {{
+            background-color: {colors['input_bg']}; border: 1px solid {colors['border']};
+        }}
+        #StatusBarLabel {{
+            padding: 1px 4px;
+            background-color: transparent;
+            border: none;
+            font-family: monospace;
+            font-size: 10px;
+            color: {colors['accent']};
+        }}
+    """

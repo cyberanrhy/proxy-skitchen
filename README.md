@@ -4,96 +4,90 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://wiki.qt.io/Qt_for_Python)
 
-**proxy-skitchen** — графическое приложение для поиска, парсинга, глубокого тестирования (через sing-box) и сохранения прокси-подписок в форматы Hiddify, Clash, sing-box, V2RayN и другие.
+**proxy-skitchen** — a graphical application for searching, parsing, deep testing (via sing-box), and saving proxy subscriptions in Hiddify, Clash, sing-box, V2RayN, and other formats.
 
-Форк [proxy-fetcher-gui](https://github.com/igareck/proxy-fetcher-gui).
+Fork of [proxy-fetcher-gui](https://github.com/igareck/proxy-fetcher-gui).
 
-## Возможности
+## Features
 
-- 🔍 **Поиск источников** — парсинг GitHub-репозиториев по ключевым словам + прямой ввод URL
-- ⬇ **Загрузка подписок** — многопоточный парсинг proxy-файлов и Base64-подписок
-- ✅ **TCP-тест** — быстрая проверка доступности (host:port, таймаут 12с)
-- 🧪 **Deep-тест** — глубокая проверка через sing-box (реальный HTTP-запрос)
-- 📦 **Экспорт** — Clash YAML, sing-box JSON, V2RayN TXT, Hiddify, сырые URI
-- ⚡ **Три режима производительности** — для слабых и мощных ПК
-- 🔄 **Интеграция с Hiddify** — прямой импорт подписок
-- 🕵 **Парсинг SNI** — автоматическое извлечение SNI из URI
+- 🔍 **Source Search** — GitHub repository parsing by keywords + direct URL entry.
+- ⬇ **Subscription Download** — multi-threaded proxy file and Base64 subscription parsing.
+- ✅ **TCP Test** — quick availability check (host:port, 12s timeout).
+- 🧪 **Deep Test** — deep check via sing-box (real HTTP request).
+- 📦 **Export** — Clash YAML, sing-box JSON, V2RayN TXT, Hiddify, raw URIs.
+- ⚡ **Three performance modes** — for low-end and high-end PCs.
+- 🔄 **Hiddify Integration** — direct subscription import.
+- 🕵 **SNI Parsing** — automatic SNI extraction from URI.
 
-## Требования
+## Requirements
 
 - Python 3.10+
 - PySide6 (Qt6)
-- sing-box (для deep-теста, опционально)
-- curl (для загрузки подписок)
+- sing-box (optional, for deep test)
+- curl (for subscription download)
 
-## Установка
+## Installation
 
 ```bash
-# Клонировать
+# Clone
 git clone https://github.com/cyberanrhy/proxy-skitchen.git
 cd proxy-skitchen
 
-# Установить зависимости
+# Install dependencies
 pip install -r requirements.txt
 
-# Запустить (модуль)
+# Run (module)
 python3 -m proxy_skitchen
-
-# Или (монолит)
-python3 proxy-skitchen
 ```
 
-## Использование
+## Usage
 
-1. **Поиск** — введите ключевые слова, URL репозитория или прямую ссылку на подписку
-2. **Загрузка** — выберите источники и нажмите «▶ Скачать и проверить»
-3. **Тест** — запустите TCP-тест, затем deep-тест через sing-box
-4. **Экспорт** — сохраните рабочие прокси в нужном формате
+1. **Search** — enter keywords, repository URL, or a direct subscription link.
+2. **Download** — select sources and click "▶ Download & Test".
+3. **Test** — run TCP test, then deep test via sing-box.
+4. **Export** — save working proxies in the required format.
 
-### Режимы производительности
+### Performance Modes
 
-| Режим | TCP-потоки | Deep-потоки | Репозиториев | Файлов |
+| Mode | TCP Threads | Deep Threads | Repositories | Files |
 |-------|-----------|-------------|--------------|--------|
 | 🐢 Low | 2 | 1 | 3 | 20 |
 | ⚡ Medium | 4 | 2 | 8 | 50 |
 | 🚀 High | 8 | 3 | 15 | 150 |
 
-## Структура проекта
+## Project Structure
 
 ```
 proxy-skitchen/
-├── proxy-skitchen          # Монолит (самодостаточный скрипт)
-├── proxy_skitchen/         # Пакет (модульная структура)
+├── proxy_skitchen/         # Package (modular structure)
 │   ├── __init__.py
-│   ├── __main__.py         # Точка входа + CLI
+│   ├── __main__.py         # Entry point + CLI
 │   ├── ui.py               # GUI (PySide6)
-│   ├── workers.py          # Фоновые потоки (поиск, загрузка)
-│   ├── models.py           # Модели данных + настройки
-│   ├── parsers.py          # Парсинг URI (vmess, vless, trojan, ss, hy2, tuic)
-│   ├── tester.py           # TCP + Deep-тестирование
-│   ├── exporters.py        # Экспорт в форматы
-│   └── compat.py           # Совместимость PySide2/PySide6
-├── run_proxy_skitchen.py   # Альтернативный запуск
-├── requirements.txt        # Зависимости
-├── pyproject.toml          # Метаданные пакета
-├── LICENSE                 # MIT лицензия
-├── README.md               # Документация
-└── .gitignore              # Игнорируемые файлы
+│   ├── workers.py          # Background threads (search, download)
+│   ├── models.py           # Data models + settings
+│   ├── parsers.py          # URI parsing (vmess, vless, trojan, ss, hy2, tuic)
+│   ├── tester.py           # TCP + Deep testing
+│   ├── exporters.py        # Export formats
+│   └── compat.py           # PySide2/PySide6 compatibility
+├── requirements.txt        # Dependencies
+├── pyproject.toml          # Package metadata
+├── LICENSE                 # MIT License
+└── README.md               # Documentation
 ```
 
 ## CLI
 
 ```bash
-# Поиск подписок
+# Search subscriptions
 python3 -m proxy_skitchen search "vless subscription" --output sources.txt
 
-# Полный конвейер: поиск → загрузка → TCP-тест → сохранение
+# Full pipeline: search → download → TCP test → save
 python3 -m proxy_skitchen pipeline "vless subscription" --deep --output working.txt
 
-# Тест одного прокси
+# Test a single proxy
 python3 -m proxy_skitchen test 1.2.3.4 443
 ```
 
-## Лицензия
+## License
 
 MIT

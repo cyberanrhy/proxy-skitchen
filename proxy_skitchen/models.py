@@ -35,16 +35,46 @@ PROTOCOL_PREFIXES = (
 )
 
 PERF_PRESETS = {
-    "low":    {"test_threads": 2, "deep_threads": 1, "max_repos": 3,  "max_files": 20},
-    "medium": {"test_threads": 4, "deep_threads": 2, "max_repos": 8,  "max_files": 50},
-    "high":   {"test_threads": 8, "deep_threads": 3, "max_repos": 15, "max_files": 150},
+    "low": {"max_repos": 10, "max_files": 20},
+    "medium": {"max_repos": 30, "max_files": 50},
+    "high": {"max_repos": 100, "max_files": 150},
 }
+
+THEMES = {
+    "dark": {
+        "bg": "#1a1b26",
+        "fg": "#a9b1d6",
+        "input_bg": "#16161e",
+        "button_bg": "#1f2335",
+        "border": "#292e42",
+        "accent": "#7aa2f7",
+    },
+    "light": {
+        "bg": "#f8f9fa",
+        "fg": "#343a40",
+        "input_bg": "#ffffff",
+        "button_bg": "#e9ecef",
+        "border": "#dee2e6",
+        "accent": "#0d6efd",
+    }
+}
+
 
 DEFAULT_SETTINGS = {
     "proxy_enabled": True, "proxy_type": "http", "proxy_host": "127.0.0.1",
-    "proxy_port": 12334, "perf_mode": "medium", "sources": [], "language": "ru",
+    "proxy_port": 12334, "perf_mode": "medium", "sources": [], "language": "en",
+    "theme": "dark",
     "proxy_cache": [],
 }
+
+def current_theme() -> str:
+    return _settings_data.get("theme", "dark")
+
+
+def set_theme(theme: str):
+    if theme in THEMES:
+        _settings_data["theme"] = theme
+        _save_settings(_settings_data)
 
 class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
