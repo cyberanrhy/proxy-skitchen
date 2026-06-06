@@ -298,6 +298,7 @@ class SourcesPage(WizardPage):
         self._update_fetch_btn()
 
     def _on_github_search(self):
+        self._on_clear() # Очистка перед новым поиском
         kw_text = self.kw_input.text().strip()
         repo_text = _settings_data.get("default_repo", "").strip()
         if not kw_text and not repo_text:
