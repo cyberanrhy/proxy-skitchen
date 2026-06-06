@@ -302,6 +302,7 @@ class TesterWorker(QObject):
 
 class GitHubSearchWorker(QObject):
     result_signal = Signal(list)
+    partial_result_signal = Signal(list) # Новый сигнал
     error_signal = Signal(str)
     progress_signal = Signal(str)
     count_signal = Signal(int)
@@ -424,17 +425,20 @@ class GitHubSearchWorker(QObject):
         data = self._api(url)
         if data is None:
             return results
-        for repo in data.get("items", [])[:self.max_repos]:
-            if self._stop:
-                break
-            repo_url = repo.get("html_url", "")
-            if repo_url in seen_repos:
-                continue
-            seen_repos.add(repo_url)
-            self.progress_signal.emit(f"  scan {repo['full_name']} ⭐{repo['stargazers_count']}")
-            found = self._walk(repo)
-            results.extend(found)
-        return results
+            for repo in data.get("items", [])[:self.max_repos]:
+                if self._stop:
+                    break
+                repo_url = repo.get("html_url", "")
+                if repo_url in seen_repos:
+                    continue
+                seen_repos.add(repo_url)
+                self.progress_signal.emit(f"  scan {repo['full_name']} ⭐{repo['stargazers_count']}")
+                found = self._walk(repo)
+                results.extend(found)
+                self.result_signal.emit(list(results)) # Отправляем промежуточный результат
+                self.count_signal.emit(len(results))
+            return results
+
 
     def _walk(self, repo: dict) -> list[dict]:
         full_name = repo.get("full_name", "")
@@ -534,6 +538,7 @@ class GitHubSearchWorker(QObject):
                         self.progress_signal.emit(f"      📄 {full_name}/{item_path}")
                         found = self._check_file(item, full_name, "main")
                         results.extend(found)
+                        self.result_signal.emit(list(results)) # Отправляем промежуточный результат
                         self.count_signal.emit(len(results))
                         if len(results) >= self.max_files:
                             return results
