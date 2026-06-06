@@ -38,7 +38,7 @@ os.environ["QT_API"] = "pyside6"
 try:
     from PySide6.QtCore import (
         QAbstractTableModel, Qt, QModelIndex, QSortFilterProxyModel,
-        Signal, QObject, QThread, QTimer, Slot, QUrl,
+        Signal, QObject, QThread, QTimer, Slot, QUrl, QCoreApplication,
     )
     from PySide6.QtGui import QAction, QFont, QColor, QBrush, QDesktopServices
     from PySide6.QtWidgets import (
@@ -55,7 +55,7 @@ try:
 except ImportError:
     from PySide2.QtCore import (
         QAbstractTableModel, Qt, QModelIndex, QSortFilterProxyModel,
-        Signal, QObject, QThread, QTimer, Slot, QUrl,
+        Signal, QObject, QThread, QTimer, Slot, QUrl, QCoreApplication,
     )
     from PySide2.QtGui import QFont, QColor, QBrush, QDesktopServices
     from PySide2.QtWidgets import (
@@ -122,13 +122,14 @@ DEFAULT_SETTINGS = {
     "proxy_port": 12334,
     "scanned_repos": {},
     "gh_scanned_repos": {},
+    "gh_selected_repos": [],
     "perf_mode": "medium",
 }
 
 PERF_PRESETS = {
-    "low":    {"test_threads": 2, "deep_threads": 1, "max_repos": 3,  "max_files": 10},
-    "medium": {"test_threads": 4, "deep_threads": 2, "max_repos": 8,  "max_files": 30},
-    "high":   {"test_threads": 8, "deep_threads": 3, "max_repos": 15, "max_files": 50},
+    "low":    {"test_threads": 2, "deep_threads": 1, "max_repos": 3,  "max_files": 20},
+    "medium": {"test_threads": 4, "deep_threads": 2, "max_repos": 8,  "max_files": 50},
+    "high":   {"test_threads": 8, "deep_threads": 3, "max_repos": 15, "max_files": 150},
 }
 
 def _load_settings() -> dict:
@@ -1443,8 +1444,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Proxy Fetcher v2 — Hiddify Subscription Manager")
-        self.setMinimumSize(1100, 650)
-        self.resize(1300, 750)
+        self.setMinimumSize(640, 480)
+        self.resize(880, 600)
 
         self.proxy_model = ProxyTableModel()
         self.filter_model = ProxyFilterModel()
@@ -1728,12 +1729,25 @@ class MainWindow(QMainWindow):
         gh_input_row.addWidget(self.gh_keyword, 1)
         gh_input_row.addWidget(self.btn_add_gh_keyword)
 
+        # Строка ввода репозитория
+        gh_repo_row = QHBoxLayout()
+        gh_repo_row.setSpacing(4)
+        self.gh_repo_url = QLineEdit()
+        self.gh_repo_url.setPlaceholderText("Ссылка на GitHub репо...")
+        self.gh_repo_url.returnPressed.connect(self._on_add_repo)
+        self.btn_add_repo = QPushButton("🔗 +")
+        self.btn_add_repo.setFixedWidth(40)
+        self.btn_add_repo.clicked.connect(self._on_add_repo)
+        gh_repo_row.addWidget(self.gh_repo_url, 1)
+        gh_repo_row.addWidget(self.btn_add_repo)
+
         # Кнопки-ключевые слова (12 шт, 4 в ряд)
         self.gh_kw_grid = QGridLayout()
         self.gh_kw_grid.setSpacing(3)
         self.gh_kw_grid.setContentsMargins(2, 2, 2, 2)
         self.gh_kw_buttons = []
         self.gh_selected_keywords = set()
+        self.gh_selected_repos = self._settings.get("gh_selected_repos", [])
 
         for kw in [
             "vless subscription", "vmess subscription", "trojan subscription",
@@ -1756,6 +1770,15 @@ class MainWindow(QMainWindow):
             idx = len(self.gh_kw_buttons) - 1
             self.gh_kw_grid.addWidget(btn, idx // 4, idx % 4)
 
+        # Кнопки выбранных репозиториев
+        self.gh_repo_layout = QHBoxLayout()
+        self.gh_repo_layout.setSpacing(3)
+        self.gh_repo_label = QLabel("Репозитории: ")
+        self.gh_repo_label.setStyleSheet("font-size: 9px; color: #aaa;")
+        self.gh_repo_layout.addWidget(self.gh_repo_label)
+        self.gh_repo_btns = []  # (full_name, QPushButton)
+        self._update_repo_chips()
+
         # Строка: период + поиск
         gh_btn_row = QHBoxLayout()
         gh_btn_row.setSpacing(4)
@@ -1775,7 +1798,9 @@ class MainWindow(QMainWindow):
         gh_btn_row.addWidget(self.btn_github_search)
 
         gh_layout.addLayout(gh_input_row)
+        gh_layout.addLayout(gh_repo_row)
         gh_layout.addLayout(self.gh_kw_grid)
+        gh_layout.addLayout(self.gh_repo_layout)
         gh_layout.addLayout(gh_btn_row)
         gh_box.setLayout(gh_layout)
         left_layout.addWidget(gh_box)
@@ -2083,11 +2108,11 @@ class MainWindow(QMainWindow):
 
     def _apply_settings(self):
         s = self._settings
+        self.github_tokens_edit.setPlainText("\n".join(_auth_data.get("github_tokens", [])))
         self.cb_proxy_enable.setChecked(s.get("proxy_enabled", True))
         self.proxy_type_combo.setCurrentText(s.get("proxy_type", "HTTP").upper())
         self.proxy_host_edit.setText(s.get("proxy_host", "127.0.0.1"))
         self.proxy_port_spin.setValue(s.get("proxy_port", 12334))
-        self.github_tokens_edit.setPlainText("\n".join(_auth_data.get("github_tokens", [])))
         self._sync_proxy_ui()
         # Восстанавливаем прокси из кэша (макс 200)
         cached = s.get("proxy_cache", [])
@@ -2437,7 +2462,7 @@ class MainWindow(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Содержимое: {item.text(1)}")
-        dlg.setMinimumSize(700, 500)
+        dlg.setMinimumSize(500, 400)
         layout = QVBoxLayout(dlg)
         text = QTextEdit()
         text.setReadOnly(True)
@@ -2671,7 +2696,7 @@ class MainWindow(QMainWindow):
         sni_ok = [p for p in proxies if p.sni_good]
 
         os.makedirs(OUT_DIR, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%m.%d_%H%M")
 
         files = []
 
@@ -2768,8 +2793,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Нет подходящих", "Все проверенные прокси используют REALITY или xtls-rprx.\nОни несовместимы с текущей версией Hiddify.")
             return
         os.makedirs(DESKTOP_DIR, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(DESKTOP_DIR, f"subscription_{ts}.txt")
+        ts = datetime.now().strftime("%m.%d_%H%M")
+        path = os.path.join(DESKTOP_DIR, f"sub_ski_{ts}.txt")
         plain_lines = [
             "#profile-title: skitchen VPN",
             "#profile-update-interval: 1",
@@ -2894,7 +2919,7 @@ class MainWindow(QMainWindow):
 
         d = QDialog(self)
         d.setWindowTitle("📊 Статистика")
-        d.setMinimumSize(600, 500)
+        d.setMinimumSize(450, 400)
         l = QVBoxLayout(d)
 
         lines = [
@@ -2965,6 +2990,49 @@ class MainWindow(QMainWindow):
         else:
             self.gh_selected_keywords.discard(keyword)
 
+    def _on_add_repo(self):
+        url = self.gh_repo_url.text().strip()
+        if not url:
+            return
+        m = re.search(r'github\.com/([^/]+/[^/]+?)(?:/|$|\.git)', url)
+        if not m:
+            QMessageBox.warning(self, "Ошибка", "Не удалось распарсить GitHub URL.\nПример: https://github.com/owner/repo")
+            return
+        full_name = m.group(1).lower()
+        if full_name in self.gh_selected_repos:
+            self.gh_repo_url.clear()
+            return
+        self.gh_selected_repos.append(full_name)
+        self.gh_repo_url.clear()
+        self._update_repo_chips()
+        self._settings["gh_selected_repos"] = self.gh_selected_repos
+        _save_settings(self._settings)
+
+    def _on_repo_remove(self, full_name):
+        if full_name in self.gh_selected_repos:
+            self.gh_selected_repos.remove(full_name)
+            self._update_repo_chips()
+            self._settings["gh_selected_repos"] = self.gh_selected_repos
+            _save_settings(self._settings)
+
+    def _update_repo_chips(self):
+        for _, btn in self.gh_repo_btns:
+            self.gh_repo_layout.removeWidget(btn)
+            btn.deleteLater()
+        self.gh_repo_btns.clear()
+        for r in self.gh_selected_repos:
+            btn = QPushButton(f"✕ {r}")
+            btn.setFixedHeight(22)
+            btn.setStyleSheet(
+                "QPushButton { font-size: 9px; padding: 1px 6px; border: 1px solid #6a6a6a; border-radius: 3px; background: #4a4a4a; color: #ddd; }"
+                "QPushButton:hover { background: #c62828; color: #fff; border-color: #ef5350; }"
+            )
+            btn.setToolTip(f"Удалить {r}")
+            btn.clicked.connect(lambda checked, name=r: self._on_repo_remove(name))
+            self.gh_repo_layout.addWidget(btn)
+            self.gh_repo_btns.append((r, btn))
+        self.gh_repo_layout.addStretch()
+
     def _on_add_source(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Добавить источник")
@@ -3020,6 +3088,7 @@ class MainWindow(QMainWindow):
         self.gh_keyword.setText(" ".join(words))
 
     def _on_github_search(self):
+        self._cleanup_gh()
         keywords = list(self.gh_selected_keywords)
         if not keywords:
             QMessageBox.warning(self, "Ключевые слова", "Выбери хотя бы одно ключевое слово.")
@@ -3055,7 +3124,7 @@ class MainWindow(QMainWindow):
         self._gh_thread.setObjectName("gh_search_thread")
         known_urls = set(u for _,u,_ in self.sources)
         cfg = PERF_PRESETS.get(self._settings.get("perf_mode", "medium"))
-        self._gh_worker = GitHubSearchWorker(keywords, known_urls, time_filter_days=time_days, github_tokens=gh_tokens, max_repos=cfg["max_repos"], max_files=cfg["max_files"])
+        self._gh_worker = GitHubSearchWorker(keywords, known_urls, explicit_repos=self.gh_selected_repos, time_filter_days=time_days, github_tokens=gh_tokens, max_repos=cfg["max_repos"], max_files=cfg["max_files"])
         self._gh_worker.moveToThread(self._gh_thread)
         self._gh_search_keywords = keywords  # сохраняем для _on_gh_result
         self._gh_result_conn = self._gh_worker.result_signal.connect(self._on_gh_result, Qt.ConnectionType.QueuedConnection)
@@ -3068,6 +3137,7 @@ class MainWindow(QMainWindow):
 
     def _cleanup_gh(self):
         if self._gh_worker:
+            self._gh_worker.stop()
             try:
                 self._gh_worker.result_signal.disconnect()
             except Exception:
@@ -3169,7 +3239,7 @@ class MainWindow(QMainWindow):
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Найдено {len(new_sources)} файлов подписок на GitHub")
-        dialog.setMinimumSize(800, 500)
+        dialog.setMinimumSize(550, 400)
         layout = QVBoxLayout(dialog)
 
         info = QLabel(f"По запросу «{keyword}». Свежие выделены зелёным. 📦 = вложенные ссылки (найдены внутри файлов). OK → добавить в источники.")
@@ -3335,9 +3405,10 @@ class GitHubSearchWorker(QObject):
     progress_signal = Signal(str)
     count_signal = Signal(int)
 
-    def __init__(self, keywords: list[str], known_sources: list[str], time_filter_days: int = 0, github_tokens: list[str] | None = None, scanned_repos: set | None = None, max_repos: int = 12, max_files: int = 50):
+    def __init__(self, keywords: list[str], known_sources: list[str], explicit_repos: list[str] | None = None, time_filter_days: int = 0, github_tokens: list[str] | None = None, scanned_repos: set | None = None, max_repos: int = 12, max_files: int = 50):
         super().__init__()
         self.keywords = keywords
+        self.explicit_repos = explicit_repos or []
         self.known = set(known_sources)
         self.time_filter_days = time_filter_days
         self.github_tokens = github_tokens or []
@@ -3363,6 +3434,7 @@ class GitHubSearchWorker(QObject):
             _http_fb = urllib.request.build_opener(urllib.request.ProxyHandler(_proxies))
 
             def _api(url, timeout=5):
+                time.sleep(0.5)
                 attempts = [
                     ("fallback http proxy", _http_fb),
                 ]
@@ -3435,6 +3507,121 @@ class GitHubSearchWorker(QObject):
                 time_qual = ""
 
             all_repos = []
+
+            # Сначала сканируем явно указанные репозитории
+            for full_name in self.explicit_repos:
+                if self._stop:
+                    break
+                full_name = full_name.strip().lower().rstrip('/')
+                if full_name in self.known or full_name in self.scanned:
+                    self.progress_signal.emit(f"⏭ Пропуск {full_name} (уже в источниках)")
+                    continue
+                self.newly_scanned.append(full_name)
+                self.progress_signal.emit(f"📂 {full_name} (явный репозиторий)...")
+                # Рассчитываем branch (гет запрос к репозиторию)
+                branch = "main"
+                try:
+                    repo_info = _api(f"https://api.github.com/repos/{full_name}", timeout=5)
+                    if repo_info:
+                        rd = json.loads(repo_info)
+                        branch = rd.get("default_branch", "main")
+                        stars = rd.get("stargazers_count", 0)
+                        updated = rd.get("updated_at", "")
+                        repo_url = rd.get("html_url", f"https://github.com/{full_name}")
+                except Exception:
+                    branch = "main"
+                    stars = 0
+                    updated = ""
+                    repo_url = f"https://github.com/{full_name}"
+                file_count = 0
+
+                def _walk_explicit(api_url, rel_prefix, current_branch):
+                    nonlocal file_count
+                    if file_count >= self.max_files:
+                        return
+                    d = _api(api_url, timeout=5)
+                    if not d:
+                        return
+                    try:
+                        entries = json.loads(d)
+                        if not isinstance(entries, list):
+                            return
+                    except Exception:
+                        return
+                    for entry in entries:
+                        if self._stop or file_count >= self.max_files:
+                            break
+                        if entry.get("type") == "dir":
+                            sub = entry['name']
+                            _walk_explicit(entry.get("url", ""), f"{rel_prefix}/{sub}" if rel_prefix else sub, current_branch)
+                        elif entry.get("type") != "file":
+                            continue
+                        else:
+                            fname = entry.get("name", "")
+                            fext = fname.lower().rsplit('.', 1)[-1] if '.' in fname else ''
+                            if fext not in ('txt', 'yaml', 'yml', 'json', 'conf', 'cfg', 'ini', 'list',
+                                            'sub', 'sublist', 'uri', 'urls', 'proxy', 'config', 'node', ''):
+                                continue
+                            fname_lower = fname.lower()
+                            skip_prefixes = ('readme', 'license', 'changelog', 'changes', 'todo', 'requirements', 'contributing')
+                            skip_names = {'readme.txt', 'license.txt', 'changelog.txt', 'todo.txt', 'requirements.txt',
+                                          'readme.md', 'license', 'changelog.md', 'contributing.md'}
+                            if fname_lower in skip_names or any(fname_lower.startswith(p) for p in skip_prefixes):
+                                continue
+                            if fext in ('yml', 'yaml') and rel_prefix and '.github' in rel_prefix:
+                                continue
+                            path_parts = [full_name, current_branch]
+                            if rel_prefix:
+                                path_parts.append(rel_prefix)
+                            path_parts.append(fname)
+                            raw = "https://raw.githubusercontent.com/" + "/".join(path_parts)
+                            if raw in seen:
+                                continue
+                            if raw in self.known:
+                                continue
+                            fsize = entry.get("size", 0)
+                            if fsize < 20 or fsize > 5242880:
+                                continue
+                            self.progress_signal.emit(f"📄 {full_name}/{rel_prefix or ''}{'/' if rel_prefix else ''}{fname} ({fsize} bytes)...")
+                            api_file_url = entry.get("url", "")
+                            content = _api(api_file_url, timeout=10)
+                            if not content:
+                                continue
+                            text = ""
+                            try:
+                                fj = json.loads(content)
+                                if "content" in fj:
+                                    text = base64.b64decode(fj["content"]).decode("utf-8", errors="replace")[:500000]
+                                else:
+                                    text = content.decode("utf-8", errors="replace")[:500000]
+                            except Exception:
+                                text = content.decode("utf-8", errors="replace")[:500000]
+                            has_proxy = bool(re.search(r'(?:vless|vmess|trojan|ss|hysteria2?|hy2|tuic|socks4|socks5?)://', text, re.IGNORECASE))
+                            has_raw = 'raw.githubusercontent.com' in text
+                            has_ipport = bool(re.search(r'(?:\d{1,3}\.){3}\d{1,3}:\d+', text)) or bool(re.search(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+', text, re.IGNORECASE))
+                            has_json_proxy = (text.strip().startswith('{') or text.strip().startswith('[')) and (
+                                bool(re.search(r'"(?:type|protocol)"\s*:\s*"(?:vless|vmess|trojan|ss|shadowsocks|hysteria|hy2|tuic|socks|http|wireguard)"', text, re.IGNORECASE)) or
+                                (bool(re.search(r'"(?:server|address|add)"\s*:\s*"[^"]+"', text)) and bool(re.search(r'"(?:port|server_port)"\s*:\s*\d+', text)))
+                            )
+                            if not has_proxy and not has_raw and not has_ipport and not has_json_proxy:
+                                continue
+                            seen.add(raw)
+                            file_count += 1
+                            self.progress_signal.emit(f"  ✓ Найден файл с прокси: {fname}")
+                            label = f"{full_name}/{rel_prefix}/{fname}" if rel_prefix else f"{full_name}/{fname}"
+                            results.append({
+                                "name": label,
+                                "file_url": raw,
+                                "repo_url": repo_url,
+                                "updated": updated,
+                                "stars": stars,
+                                "size": fsize,
+                            })
+                            self.count_signal.emit(len(results))
+
+                _walk_explicit(f"https://api.github.com/repos/{full_name}/contents?ref={branch}", "", branch)
+
+            # Поиск по ключевым словам
             for kw in self.keywords:
                 if self._stop:
                     break
@@ -4080,6 +4267,206 @@ QMenu::separator {
 """
 
 
+# ─── CLI Runner ───
+class CliRunner(QObject):
+    def __init__(self):
+        super().__init__()
+        self._uris: list[str] = []
+        self._entries: list[ProxyEntry] = []
+
+    def _json_out(self, data):
+        print(json.dumps(data, ensure_ascii=False, default=str))
+        sys.stdout.flush()
+
+    def cmd_search(self, args):
+        tokens = _auth_data.get("github_tokens", [])
+        if args.token:
+            tokens = [args.token]
+        known = set()
+        worker = GitHubSearchWorker(
+            args.keywords, known, explicit_repos=args.repos or [],
+            time_filter_days=7, github_tokens=tokens,
+            max_repos=args.max_repos, max_files=args.max_files,
+        )
+        found = []
+        worker.result_signal.connect(lambda res: found.extend(res))
+        worker.run()
+        if args.output:
+            with open(args.output, "w") as f:
+                for s in found:
+                    f.write(f"{s['file_url']}\n")
+            self._json_out({"status": "ok", "count": len(found), "output": args.output})
+        else:
+            self._json_out({"status": "ok", "count": len(found), "sources": found})
+
+    def cmd_fetch(self, args):
+        try:
+            req = urllib.request.Request(args.url, headers={"User-Agent": "proxy-skitchen/1.0"})
+            resp = urllib.request.urlopen(req, timeout=15)
+            text = resp.read().decode("utf-8", errors="replace")
+            uris = []
+            for line in text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and re.match(r'^[a-z]+://', line, re.IGNORECASE):
+                    uris.append(line)
+            if args.output:
+                with open(args.output, "w") as f:
+                    for u in uris:
+                        f.write(f"{u}\n")
+                self._json_out({"status": "ok", "count": len(uris), "output": args.output})
+            else:
+                self._json_out({"status": "ok", "count": len(uris), "uris": uris})
+        except Exception as e:
+            self._json_out({"status": "error", "message": str(e)})
+
+    def cmd_test(self, args):
+        host, port = get_server_port(args.uri)
+        if not host or not port:
+            self._json_out({"status": "error", "message": "не удалось распарсить URI"})
+            return
+        tester = ProxyTester()
+        tcp_ok = tester.test_tcp(host, port)
+        if not tcp_ok:
+            self._json_out({"status": "ok", "tcp": False, "uri": args.uri})
+            return
+        lat = None
+        if args.deep:
+            ok, lat, err, proc = tester.test_via_singbox(args.uri, port=9999)
+            self._json_out({"status": "ok", "tcp": True, "deep": ok, "latency_ms": lat, "error": err, "uri": args.uri})
+        else:
+            self._json_out({"status": "ok", "tcp": True, "uri": args.uri})
+
+    def cmd_test_file(self, args):
+        with open(args.path) as f:
+            uris = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        total = len(uris)
+        if total == 0:
+            self._json_out({"status": "error", "message": "файл пуст"})
+            return
+        tcp_ok_list = []
+        tester = ProxyTester()
+        # Stage 1: TCP
+        for i, u in enumerate(uris):
+            if args.verbose:
+                print(f"TCP {i+1}/{total}...", file=sys.stderr)
+            host, port = get_server_port(u)
+            if not host or not port:
+                continue
+            ok = tester.test_tcp(host, port)
+            entry = ProxyEntry(uri=u, source="cli")
+            entry.tcp_ok = ok
+            if ok:
+                tcp_ok_list.append(u)
+        # Stage 2: Deep
+        deep_ok_list = []
+        if args.deep and tcp_ok_list:
+            if args.verbose:
+                print(f"Deep {len(tcp_ok_list)} прокси...", file=sys.stderr)
+            for i, u in enumerate(tcp_ok_list):
+                if args.verbose:
+                    print(f"  deep {i+1}/{len(tcp_ok_list)}...", file=sys.stderr)
+                try:
+                    ok, lat, err, proc = tester.test_via_singbox(u, port=9999 + (i % 1000))
+                    if ok:
+                        deep_ok_list.append(u)
+                except Exception as e:
+                    if args.verbose:
+                        print(f"  ✗ {e}", file=sys.stderr)
+        result = {
+            "total": total,
+            "tcp_ok": len(tcp_ok_list),
+            "deep_ok": len(deep_ok_list),
+        }
+        if args.output:
+            out_list = deep_ok_list if args.deep else tcp_ok_list
+            with open(args.output, "w") as f:
+                for u in out_list:
+                    f.write(f"{u}\n")
+            result["output"] = args.output
+        self._json_out({"status": "ok", **result})
+
+    def cmd_pipeline(self, args):
+        if args.verbose:
+            print("Pipeline: поиск...", file=sys.stderr)
+        tokens = _auth_data.get("github_tokens", [])
+        if args.token:
+            tokens = [args.token]
+        known = set()
+        worker = GitHubSearchWorker(
+            args.keywords, known, explicit_repos=args.repos or [],
+            time_filter_days=7, github_tokens=tokens,
+            max_repos=args.max_repos, max_files=args.max_files,
+        )
+        found = []
+        worker.result_signal.connect(lambda res: found.extend(res))
+        worker.run()
+        if not found:
+            self._json_out({"status": "ok", "total": 0, "tcp_ok": 0, "deep_ok": 0, "message": "ничего не найдено"})
+            return
+        # Скачиваем и парсим все найденные подписки
+        all_uris = []
+        for s in found:
+            if args.verbose:
+                print(f"  fetch {s['file_url'][:60]}...", file=sys.stderr)
+            try:
+                resp = urllib.request.urlopen(s['file_url'], timeout=15)
+                text = resp.read().decode("utf-8", errors="replace")
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and re.match(r'^[a-z]+://', line, re.IGNORECASE):
+                        all_uris.append(line)
+            except Exception as e:
+                if args.verbose:
+                    print(f"  ✗ {e}", file=sys.stderr)
+        # Дедупликация
+        unique = list(dict.fromkeys(all_uris))
+        total = len(unique)
+        if args.verbose:
+            print(f"Pipeline: {total} уникальных URI", file=sys.stderr)
+        if total == 0:
+            self._json_out({"status": "ok", "total": 0, "tcp_ok": 0, "deep_ok": 0})
+            return
+        # TCP-тест
+        tcp_ok_list = []
+        tester = ProxyTester()
+        for i, u in enumerate(unique):
+            host, port = get_server_port(u)
+            if not host or not port:
+                continue
+            ok = tester.test_tcp(host, port)
+            if ok:
+                tcp_ok_list.append(u)
+        tcp_count = len(tcp_ok_list)
+        if args.verbose:
+            print(f"Pipeline: TCP ok {tcp_count}/{total}", file=sys.stderr)
+        # Deep-тест
+        deep_ok_list = []
+        if args.deep and tcp_ok_list:
+            if args.verbose:
+                print(f"Pipeline: deep-тест {len(tcp_ok_list)} прокси...", file=sys.stderr)
+            for i, u in enumerate(tcp_ok_list):
+                if args.verbose:
+                    print(f"  deep {i+1}/{len(tcp_ok_list)}...", file=sys.stderr)
+                try:
+                    ok, lat, err, proc = tester.test_via_singbox(u, port=9999 + (i % 1000))
+                    if ok:
+                        deep_ok_list.append(u)
+                except:
+                    pass
+        result = {
+            "total": total,
+            "tcp_ok": tcp_count,
+            "deep_ok": len(deep_ok_list),
+        }
+        if args.output:
+            out_list = deep_ok_list if args.deep else tcp_ok_list
+            with open(args.output, "w") as f:
+                for u in out_list:
+                    f.write(f"{u}\n")
+            result["output"] = args.output
+        self._json_out({"status": "ok", **result})
+
+
 def main():
     def _my_excepthook(tp, val, tb):
         _crash_log(exc_info=(tp, val, tb))
@@ -4095,4 +4482,48 @@ def main():
     sys.exit(exit_code)
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(prog="proxy-skitchen", description="Поиск, тестирование и экспорт прокси")
+    parser.add_argument("--verbose", action="store_true", help="Подробный вывод в stderr")
+    sub = parser.add_subparsers(dest="command")
+
+    p_search = sub.add_parser("search", help="Поиск подписок на GitHub")
+    p_search.add_argument("keywords", nargs="+", help="Ключевые слова")
+    p_search.add_argument("--repos", nargs="*", default=[], help="Явные репозитории owner/repo")
+    p_search.add_argument("--output", help="Сохранить найденные URL в файл")
+    p_search.add_argument("--timeout", type=int, default=120, help="Таймаут поиска (сек)")
+    p_search.add_argument("--max-repos", type=int, default=15)
+    p_search.add_argument("--max-files", type=int, default=50)
+    p_search.add_argument("--token", help="GitHub токен (если нет в auth.json)")
+
+    p_fetch = sub.add_parser("fetch", help="Скачать и спарсить подписку")
+    p_fetch.add_argument("url", help="URL подписки")
+    p_fetch.add_argument("--output", help="Сохранить URI в файл")
+
+    p_test = sub.add_parser("test", help="TCP-тест одного прокси")
+    p_test.add_argument("uri", help="Прокси-URI (vless://, vmess://, ...)")
+    p_test.add_argument("--deep", action="store_true", help="Глубокий тест через sing-box")
+
+    p_testf = sub.add_parser("test-file", help="Проверить все URI из файла")
+    p_testf.add_argument("path", help="Файл с URI (построчно)")
+    p_testf.add_argument("--deep", action="store_true", help="Глубокий тест через sing-box")
+    p_testf.add_argument("--output", help="Сохранить только рабочие")
+
+    p_pipe = sub.add_parser("pipeline", help="Полный конвейер: поиск → тест → сохранение")
+    p_pipe.add_argument("keywords", nargs="+", help="Ключевые слова")
+    p_pipe.add_argument("--repos", nargs="*", default=[], help="Явные репозитории")
+    p_pipe.add_argument("--deep", action="store_true", help="Глубокий тест")
+    p_pipe.add_argument("--output", help="Сохранить валидные прокси")
+    p_pipe.add_argument("--timeout", type=int, default=300, help="Таймаут (сек)")
+    p_pipe.add_argument("--max-repos", type=int, default=15)
+    p_pipe.add_argument("--max-files", type=int, default=50)
+    p_pipe.add_argument("--token", help="GitHub токен")
+
+    args = parser.parse_args()
+    if args.command:
+        app = QCoreApplication(sys.argv)
+        app.setApplicationName("proxy-skitchen")
+        runner = CliRunner()
+        getattr(runner, f"cmd_{args.command.replace('-', '_')}")(args)
+    else:
+        main()
