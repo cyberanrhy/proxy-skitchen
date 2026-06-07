@@ -24,8 +24,7 @@ jobs:
 
       - name: Install Python deps
         run: |
-          pip install pyinstaller PySide6
-          pip install -r requirements.txt
+          pip install pyinstaller -r requirements.txt
 
       - name: Build with PyInstaller
         run: |
@@ -58,8 +57,7 @@ jobs:
 
       - name: Install Python deps
         run: |
-          pip install pyinstaller PySide6
-          pip install -r requirements.txt
+          pip install pyinstaller -r requirements.txt
 
       - name: Build with PyInstaller
         run: |
