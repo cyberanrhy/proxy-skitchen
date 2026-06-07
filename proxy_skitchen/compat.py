@@ -49,7 +49,7 @@ TMP_DIR = "/tmp/proxy-fetcher"
 HIDDIFY_PROXY = "http://127.0.0.1:12334"
 DESKTOP_DIR = os.path.expanduser("~/Рабочий стол")
 FORK_NAME = "proxy-skitchen"
-FORK_VERSION = "2.0.0"
+FORK_VERSION = "2.1.0"
 
 os.makedirs(SETTINGS_DIR, exist_ok=True)
 os.makedirs(VPN_DIR, exist_ok=True)
