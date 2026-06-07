@@ -99,4 +99,4 @@ MIT
 
 ---
 
-*Живущим в блокировках — держитесь. Свободный интернет всё ещё существует, просто его теперь ищут.*
+*To those living behind censorship firewalls — stay strong. The open internet still exists; you just have to look a little harder for it.*
