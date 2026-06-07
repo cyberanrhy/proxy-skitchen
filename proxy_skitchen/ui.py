@@ -10,13 +10,18 @@ def _debug(msg: str):
         pass
 
 from .compat import *
-from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme
+from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag
 from .parsers import is_proxy_uri, extract_uris, get_server_port
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok
-from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
+from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker, GeoWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
 
-DESKTOP_DIR = os.path.expanduser("~/Рабочий стол")
+DESKTOP_DIR = next((p for p in [
+    os.path.expanduser("~/Desktop"),
+    os.path.expanduser("~/Рабочий стол"),
+    os.path.expanduser("~/Escritorio"),
+    os.path.expanduser("~/桌面"),
+] if os.path.isdir(p)), os.path.expanduser("~"))
 
 
 def _cleanup_thread(thread, worker, wait_sec=3.0):
@@ -150,6 +155,7 @@ class SourcesPage(WizardPage):
             _("preset.ss"), _("preset.v2ray_cfg"), _("preset.v2ray_sub"),
             _("preset.proxy"), _("preset.clash"), _("preset.singbox"),
             _("preset.free"), _("preset.xray"), _("preset.hysteria2"),
+            _("preset.tuic"),
         ]
         pw = QWidget()
         pw.setStyleSheet("QWidget { background: transparent; }")
@@ -157,14 +163,14 @@ class SourcesPage(WizardPage):
         pw_vbox.setContentsMargins(0, 0, 0, 0)
         pw_vbox.setSpacing(2)
         
-        half = len(self._presets) // 2
+        half = (len(self._presets) + 1) // 2
         for row_idx in range(2):
             row_layout = QHBoxLayout()
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(2)
             
             start = row_idx * half
-            end = start + half
+            end = min(start + half, len(self._presets))
             for kw in self._presets[start:end]:
                 btn = QPushButton(kw)
                 btn.setFixedHeight(22)
@@ -174,10 +180,28 @@ class SourcesPage(WizardPage):
             pw_vbox.addLayout(row_layout)
         gh_body.addWidget(pw)
 
-        # Row: Search button
-        self.btn_gh_search = QPushButton(_("sources.btn.search"))
-        self.btn_gh_search.clicked.connect(self._on_github_search)
-        gh_body.addWidget(self.btn_gh_search)
+        # Row: GitHub URL filter (user/org or specific repo)
+        url_row = QHBoxLayout()
+        self.lbl_gh_url = QLabel(_("sources.label.gh_url"))
+        url_row.addWidget(self.lbl_gh_url)
+        self.gh_url_input = QLineEdit()
+        self.gh_url_input.setPlaceholderText(_("sources.input.gh_url.placeholder"))
+        url_row.addWidget(self.gh_url_input, 1)
+        gh_body.addLayout(url_row)
+
+        # Row: Search buttons
+        search_layout = QHBoxLayout()
+        self.btn_quick_search = QPushButton(_("sources.btn.quick_search"))
+        self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #555; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(255,255,255,0.08); }")
+        self.btn_quick_search.clicked.connect(lambda: self._on_github_search(False, False))
+        
+        self.btn_deep_search = QPushButton(_("sources.btn.deep_search"))
+        self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #9b59b6; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(155,89,182,0.12); }")
+        self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
+        
+        search_layout.addWidget(self.btn_quick_search)
+        search_layout.addWidget(self.btn_deep_search)
+        gh_body.addLayout(search_layout)
 
         # Progress + status
         self.gh_progress = QWidget()
@@ -290,18 +314,19 @@ class SourcesPage(WizardPage):
         self._cleanup_gh()
         self._stopped = True
         self.btn_stop.setEnabled(False)
-        self.btn_gh_search.setEnabled(True)
+        self.btn_quick_search.setEnabled(True)
+        self.btn_deep_search.setEnabled(True)
         self.gh_progress_bar.setVisible(False)
         count = len(self._gh_results)
         self.gh_status.setText(_("gh.stopped", count=count))
         self.gh_found_label.setText(f"⏹ {count}")
         self._update_fetch_btn()
 
-    def _on_github_search(self):
-        self._on_clear() # Очистка перед новым поиском
+    def _on_github_search(self, weak_hw: bool = False, deep_search: bool = False):
+        self._on_clear()
         kw_text = self.kw_input.text().strip()
-        repo_text = _settings_data.get("default_repo", "").strip()
-        if not kw_text and not repo_text:
+        gh_url = self.gh_url_input.text().strip()
+        if not kw_text and not gh_url:
             QMessageBox.warning(self, _("msg.warning"), _("msg.no_keywords"))
             return
         keywords = [kw.strip() for kw in kw_text.replace(',', ' ').split() if kw.strip()]
@@ -310,17 +335,21 @@ class SourcesPage(WizardPage):
         time_days = period_map.get(self.period_combo.currentText(), 1)
         tokens = _auth_data.get("github_tokens", [])
         repos = []
-        if repo_text:
-            m = re.match(r'(?:https?://github\.com/)?([^/]+/[^/]+)', repo_text)
-            if m:
-                repos.append(m.group(1))
-
+        owner = None
+        if gh_url:
+            m_repo = re.match(r'(?:https?://)?github\.com/([^/]+/[^/]+?)/?$', gh_url)
+            m_user = re.match(r'(?:https?://)?github\.com/([^/]+)/?$', gh_url)
+            if m_repo:
+                repos.append(m_repo.group(1))
+            elif m_user:
+                owner = m_user.group(1)
         self._cleanup_gh()
         cfg = PERF_PRESETS.get(_settings_data.get("perf_mode", "medium"))
         self._gh_worker = GitHubSearchWorker(
             keywords, set(), explicit_repos=repos,
-            time_filter_days=time_days, github_tokens=tokens,
+            time_filter_days=int(time_days), github_tokens=tokens,
             max_repos=cfg["max_repos"], max_files=cfg["max_files"],
+            owner=owner, weak_hw=weak_hw, deep_search=deep_search
         )
         self._gh_thread = QThread()
         self._gh_worker.moveToThread(self._gh_thread)
@@ -330,7 +359,8 @@ class SourcesPage(WizardPage):
         self._gh_worker.progress_signal.connect(self._on_gh_progress)
         self._gh_worker.count_signal.connect(self._on_gh_count)
         self._gh_thread.started.connect(self._gh_worker.run, Qt.ConnectionType.DirectConnection)
-        self.btn_gh_search.setEnabled(False)
+        self.btn_quick_search.setEnabled(False)
+        self.btn_deep_search.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.gh_progress_bar.setVisible(True)
         self.gh_status.setText(_("gh.searching", kw=", ".join(keywords[:3]) + ("..." if len(keywords) > 3 else "")))
@@ -383,7 +413,8 @@ class SourcesPage(WizardPage):
 
     def _on_gh_result(self, results: list):
         self.gh_progress_bar.setVisible(False)
-        self.btn_gh_search.setEnabled(True)
+        self.btn_quick_search.setEnabled(True)
+        self.btn_deep_search.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._gh_results = results
         added = 0
@@ -480,7 +511,7 @@ class SourcesPage(WizardPage):
         if not self._sources:
             return
         _debug(f"_on_fetch: {len(self._sources)} sources")
-        self._main.test_page.fetch_sources(list(self._sources))
+        self._main.download_page.fetch_sources(list(self._sources))
         self._main.set_page(1)
         _debug("_on_fetch: set_page done")
 
@@ -493,7 +524,8 @@ class SourcesPage(WizardPage):
         self.lbl_keywords.setText(_("sources.label.keywords"))
         self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
         self.lbl_period.setText(_("sources.label.period"))
-        self.btn_gh_search.setText(_("sources.btn.search"))
+        self.btn_quick_search.setText(_("sources.btn.quick_search"))
+        self.btn_deep_search.setText(_("sources.btn.deep_search"))
         self.url_group.setTitle(_("sources.group.manual_url"))
         self.url_input.setPlaceholderText(_("sources.input.url.placeholder"))
         self.btn_add_url.setText(_("sources.btn.add_url"))
@@ -523,25 +555,336 @@ class SourcesPage(WizardPage):
         self._cleanup_gh()
 
 
-class TestPage(WizardPage):
-    # Phase constants
+class DownloadPage(WizardPage):
     PHASE_IDLE = 0
     PHASE_FETCH = 1
-    PHASE_TEST = 2
 
     def __init__(self, main):
         super().__init__(main)
         self._main = main
         self._entries = []
+        self._phase = self.PHASE_IDLE
+        self._net_thread = None
+        self._net_worker = None
+        self._stopped = False
+        self._completed = False
+        self._fetch_start_time = 0.0
+        self._sources_ok = 0
+        self._sources_total = 0
+
+        layout = QVBoxLayout(self)
+
+        top = QHBoxLayout()
+        self.lbl_title = QLabel(_("download.title"))
+        top.addWidget(self.lbl_title)
+        top.addStretch()
+
+        self.btn_stop = QPushButton(_("download.btn.stop"))
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self._on_stop)
+        top.addWidget(self.btn_stop)
+
+        self.btn_back = QPushButton(_("download.btn.back"))
+        self.btn_back.clicked.connect(lambda: self._main.set_page(0))
+        top.addWidget(self.btn_back)
+        layout.addLayout(top)
+
+        # Source status table
+        self.src_group = QGroupBox(_("download.group.sources"))
+        src_layout = QVBoxLayout(self.src_group)
+        src_layout.setContentsMargins(4, 4, 4, 4)
+        self.src_table = QTableWidget(0, 3)
+        self.src_table.setHorizontalHeaderLabels(["", _("download.table.source"), _("download.table.proxies")])
+        self.src_table.horizontalHeader().setStretchLastSection(True)
+        self.src_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.src_table.setColumnWidth(0, 24)
+        self.src_table.setColumnWidth(2, 60)
+        self.src_table.verticalHeader().setVisible(False)
+        self.src_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.src_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.src_table.setAlternatingRowColors(True)
+        src_layout.addWidget(self.src_table)
+        layout.addWidget(self.src_group)
+
+        # Toggle button
+        self.btn_toggle_sources = QPushButton(_("download.hide_sources"))
+        self.btn_toggle_sources.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_sources.setStyleSheet("""
+            QPushButton {
+                background: transparent; border: 1px dashed #7aa2f7;
+                color: #7aa2f7; font-size: 11px; padding: 2px 10px;
+                border-radius: 10px; font-weight: 400; text-transform: none;
+                letter-spacing: 0;
+            }
+            QPushButton:hover {
+                background: rgba(122, 162, 247, 0.12);
+                border: 1px solid #7aa2f7;
+            }
+        """)
+        self.btn_toggle_sources.clicked.connect(self._toggle_sources)
+        layout.addWidget(self.btn_toggle_sources)
+
+        # Stats
+        stats_row = QHBoxLayout()
+        self.lbl_total = QLabel(_("download.stats.total", count=0))
+        self.lbl_total.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px;")
+        stats_row.addWidget(self.lbl_total)
+        self.lbl_detail = QLabel("")
+        self.lbl_detail.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px;")
+        self.lbl_detail.hide()
+        stats_row.addWidget(self.lbl_detail)
+        stats_row.addStretch()
+        self.lbl_progress = QLabel("")
+        stats_row.addWidget(self.lbl_progress)
+        layout.addLayout(stats_row)
+
+        # Progress bar
+        progress_row = QHBoxLayout()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        progress_row.addWidget(self.progress_bar)
+        self.lbl_phase = QLabel("")
+        self.lbl_phase.setStyleSheet("font-size: 11px; color: #545457;")
+        progress_row.addWidget(self.lbl_phase)
+        layout.addLayout(progress_row)
+
+        # Log
+        self.log_out = QTextEdit()
+        self.log_out.setReadOnly(True)
+        self.log_out.setMaximumHeight(100)
+        self.log_out.setStyleSheet("background: #000000; color: #545457; font-size: 12px;")
+        layout.addWidget(self.log_out)
+
+        # Bottom nav
+        nav = QHBoxLayout()
+        self.btn_next = QPushButton(_("download.btn.next"))
+        self.btn_next.setEnabled(False)
+        self.btn_next.clicked.connect(self._on_next)
+        nav.addStretch()
+        nav.addWidget(self.btn_next)
+        layout.addLayout(nav)
+
+    def _set_phase(self, phase: int):
+        self._phase = phase
+        if phase == self.PHASE_FETCH:
+            self.btn_stop.setText(_("download.btn.stop_fetch"))
+            self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
+            self.btn_stop.setEnabled(True)
+            self.progress_bar.setVisible(True)
+            self.lbl_phase.setText(_("download.phase.fetch"))
+        else:
+            self.btn_stop.setText(_("download.btn.stop"))
+            self.btn_stop.setStyleSheet("")
+            self.btn_stop.setEnabled(False)
+            self.progress_bar.setVisible(False)
+            self.lbl_phase.setText("")
+
+    def _log(self, msg: str):
+        self.log_out.append(msg)
+        sb = self.log_out.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _cleanup_net(self):
+        _cleanup_thread(getattr(self, '_net_thread', None), getattr(self, '_net_worker', None))
+        self._net_thread = None
+        self._net_worker = None
+
+    def _on_stop(self):
+        _debug("DownloadPage._on_stop")
+        self._cleanup_net()
+        self._log(_("log.fetch_stopped", count=len(self._entries)))
+        self._set_phase(self.PHASE_IDLE)
+        self._main.update_status_bar()
+        if self._entries:
+            self.btn_next.setEnabled(True)
+
+    def _on_next(self):
+        self._main.test_page.load_entries(self._entries)
+        self._main.set_page(2)
+
+    def fetch_sources(self, sources: list[tuple[str, str]]):
+        _debug(f"fetch_sources: start n={len(sources)}")
+        self._cleanup_net()
+        self._set_phase(self.PHASE_FETCH)
+        self._log(_("log.fetch_start", count=len(sources)))
+        self._entries = []
+        self._completed = False
+        self._stopped = False
+        self._fetch_start_time = time.time()
+        self._sources_ok = 0
+        self._sources_total = 0
+
+        self.src_table.setRowCount(0)
+        for name, _url in sources:
+            self._add_source_row(name)
+
+        self.src_group.show()
+        self.btn_toggle_sources.show()
+        self.btn_toggle_sources.setText(_("download.hide_sources"))
+        self.lbl_detail.hide()
+        self.lbl_total.show()
+        self.btn_next.setEnabled(False)
+        self.progress_bar.setMaximum(len(sources))
+        self.progress_bar.setValue(0)
+        self.lbl_total.setText(_("download.stats.total", count=0))
+
+        self._net_worker = NetworkWorker()
+        self._net_worker.proxy_parsed.connect(self._on_proxy_parsed)
+        self._net_worker.log_signal.connect(self._log)
+        self._net_worker.source_started.connect(self._on_source_started)
+        self._net_worker.source_status.connect(self._update_source_row)
+        self._net_worker.progress_signal.connect(self._on_fetch_progress)
+        self._net_worker.finished.connect(self._on_fetch_finished)
+
+        self._net_thread = QThread()
+        self._net_worker.moveToThread(self._net_thread)
+        self._net_thread.started.connect(lambda: self._net_worker.fetch_all(sources), Qt.ConnectionType.DirectConnection)
+        self._net_thread.start()
+
+    def _on_fetch_progress(self, done: int, total: int, name: str):
+        self.progress_bar.setValue(done)
+        self.lbl_progress.setText(f"{done}/{total}")
+
+    def _on_proxy_parsed(self, entries: list[ProxyEntry]):
+        self._entries.extend(entries)
+        self.lbl_total.setText(_("download.stats.total", count=len(self._entries)))
+
+    def _on_source_started(self, name: str, idx: int):
+        for row in range(self.src_table.rowCount()):
+            item = self.src_table.item(row, 1)
+            if item and item.text() == name[:60]:
+                icon_item = self.src_table.item(row, 0)
+                if icon_item:
+                    icon_item.setText("⟳")
+                for c in range(3):
+                    cell = self.src_table.item(row, c)
+                    if cell:
+                        cell.setBackground(QColor("#1a1a2e"))
+                break
+
+    def _add_source_row(self, name: str):
+        row = self.src_table.rowCount()
+        self.src_table.insertRow(row)
+        icon_item = QTableWidgetItem("⏳")
+        icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.src_table.setItem(row, 0, icon_item)
+        name_item = QTableWidgetItem(name[:60])
+        name_item.setToolTip(name)
+        self.src_table.setItem(row, 1, name_item)
+        count_item = QTableWidgetItem("...")
+        count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.src_table.setItem(row, 2, count_item)
+        self._sources_total += 1
+
+    def _update_source_row(self, name: str, ok: bool, count: int):
+        for row in range(self.src_table.rowCount()):
+            item = self.src_table.item(row, 1)
+            if item and item.text() == name[:60]:
+                icon_item = self.src_table.item(row, 0)
+                if icon_item:
+                    icon_item.setText("✅" if ok else "❌")
+                count_item = self.src_table.item(row, 2)
+                if count_item:
+                    count_item.setText(str(count))
+                for c in range(3):
+                    cell = self.src_table.item(row, c)
+                    if cell:
+                        cell.setBackground(QColor("#000000"))
+                if ok:
+                    self._sources_ok += 1
+                break
+
+    def _toggle_sources(self):
+        hidden = self.src_group.isHidden()
+        self.src_group.setVisible(hidden)
+        self.btn_toggle_sources.setText(
+            _("download.hide_sources") if not hidden else _("download.show_sources", count=self.src_table.rowCount())
+        )
+
+    def _on_fetch_finished(self):
+        self._cleanup_net()
+        self._log(_("log.fetch_done", count=len(self._entries)))
+        self._set_phase(self.PHASE_IDLE)
+        self.src_group.hide()
+        self.btn_toggle_sources.setText(_("download.show_sources", count=self.src_table.rowCount()))
+        self.btn_toggle_sources.show()
+
+        # Build detail stats
+        dur = time.time() - self._fetch_start_time
+        protos: dict[str, int] = {}
+        for e in self._entries:
+            p = e.protocol or "?"
+            protos[p] = protos.get(p, 0) + 1
+        proto_parts = []
+        order = ["VLESS", "VMess", "VMESS", "Trojan", "SS", "Hy2", "hysteria2", "Shadowsocks"]
+        seen = set()
+        for p in order:
+            if p in protos:
+                proto_parts.append(_("download.stats.protocol", proto=p, count=protos[p]))
+                seen.add(p)
+        for p, c in sorted(protos.items()):
+            if p not in seen:
+                proto_parts.append(_("download.stats.protocol", proto=p, count=c))
+        proto_str = " | ".join(proto_parts) if proto_parts else "—"
+
+        self.lbl_detail.setText(_("download.stats.detail",
+            total=len(self._entries),
+            sources_ok=_("download.stats.sources_ok", ok=self._sources_ok, total=self._sources_total),
+            duration=_("download.stats.duration", secs=f"{dur:.1f}"),
+            protos=proto_str))
+        self.lbl_detail.show()
+        self.lbl_total.hide()
+
+        self.btn_next.setEnabled(len(self._entries) > 0)
+        self._main.update_status_bar()
+
+    def on_enter(self):
+        self._main.update_status_bar()
+
+    def on_leave(self):
+        self._cleanup_net()
+
+    def retranslate(self):
+        self.lbl_title.setText(_("download.title"))
+        self.btn_stop.setText(_("download.btn.stop"))
+        self.btn_back.setText(_("download.btn.back"))
+        self.btn_next.setText(_("download.btn.next"))
+        self.src_group.setTitle(_("download.group.sources"))
+        self.src_table.setHorizontalHeaderLabels(["", _("download.table.source"), _("download.table.proxies")])
+        self.lbl_total.setText(_("download.stats.total", count=len(self._entries)))
+        if self._phase == self.PHASE_FETCH:
+            self.btn_stop.setText(_("download.btn.stop_fetch"))
+            self.lbl_phase.setText(_("download.phase.fetch"))
+        else:
+            self.lbl_phase.setText("")
+
+    def get_entries(self) -> list[ProxyEntry]:
+        return self._entries
+
+
+class TestPage(WizardPage):
+    PHASE_IDLE = 0
+    PHASE_TEST = 1
+    PHASE_GEO = 2
+
+    def __init__(self, main):
+        super().__init__(main)
+        self._main = main
+        self._entries = []
+        self._filtered_entries = []
+        self._filter_proto: str | None = None
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._last_log_time = 0.0
         self._phase = self.PHASE_IDLE
-        self._net_thread = None
-        self._net_worker = None
         self._test_thread = None
         self._tester = None
-        self._source_model = None
+        self._stopped = False
+        self._completed = False
+        self._test_type: str | None = None
+        self._stop_requested = False
+        self._geo_thread = None
+        self._geo_worker = None
 
         layout = QVBoxLayout(self)
 
@@ -556,27 +899,9 @@ class TestPage(WizardPage):
         top.addWidget(self.btn_stop)
 
         self.btn_back = QPushButton(_("test.btn.back"))
-        self.btn_back.clicked.connect(lambda: self._main.set_page(0))
+        self.btn_back.clicked.connect(lambda: self._main.set_page(1))
         top.addWidget(self.btn_back)
         layout.addLayout(top)
-
-        # Source status table (small, shows each source with status)
-        self.src_group = QGroupBox(_("test.group.sources"))
-        src_layout = QVBoxLayout(self.src_group)
-        src_layout.setContentsMargins(4, 4, 4, 4)
-        self.src_table = QTableWidget(0, 3)
-        self.src_table.setHorizontalHeaderLabels(["", _("test.table.source"), _("test.table.proxies")])
-        self.src_table.horizontalHeader().setStretchLastSection(True)
-        self.src_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.src_table.setColumnWidth(0, 24)
-        self.src_table.setColumnWidth(2, 60)
-        self.src_table.setMaximumHeight(120)
-        self.src_table.verticalHeader().setVisible(False)
-        self.src_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.src_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.src_table.setAlternatingRowColors(True)
-        src_layout.addWidget(self.src_table)
-        layout.addWidget(self.src_group)
 
         # Stats bar
         stats_row = QHBoxLayout()
@@ -585,13 +910,21 @@ class TestPage(WizardPage):
         self.lbl_dead = QLabel(_("test.stats.dead", count=0))
         self.lbl_current = QLabel("")
         self.lbl_current.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px; color: #7aa2f7;")
-        self.lbl_fetch_progress = QLabel("")
         for lbl in (self.lbl_total, self.lbl_valid, self.lbl_dead):
             lbl.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px;")
             stats_row.addWidget(lbl)
         stats_row.addStretch()
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems([
+            _("test.filter.all"), _("test.filter.tuic"),
+            _("test.filter.vless"), _("test.filter.vmess"),
+            _("test.filter.trojan"), _("test.filter.ss"),
+            _("test.filter.hy2"),
+        ])
+        self.filter_combo.setStyleSheet("QComboBox { font-size: 10px; padding: 2px 4px; min-width: 60px; }")
+        self.filter_combo.currentIndexChanged.connect(self._on_filter_change)
+        stats_row.addWidget(self.filter_combo)
         stats_row.addWidget(self.lbl_current)
-        stats_row.addWidget(self.lbl_fetch_progress)
 
         self.btn_tcp = QPushButton(_("test.btn.tcp"))
         self.btn_tcp.clicked.connect(self._on_tcp_test)
@@ -600,6 +933,26 @@ class TestPage(WizardPage):
         self.btn_deep = QPushButton(_("test.btn.deep"))
         self.btn_deep.clicked.connect(self._on_deep_test)
         stats_row.addWidget(self.btn_deep)
+
+        self.btn_continue = QPushButton(_("test.btn.continue"))
+        self.btn_continue.clicked.connect(self._on_continue)
+        self.btn_continue.setVisible(False)
+        stats_row.addWidget(self.btn_continue)
+
+        self.btn_geo = QPushButton(_("test.btn.geo"))
+        self.btn_geo.setEnabled(False)
+        self.btn_geo.clicked.connect(self._on_geo)
+        
+        self.lbl_threads = QLabel(_("test.threads"))
+        stats_row.addWidget(self.lbl_threads)
+        self.spin_threads = QSpinBox()
+        self.spin_threads.setRange(1, 32)
+        self.spin_threads.setValue(4)
+        self.spin_threads.setFixedWidth(50)
+        self.spin_threads.setStyleSheet("QSpinBox { font-size: 10px; padding: 2px; }")
+        stats_row.addWidget(self.spin_threads)
+        
+        stats_row.addWidget(self.btn_geo)
 
         self.btn_delete_dead = QPushButton(_("test.btn.delete_dead"))
         self.btn_delete_dead.clicked.connect(self._on_delete_dead)
@@ -626,7 +979,7 @@ class TestPage(WizardPage):
         self.proxy_table.customContextMenuRequested.connect(self._on_table_context)
         layout.addWidget(self.proxy_table)
 
-        # Progress bar + phase indicator
+        # Progress bar
         progress_row = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -639,53 +992,74 @@ class TestPage(WizardPage):
         # Log
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
-        self.log_out.setMaximumHeight(50)
-        self.log_out.setStyleSheet("background: #000000; color: #545457; font-size: 11px;")
+        self.log_out.setMaximumHeight(100)
+        self.log_out.setStyleSheet("background: #000000; color: #545457; font-size: 12px;")
         layout.addWidget(self.log_out)
 
+        # Bottom nav
         nav = QHBoxLayout()
         self.btn_export = QPushButton(_("test.btn.export"))
         self.btn_export.setEnabled(False)
-        self.btn_export.clicked.connect(lambda: self._main.set_page(2))
+        self.btn_export.clicked.connect(lambda: self._main.set_page(3))
         nav.addStretch()
         nav.addWidget(self.btn_export)
         layout.addLayout(nav)
 
+    def load_entries(self, entries: list[ProxyEntry]):
+        self._entries = entries
+        self._filtered_entries = list(entries)
+        self._valid_cnt = 0
+        self._dead_cnt = 0
+        self.filter_combo.setCurrentIndex(0)
+        self.model.clear()
+        self.model.add_proxies(entries)
+        self._update_stats()
+        has = len(entries) > 0
+        self.btn_tcp.setEnabled(has)
+        self.btn_deep.setEnabled(has)
+
     def _set_phase(self, phase: int):
         self._phase = phase
-        if phase == self.PHASE_FETCH:
-            self.btn_stop.setText(_("test.btn.stop_fetch"))
-            self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
-            self.btn_stop.setEnabled(True)
-            self.btn_tcp.setEnabled(False)
-            self.btn_deep.setEnabled(False)
-            self.progress_bar.setVisible(True)
-            self.lbl_phase.setText(_("test.phase.fetch"))
-        elif phase == self.PHASE_TEST:
+        if phase == self.PHASE_TEST:
             self.btn_stop.setText(_("test.btn.stop_test"))
             self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
             self.btn_stop.setEnabled(True)
             self.btn_tcp.setEnabled(False)
             self.btn_deep.setEnabled(False)
+            self.btn_continue.setVisible(False)
+            self.btn_geo.setEnabled(False)
             self.btn_export.setEnabled(False)
             self.progress_bar.setVisible(True)
             self.lbl_phase.setText(_("test.phase.test"))
-        else:  # IDLE
+        elif phase == self.PHASE_GEO:
+            self.btn_stop.setText(_("test.btn.stop_test"))
+            self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
+            self.btn_stop.setEnabled(True)
+            self.btn_tcp.setEnabled(False)
+            self.btn_deep.setEnabled(False)
+            self.btn_continue.setVisible(False)
+            self.btn_geo.setEnabled(False)
+            self.btn_export.setEnabled(False)
+            self.progress_bar.setVisible(True)
+            self.lbl_phase.setText(_("test.phase.geo"))
+        else:
             self.btn_stop.setText(_("test.btn.stop"))
             self.btn_stop.setStyleSheet("")
             self.btn_stop.setEnabled(False)
             self.progress_bar.setVisible(False)
             self.lbl_phase.setText("")
             has_entries = len(self._entries) > 0
+            has_valid = self._valid_cnt > 0
             self.btn_tcp.setEnabled(has_entries)
             self.btn_deep.setEnabled(has_entries)
+            self.btn_geo.setEnabled(has_valid)
             self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
-            self.btn_export.setEnabled(self._valid_cnt > 0)
+            self.btn_export.setEnabled(has_valid)
 
-    def _cleanup_net(self):
-        _cleanup_thread(getattr(self, '_net_thread', None), getattr(self, '_net_worker', None))
-        self._net_thread = None
-        self._net_worker = None
+    def _log(self, msg: str):
+        self.log_out.append(msg)
+        sb = self.log_out.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _cleanup_test(self):
         _cleanup_thread(getattr(self, '_test_thread', None), getattr(self, '_tester', None))
@@ -693,49 +1067,112 @@ class TestPage(WizardPage):
         self._tester = None
 
     def _on_stop(self):
-        _debug(f"_on_stop: phase={self._phase}")
-        if self._phase == self.PHASE_FETCH:
-            _debug("_on_stop: cleaning net")
-            self._cleanup_net()
-            _debug("_on_stop: dedup")
-            self.model.dedup_by_key()
-            self._entries = self.model.proxies
-            self._update_stats()
-            self._log(_("log.fetch_stopped", count=len(self._entries)))
-            if self._entries:
-                self.btn_tcp.setEnabled(True)
-                self.btn_deep.setEnabled(True)
-        elif self._phase == self.PHASE_TEST:
-            self._cleanup_test()
-            self._log(_("log.test_stopped"))
-            self.model.dedup_by_key()
-            self._entries = self.model.proxies
-            if self._valid_cnt > 0:
-                self.btn_export.setEnabled(True)
+        _debug("TestPage._on_stop")
+        self._stop_requested = True
+        if self._phase == self.PHASE_GEO:
+            self._cleanup_geo()
+            self._log(_("log.geo_stopped"))
+            self._set_phase(self.PHASE_IDLE)
+            self._main.update_status_bar()
+            return
+        self._cleanup_test()
+        self._log(_("log.test_stopped"))
+        self.model.dedup_by_key()
+        self._entries = self.model.proxies
+        if self._valid_cnt > 0:
+            self.btn_export.setEnabled(True)
         self._stopped = True
+        self._set_phase(self.PHASE_IDLE)
+        # Show continue if there are untested entries
+        if self._test_type and self._count_untested() > 0:
+            self.btn_continue.setVisible(True)
+        self._main.update_status_bar()
+
+    def _count_untested(self) -> int:
+        f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
+        return sum(1 for e in self._entries if not getattr(e, f))
+
+    def _on_continue(self):
+        if not self._test_type or not self._entries:
+            return
+        f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
+        remaining = [(i, e) for i, e in enumerate(self._entries) if not getattr(e, f)]
+        if not remaining:
+            self.btn_continue.setVisible(False)
+            return
+        indices, entries = zip(*remaining) if remaining else ([], [])
+        self._log(_("log.test_resumed", count=len(entries)))
+        self._run_test(deep=(self._test_type == "deep"), subset=list(entries), subset_indices=list(indices))
+
+    def _count_geo_remaining(self) -> int:
+        return sum(1 for e in self._entries if (e.tcp_ok or e.deep_ok) and not e.geo_tested)
+
+    def _cleanup_geo(self):
+        _cleanup_thread(getattr(self, '_geo_thread', None), getattr(self, '_geo_worker', None))
+        self._geo_thread = None
+        self._geo_worker = None
+
+    def _on_geo(self):
+        _debug(f"_on_geo: phase={self._phase}")
+        if self._phase != self.PHASE_IDLE:
+            return
+        entry_set = set(id(e) for e in self._filtered_entries)
+        valid = [(i, e) for i, e in enumerate(self._entries) if id(e) in entry_set and (e.tcp_ok or e.deep_ok) and not e.geo_tested]
+        if not valid:
+            self._log(_("log.geo_done", count=0))
+            return
+        indices, entries = zip(*valid)
+        self._log(_("log.geo_start", count=len(entries)))
+        self._set_phase(self.PHASE_GEO)
+        self.progress_bar.setMaximum(len(entries))
+        self.progress_bar.setValue(0)
+
+        self._geo_worker = GeoWorker()
+        self._geo_worker.geo_result_signal.connect(self._on_geo_result)
+        self._geo_worker.log_signal.connect(self._log)
+        self._geo_worker.finished.connect(self._on_geo_finished)
+
+        self._geo_thread = QThread()
+        self._geo_worker.moveToThread(self._geo_thread)
+        self._geo_thread.started.connect(
+            lambda: self._geo_worker.geo_batch(list(entries), list(indices)),
+            Qt.ConnectionType.DirectConnection)
+        self._geo_thread.start()
+
+    def _on_geo_result(self, row: int, code: str, name: str):
+        if 0 <= row < len(self._entries):
+            e = self._entries[row]
+            e.country = f"{country_flag(code)} {name}"
+            e.geo_tested = True
+            idx = self.model.index(row, 4)
+            self.model.dataChanged.emit(idx, idx)
+
+    def _on_geo_finished(self):
+        self._cleanup_geo()
+        total = sum(1 for e in self._entries if e.geo_tested)
+        self._log(_("log.geo_done", count=total))
         self._set_phase(self.PHASE_IDLE)
         self._main.update_status_bar()
 
-    def _log(self, msg: str):
-        self.log_out.append(msg)
-        sb = self.log_out.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
     def _on_tcp_test(self):
-        _debug(f"_on_tcp_test: entries={len(self._entries)}")
-        if not self._entries:
+        if self._phase == self.PHASE_TEST:
+            return
+        if not self._filtered_entries:
             return
         self._valid_cnt = 0
         self._dead_cnt = 0
-        self._run_test(deep=False)
+        self._test_type = "tcp"
+        self._run_test(deep=False, subset=self._filtered_entries)
 
     def _on_deep_test(self):
-        _debug(f"_on_deep_test: entries={len(self._entries)}")
-        if not self._entries:
+        if self._phase == self.PHASE_TEST:
+            return
+        if not self._filtered_entries:
             return
         self._valid_cnt = 0
         self._dead_cnt = 0
-        self._run_test(deep=True)
+        self._test_type = "deep"
+        self._run_test(deep=True, subset=self._filtered_entries)
 
     def _on_delete_dead(self):
         if self._dead_cnt == 0:
@@ -749,20 +1186,19 @@ class TestPage(WizardPage):
         self._entries = alive
         self._valid_cnt = len(alive)
         self._dead_cnt = 0
-        self.model.clear()
-        self.model.add_proxies(alive)
-        self._update_stats()
+        self._apply_filter()
         self.btn_delete_dead.setEnabled(False)
         self.btn_export.setEnabled(self._valid_cnt > 0)
         self._log(_("log.deleted_dead", count=removed))
 
-    def _run_test(self, deep: bool = False):
-        _debug(f"_run_test: deep={deep} entries={len(self._entries)}")
+    def _run_test(self, deep: bool = False, subset: list[ProxyEntry] | None = None, subset_indices: list[int] | None = None):
+        target = subset if subset is not None else self._entries
+        self._stop_requested = False
         self._set_phase(self.PHASE_TEST)
         self.progress_bar.setMaximum(len(self._entries))
-        self.progress_bar.setValue(0)
+        self.progress_bar.setValue(len(self._entries) - len(target))
 
-        self._tester = TesterWorker(deep=deep, test_threads=4, deep_threads=2)
+        self._tester = TesterWorker(deep=deep, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
         self._tester.result_signal.connect(self._on_test_result)
         self._tester.testing_signal.connect(self._on_testing_start)
         self._tester.progress_signal.connect(self._on_test_progress)
@@ -772,9 +1208,11 @@ class TestPage(WizardPage):
 
         self._test_thread = QThread()
         self._tester.moveToThread(self._test_thread)
-        self._test_thread.started.connect(lambda: self._tester.test_batch(self._entries), Qt.ConnectionType.DirectConnection)
+        if subset_indices is not None:
+            self._test_thread.started.connect(lambda: self._tester.test_batch(target, subset_indices), Qt.ConnectionType.DirectConnection)
+        else:
+            self._test_thread.started.connect(lambda: self._tester.test_batch(target), Qt.ConnectionType.DirectConnection)
         self._test_thread.start()
-        _debug("_run_test: thread started")
 
     def _on_testing_start(self, row: int, info: str):
         idx = self.model.index(row, 0)
@@ -801,7 +1239,6 @@ class TestPage(WizardPage):
         self.progress_bar.setValue(c)
 
     def _on_test_progress(self, done: int, total: int, threads: int, mode: str):
-        _debug(f"test_progress: {mode} {done}/{total}")
         now = time.time()
         if now - self._last_log_time > 0.5:
             self._log(_("event.threads", mode=mode, done=done, total=total, threads=threads))
@@ -810,124 +1247,40 @@ class TestPage(WizardPage):
             self.lbl_current.setText(_("event.test_progress", mode=mode, done=done, total=total, pct=done*100//max(total,1)))
 
     def _on_test_finished(self):
-        _debug("_on_test_finished: start")
         self._cleanup_test()
+        if self._stop_requested:
+            self._stop_requested = False
+            return
         self._stopped = False
         self._completed = True
         self._set_phase(self.PHASE_IDLE)
         self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
+        self.btn_geo.setEnabled(self._valid_cnt > 0)
         self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
         self._main.update_status_bar()
 
-    def _update_stats(self):
-        total = len(self._entries)
-        self.lbl_total.setText(_("test.stats.total", count=total))
-        self.lbl_valid.setText(_("test.stats.valid", count=self._valid_cnt))
-        self.lbl_dead.setText(_("test.stats.dead", count=self._dead_cnt))
-        waiting = total - self._valid_cnt - self._dead_cnt
-        self.lbl_fetch_progress.setText(_("test.stats.waiting", count=waiting) if waiting else "")
+    def _on_filter_change(self, idx: int):
+        proto_map = [None, "TUIC", "VLESS", "VMESS", "Trojan", "SS", "Hy2"]
+        self._filter_proto = proto_map[idx] if 0 < idx < len(proto_map) else None
+        self._apply_filter()
 
-    def _on_source_started(self, name: str, idx: int):
-        for row in range(self.src_table.rowCount()):
-            item = self.src_table.item(row, 1)
-            if item and item.text() == name[:60]:
-                icon_item = self.src_table.item(row, 0)
-                if icon_item:
-                    icon_item.setText("⟳")
-                # Highlight active row
-                for c in range(3):
-                    cell = self.src_table.item(row, c)
-                    if cell:
-                        cell.setBackground(QColor("#1a1a2e"))
-                break
-
-    def _add_source_row(self, name: str):
-        row = self.src_table.rowCount()
-        self.src_table.insertRow(row)
-        icon_item = QTableWidgetItem("⏳")
-        icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.src_table.setItem(row, 0, icon_item)
-        name_item = QTableWidgetItem(name[:60])
-        name_item.setToolTip(name)
-        self.src_table.setItem(row, 1, name_item)
-        count_item = QTableWidgetItem("...")
-        count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.src_table.setItem(row, 2, count_item)
-
-    def _update_source_row(self, name: str, ok: bool, count: int):
-        for row in range(self.src_table.rowCount()):
-            item = self.src_table.item(row, 1)
-            if item and item.text() == name[:60]:
-                icon_item = self.src_table.item(row, 0)
-                if icon_item:
-                    icon_item.setText("✅" if ok else "❌")
-                count_item = self.src_table.item(row, 2)
-                if count_item:
-                    count_item.setText(str(count))
-                # Reset background
-                for c in range(3):
-                    cell = self.src_table.item(row, c)
-                    if cell:
-                        cell.setBackground(QColor("#000000"))
-                break
-
-    def fetch_sources(self, sources: list[tuple[str, str]]):
-        _debug(f"fetch_sources: start n={len(sources)}")
-        self._cleanup_net()
-        self._cleanup_test()
-        self._set_phase(self.PHASE_FETCH)
-        self._log(_("log.fetch_start", count=len(sources)))
+    def _apply_filter(self):
+        if self._filter_proto is None:
+            self._filtered_entries = list(self._entries)
+        else:
+            self._filtered_entries = [e for e in self._entries if e.protocol == self._filter_proto]
         self.model.clear()
-        self._entries = []
-        self._valid_cnt = 0
-        self._dead_cnt = 0
-        self._last_log_time = 0.0
-        self._update_stats()
-        self._completed = False
-        self._stopped = False
-
-        # Reset source table
-        self.src_table.setRowCount(0)
-        for name, _url in sources:
-            self._add_source_row(name)
-
-        self.progress_bar.setMaximum(len(sources))
-        self.progress_bar.setValue(0)
-
-        self._net_worker = NetworkWorker()
-        self._net_worker.proxy_parsed.connect(self._on_proxy_parsed)
-        self._net_worker.log_signal.connect(self._log)
-        self._net_worker.source_started.connect(self._on_source_started)
-        self._net_worker.source_status.connect(self._update_source_row)
-        self._net_worker.progress_signal.connect(self._on_fetch_progress)
-        self._net_worker.finished.connect(self._on_fetch_finished)
-
-        self._net_thread = QThread()
-        self._net_worker.moveToThread(self._net_thread)
-        self._net_thread.started.connect(lambda: self._net_worker.fetch_all(sources), Qt.ConnectionType.DirectConnection)
-        self._net_thread.start()
-        _debug("fetch_sources: thread started")
-
-    def _on_fetch_progress(self, done: int, total: int, name: str):
-        _debug(f"on_fetch_progress: {done}/{total} - {name[:50]}")
-        self.progress_bar.setValue(done)
-        self.lbl_fetch_progress.setText(f"{done}/{total}")
-
-    def _on_proxy_parsed(self, entries: list[ProxyEntry]):
-        _debug(f"on_proxy_parsed: +{len(entries)} = {len(self._entries) + len(entries)}")
-        self.model.add_proxies(entries)
-        self._entries.extend(entries)
+        self.model.add_proxies(self._filtered_entries)
         self._update_stats()
 
-    def _on_fetch_finished(self):
-        _debug("on_fetch_finished: start")
-        self._cleanup_net()
-        self._log(_("log.fetch_done", count=len(self._entries)))
-        self.model.dedup_by_key()
-        self._entries = self.model.proxies
-        self._update_stats()
-        self._set_phase(self.PHASE_IDLE)
-        self._main.update_status_bar()
+    def _update_stats(self):
+        entries = self._filtered_entries
+        total = len(entries)
+        valid = sum(1 for e in entries if e.tcp_ok is True or e.deep_ok is True)
+        dead = sum(1 for e in entries if e.tcp_ok is False and e.deep_ok is False and (e.tcp_tested or e.deep_tested))
+        self.lbl_total.setText(_("test.stats.total", count=total))
+        self.lbl_valid.setText(_("test.stats.valid", count=valid))
+        self.lbl_dead.setText(_("test.stats.dead", count=dead))
 
     def _on_table_context(self, pos):
         idx = self.proxy_table.indexAt(pos)
@@ -949,39 +1302,50 @@ class TestPage(WizardPage):
     def on_enter(self):
         self._update_stats()
         self.btn_export.setEnabled(self._valid_cnt > 0)
+        self.btn_geo.setEnabled(self._valid_cnt > 0 and self._count_geo_remaining() > 0)
         self._main.update_status_bar()
 
     def on_leave(self):
-        _debug("TestPage.on_leave: start")
-        self._cleanup_net()
         self._cleanup_test()
-        _debug("TestPage.on_leave: done")
+        self._cleanup_geo()
 
     def retranslate(self):
         self.lbl_title.setText(_("test.title"))
         self.btn_stop.setText(_("test.btn.stop"))
         self.btn_back.setText(_("test.btn.back"))
-        self.src_group.setTitle(_("test.group.sources"))
-        self.src_table.setHorizontalHeaderLabels(["", _("test.table.source"), _("test.table.proxies")])
         self.lbl_total.setText(_("test.stats.total", count=len(self._entries)))
         self.lbl_valid.setText(_("test.stats.valid", count=self._valid_cnt))
         self.lbl_dead.setText(_("test.stats.dead", count=self._dead_cnt))
         self.btn_tcp.setText(_("test.btn.tcp"))
         self.btn_deep.setText(_("test.btn.deep"))
+        self.btn_continue.setText(_("test.btn.continue"))
+        self.btn_geo.setText(_("test.btn.geo"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))
         self.btn_export.setText(_("test.btn.export"))
-        if self._phase == self.PHASE_FETCH:
-            self.btn_stop.setText(_("test.btn.stop_fetch"))
-            self.lbl_phase.setText(_("test.phase.fetch"))
-        elif self._phase == self.PHASE_TEST:
+        # Rebuild filter combo
+        current = self.filter_combo.currentIndex()
+        self.filter_combo.blockSignals(True)
+        self.filter_combo.clear()
+        self.filter_combo.addItems([
+            _("test.filter.all"), _("test.filter.tuic"),
+            _("test.filter.vless"), _("test.filter.vmess"),
+            _("test.filter.trojan"), _("test.filter.ss"),
+            _("test.filter.hy2"),
+        ])
+        self.filter_combo.setCurrentIndex(min(current, self.filter_combo.count() - 1))
+        self.filter_combo.blockSignals(False)
+        self.lbl_threads.setText(_("test.threads"))
+        if self._phase == self.PHASE_TEST:
             self.btn_stop.setText(_("test.btn.stop_test"))
             self.lbl_phase.setText(_("test.phase.test"))
+        elif self._phase == self.PHASE_GEO:
+            self.lbl_phase.setText(_("test.phase.geo"))
         else:
             self.lbl_phase.setText("")
         self._update_stats()
 
     def get_entries(self) -> list[ProxyEntry]:
-        return self._entries
+        return self._filtered_entries
 
 
 class ExportPage(WizardPage):
@@ -998,7 +1362,7 @@ class ExportPage(WizardPage):
         top.addStretch()
 
         self.btn_back = QPushButton(_("export.btn.back"))
-        self.btn_back.clicked.connect(lambda: self._main.set_page(1))
+        self.btn_back.clicked.connect(lambda: self._main.set_page(2))
         top.addWidget(self.btn_back)
         layout.addLayout(top)
 
@@ -1025,9 +1389,11 @@ class ExportPage(WizardPage):
         opt_layout = QVBoxLayout(self.opt_group)
         self.chk_failed = QCheckBox(_("export.chk.failed"))
         self.chk_smart_names = QCheckBox(_("export.chk.smart_names"))
+        self.chk_clean_names = QCheckBox(_("export.chk.clean_names"))
         self.chk_smart_names.setChecked(True)
         opt_layout.addWidget(self.chk_failed)
         opt_layout.addWidget(self.chk_smart_names)
+        opt_layout.addWidget(self.chk_clean_names)
         layout.addWidget(self.opt_group)
 
         layout.addStretch()
@@ -1078,7 +1444,10 @@ class ExportPage(WizardPage):
     def _get_content(self) -> str:
         entries = self._main.test_page.get_entries()
         fmt = self._get_format_func()
-        if self.chk_smart_names.isChecked() and self.fmt_raw.isChecked():
+        clean_names = self.chk_clean_names.isChecked()
+        
+        # Check if we are doing Raw + Smart/Clean names
+        if (self.chk_smart_names.isChecked() or clean_names) and self.fmt_raw.isChecked():
             lines = []
             idx = 0
             include_failed = self.chk_failed.isChecked()
@@ -1088,9 +1457,13 @@ class ExportPage(WizardPage):
                 if not include_failed and not _entry_ok(e):
                     continue
                 idx += 1
-                name = smart_name(e, idx)
+                name = smart_name(e, idx, clean_names)
                 lines.append(f"{e.uri}#{name}")
             return "\n".join(lines) + "\n"
+        
+        # Handle other formats
+        if self.fmt_clash.isChecked():
+            return fmt(entries, include_failed=self.chk_failed.isChecked(), clean_names=clean_names)
         return fmt(entries, include_failed=self.chk_failed.isChecked())
 
     def _update_preview(self):
@@ -1124,7 +1497,7 @@ class ExportPage(WizardPage):
         QMessageBox.information(self, _("msg.done"), _("msg.copied"))
 
     def _on_save(self):
-        ts = datetime.now().strftime("%m.%d_%H%M")
+        ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         default_name = f"sub_ski_{ts}.txt"
         path, _ = QFileDialog.getSaveFileName(self, _("export.btn.save"),
                                               os.path.join(DESKTOP_DIR, default_name),
@@ -1137,7 +1510,7 @@ class ExportPage(WizardPage):
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
     def _on_save_desktop(self):
-        ts = datetime.now().strftime("%m.%d_%H%M")
+        ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         path = os.path.join(DESKTOP_DIR, f"sub_ski_{ts}.txt")
         content = self._get_content()
         with open(path, "w") as f:
@@ -1201,11 +1574,7 @@ class SettingsDialog(QDialog):
         self.tokens_edit.setPlainText("\n".join(tokens))
         gh_layout.addWidget(self.tokens_edit)
 
-        gh_layout.addWidget(QLabel(_("settings.label.default_repo")))
-        self.default_repo = QLineEdit(_settings_data.get("default_repo", ""))
-        self.default_repo.setPlaceholderText("github.com/owner/repo")
-        gh_layout.addWidget(self.default_repo)
-
+        gh_layout.addWidget(QLabel(_("settings.label.gh_url_hint")))
         btn_check = QPushButton(_("settings.btn.check_token"))
         btn_check.clicked.connect(self._on_check_token)
         gh_layout.addWidget(btn_check)
@@ -1261,7 +1630,6 @@ class SettingsDialog(QDialog):
         _settings_data["proxy_type"] = self.proxy_type.currentText().lower()
         _settings_data["proxy_host"] = self.proxy_host.text().strip()
         _settings_data["proxy_port"] = self.proxy_port.value()
-        _settings_data["default_repo"] = self.default_repo.text().strip()
         _save_settings(_settings_data)
         self.accept()
 
@@ -1270,6 +1638,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(_("main.title"))
+        # Window icon for taskbar
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         self.setMinimumSize(640, 480)
         self.resize(880, 600)
 
@@ -1279,6 +1651,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 0)
 
         self.source_page = SourcesPage(self)
+        self.download_page = DownloadPage(self)
         self.test_page = TestPage(self)
         self.export_page = ExportPage(self)
 
@@ -1288,57 +1661,41 @@ class MainWindow(QMainWindow):
         self.proxy_toggle = QCheckBox(_("main.proxy_toggle"))
         self.proxy_toggle.setChecked(_settings_data.get("proxy_enabled", True))
         self.proxy_toggle.toggled.connect(self._on_toggle_proxy)
-        self.proxy_toggle.setStyleSheet("""
-            QCheckBox {
-                spacing: 6px; font-size: 12px; color: #c0caf5;
-            }
-            QCheckBox::indicator {
-                width: 40px; height: 20px; border-radius: 10px;
-                border: 2px solid #7aa2f7;
-            }
-            QCheckBox::indicator:checked {
-                background: #7aa2f7; border-color: #7aa2f7;
-            }
-            QCheckBox::indicator:unchecked {
-                background: #1f2335; border-color: #7aa2f7;
-            }
-        """)
+        self.proxy_toggle.setObjectName("ProxyToggle")
         proxy_row.addWidget(self.proxy_toggle)
         proxy_row.addStretch()
         layout.addLayout(proxy_row)
 
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.source_page)
-        self.stack.addWidget(self.test_page)
-        self.stack.addWidget(self.export_page)
+        self.stack.addWidget(self.source_page)    # 0
+        self.stack.addWidget(self.download_page)  # 1
+        self.stack.addWidget(self.test_page)      # 2
+        self.stack.addWidget(self.export_page)    # 3
         layout.addWidget(self.stack)
 
-        nav = QHBoxLayout()
-        self.btn_prev = QPushButton(_("main.btn.prev"))
-        self.btn_prev.clicked.connect(self._on_prev)
-        self.btn_prev.setEnabled(False)
-        nav.addWidget(self.btn_prev)
-
-        self.page_label = QLabel(_("main.page.title.1"))
-        nav.addWidget(self.page_label)
-
-        nav.addStretch()
-        self.btn_next = QPushButton(_("main.btn.next"))
-        self.btn_next.clicked.connect(self._on_next)
-        nav.addWidget(self.btn_next)
-        layout.addLayout(nav)
-
-        # Global status bar
+        # Clickable step labels (replaces nav bar)
         status_bar = QHBoxLayout()
         status_bar.setContentsMargins(2, 1, 2, 2)
         self._status_search = QLabel("🔍 ⏹")
         self._status_search.setObjectName("StatusBarLabel")
+        self._status_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._status_search.mousePressEvent = lambda e: self.set_page(0)
+
         self._status_fetch = QLabel("📥 ⏹")
         self._status_fetch.setObjectName("StatusBarLabel")
+        self._status_fetch.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._status_fetch.mousePressEvent = lambda e: self.set_page(1)
+
         self._status_test = QLabel("⚡ ⏹")
         self._status_test.setObjectName("StatusBarLabel")
+        self._status_test.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._status_test.mousePressEvent = lambda e: self.set_page(2)
+
         self._status_export = QLabel("📤 ⏹")
         self._status_export.setObjectName("StatusBarLabel")
+        self._status_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._status_export.mousePressEvent = lambda e: self.set_page(3)
+
         status_bar.addWidget(self._status_search)
         status_bar.addWidget(self._status_fetch)
         status_bar.addWidget(self._status_test)
@@ -1347,7 +1704,6 @@ class MainWindow(QMainWindow):
         layout.addLayout(status_bar)
 
         self._current_page = 0
-        self._page_titles = [_("main.page.title.1"), _("main.page.title.2"), _("main.page.title.3")]
         self.apply_theme()
 
     def _on_toggle_proxy(self, enabled: bool):
@@ -1357,23 +1713,24 @@ class MainWindow(QMainWindow):
 
     def update_status_bar(self):
         sp = self.source_page
+        dp = self.download_page
         tp = self.test_page
         ep = self.export_page
 
         src_has_sources = len(sp.get_sources()) > 0
         self._status_search.setText(f"🔍 {'✅' if src_has_sources else '⏹'}")
 
-        entries = tp.get_entries()
-        total = len(entries)
-        valid = sum(1 for e in entries if e.tcp_ok is True or e.deep_ok is True)
-
-        if tp._phase == tp.PHASE_FETCH:
+        dl_entries = dp.get_entries() if hasattr(dp, 'get_entries') else []
+        if dp._phase == dp.PHASE_FETCH:
             self._status_fetch.setText(f"📥 ⏳")
-        elif total > 0:
-            self._status_fetch.setText(f"📥 {'✅' if total > 0 else '❌'}")
+        elif len(dl_entries) > 0:
+            self._status_fetch.setText(f"📥 ✅")
         else:
             self._status_fetch.setText(f"📥 ⏹")
 
+        test_entries = tp.get_entries()
+        total = len(test_entries)
+        valid = sum(1 for e in test_entries if e.tcp_ok is True or e.deep_ok is True)
         if tp._phase == tp.PHASE_TEST:
             self._status_test.setText(f"⚡ ⏳")
         elif valid > 0:
@@ -1383,43 +1740,52 @@ class MainWindow(QMainWindow):
         else:
             self._status_test.setText(f"⚡ ⏹")
 
-        ep_visited = ep._main._current_page == 2
+        ep_visited = ep._main._current_page >= 2
         self._status_export.setText(f"📤 {'✅' if ep_visited else '⏹'}")
 
     def set_page(self, idx: int):
-        if idx < 0 or idx > 2:
+        if idx < 0 or idx > 3:
             return
-        # Call on_leave for current page
         current_w = self.stack.currentWidget()
         if hasattr(current_w, 'on_leave'):
             current_w.on_leave()
 
         self._current_page = idx
         self.stack.setCurrentIndex(idx)
-        self.page_label.setText(self._page_titles[idx])
-        self.btn_prev.setEnabled(idx > 0)
-        self.btn_next.setText([_("main.btn.next"), _("main.btn.next_step3"), _("main.btn.done")][idx])
         w = self.stack.currentWidget()
         if hasattr(w, 'on_enter'):
             w.on_enter()
-
-    def _on_prev(self):
-        self.set_page(self._current_page - 1)
-
-    def _on_next(self):
-        if self._current_page < 2:
-            self.set_page(self._current_page + 1)
-        else:
-            QMessageBox.information(self, _("msg.done"), _("msg.all_done"))
+        self.update_status_bar()
 
     def apply_theme(self):
         theme = current_theme()
         colors = THEMES[theme]
         QApplication.instance().setStyleSheet(get_style_string(colors))
+
+        # Theme-aware proxy toggle
+        indicator_bg = colors.get('button_bg', '#1f2335')
+        indicator_accent = colors['accent']
+        fg = colors['fg']
+        self.proxy_toggle.setStyleSheet(f"""
+            QCheckBox {{
+                spacing: 6px; font-size: 12px; color: {fg};
+            }}
+            QCheckBox::indicator {{
+                width: 40px; height: 20px; border-radius: 10px;
+                border: 2px solid {indicator_accent};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {indicator_accent}; border-color: {indicator_accent};
+            }}
+            QCheckBox::indicator:unchecked {{
+                background: {indicator_bg}; border-color: {indicator_accent};
+            }}
+        """)
         self.apply_language()
 
     def apply_language(self):
         self.source_page.retranslate()
+        self.download_page.retranslate()
         self.test_page.retranslate()
         self.export_page.retranslate()
 
@@ -1430,13 +1796,11 @@ class MainWindow(QMainWindow):
             self.source_page._refresh_toolbar_buttons()
         self.update_status_bar()
 
-    def _get_next_text(self):
-        return [_("main.btn.next"), _("main.btn.next_step3"), _("main.btn.done")][self._current_page]
-
     def closeEvent(self, event):
         self.source_page._cleanup_gh()
-        self.test_page._cleanup_net()
+        self.download_page._cleanup_net()
         self.test_page._cleanup_test()
+        self.test_page._cleanup_geo()
         event.accept()
 
 def get_style_string(colors: dict) -> str:
