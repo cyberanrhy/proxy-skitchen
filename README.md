@@ -4,6 +4,18 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://wiki.qt.io/Qt_for_Python)
 
+<table>
+<tr>
+<td>
+
+**🇷🇺 Живущим в блокировках — держитесь. Свободный интернет всё ещё существует, просто его теперь ищут.**
+
+**🌍 To those living behind censorship firewalls — stay strong. The open internet still exists; you just have to look a little harder for it.**
+
+</td>
+</tr>
+</table>
+
 > Find working proxy servers and subscriptions in minutes.  
 > Scrape, test, and export — all in one desktop app.
 
@@ -96,7 +108,3 @@ python3 -m proxy_skitchen test 1.2.3.4 443
 ## License
 
 MIT
-
----
-
-*Живущим в блокировках — держитесь. Свободный интернет всё ещё существует, просто его теперь ищут.*
