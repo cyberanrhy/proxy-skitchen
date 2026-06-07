@@ -4,44 +4,57 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/GUI-PySide6-green.svg)](https://wiki.qt.io/Qt_for_Python)
 
-**proxy-skitchen** — a desktop application for proxy scraping, searching, deep testing, and exporting.  
-Designed for anyone who works with proxy subscriptions, V2Ray configs, and modern proxy protocols.
-
-Built on top of [proxy-fetcher-gui](https://github.com/igareck/proxy-fetcher-gui).  
-Supports **VLESS**, **VMess**, **Trojan**, **Shadowsocks**, **Hysteria2**, **TUIC**, and **WireGuard** URIs.
+> Find working proxy servers and subscriptions in minutes.  
+> Scrape, test, and export — all in one desktop app.
 
 ![screenshot](screenshot.png)
 
 ---
 
-## Why proxy-skitchen?
+## Stop hunting for proxies. Let the kitchen do the work.
 
-- **GitHub proxy search** — finds configs by keywords across repositories, including deep scanning of hidden files.
-- **Multi-format export** — Clash YAML, sing-box JSON, Hiddify subscription, V2RayN, raw proxy list.
-- **Deep testing** — real HTTP validation via sing-box (not just TCP ping).
-- **Lightweight GUI** — runs on modest hardware, optional Weak HW mode.
-- **Privacy-first** — no telemetry, no external services (except GitHub API for search).
+**proxy-skitchen** automatically finds proxy configs on GitHub, tests them for real, and exports only the working ones.
 
----
+Whether you need a handful of reliable servers for daily use or a large pool for load testing — you set the keywords, and the app does the rest.
 
-## Features
+### What you get
 
-- **🔍 GitHub Search** — scrape proxy configs from public repositories using keywords and URL filters.
-- **⬇ Subscription Download** — multi-threaded fetcher with auto-detection of Base64 and plain text.
-- **🌍 Geo Detection** — automatic country flag lookup for tested proxies.
-- **✅ TCP Test** — fast connectivity check (host:port, 12s timeout).
-- **🧪 Deep Test** — full HTTP validation via sing-box for reliable results.
-- **📦 Export Formats** — Clash, sing-box, Hiddify, V2RayN, raw proxy list.
-- **🔄 Hiddify Integration** — one-click subscription import into HiddifyNext.
-- **🕵 SNI Parsing** — automatic domain extraction from any proxy URI.
-- **⚡ Performance Modes** — three presets for low-end to high-end machines.
+- **Live proxy list** — not dead links, not outdated dumps. Only servers that passed real TCP + HTTP testing.
+- **Any format** — Clash, sing-box, Hiddify, V2RayN, or plain URI list. Import anywhere.
+- **All major protocols** — VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC.
+- **Country flags** — see at a glance where each server is located.
 
 ---
 
-## Protocols
+## How it works
 
-| Protocol | Parsing | Sing-box Test | Hiddify Export |
-|----------|---------|---------------|----------------|
+```
+🔍 Search GitHub  →  ⬇ Download configs  →  ✅ Test  →  📦 Export
+```
+
+1. **Search** — enter keywords like "vless subscription" or paste a GitHub repo URL.
+2. **Download** — the app fetches all found configs in one click.
+3. **Test** — quick TCP check, then deep HTTP validation via sing-box.
+4. **Export** — save the working list in your preferred format.
+
+---
+
+## Why you'll like it
+
+| | |
+|---|---|
+| **No hunting** | Scans GitHub repos automatically — finds what others hide in config files, READMEs, even random `.txt` dumps. |
+| **No dead proxies** | Deep test makes real HTTP requests, not just ping. If it passes — it works. |
+| **One-click export** | Clash, sing-box, Hiddify, V2RayN — pick your poison. |
+| **Runs anywhere** | Works on Linux (including old laptops). Weak HW mode for low-RAM machines. |
+| **Privacy first** | No accounts, no telemetry, no cloud. Everything runs locally. |
+
+---
+
+## Supported protocols
+
+| Protocol | Parse | Test | Export |
+|----------|-------|------|--------|
 | VLESS | ✓ | ✓ | ✓ |
 | VMess | ✓ | ✓ | ✓ |
 | Trojan | ✓ | ✓ | ✓ |
@@ -52,14 +65,7 @@ Supports **VLESS**, **VMess**, **Trojan**, **Shadowsocks**, **Hysteria2**, **TUI
 
 ---
 
-## Requirements
-
-- Python 3.10+
-- PySide6 (Qt6)
-- sing-box *(optional, for deep test)*
-- curl
-
-## Installation
+## Quick start
 
 ```bash
 git clone https://github.com/cyberanrhy/proxy-skitchen.git
@@ -68,51 +74,21 @@ pip install -r requirements.txt
 python3 -m proxy_skitchen
 ```
 
-## Usage
-
-1. **Search** — enter keywords or a GitHub repo URL.
-2. **Download** — select sources and fetch.
-3. **Test** — TCP (fast) → Deep (sing-box) → optional Geo.
-4. **Export** — save working proxies in any supported format.
-
-### Performance Modes
-
-| Mode | TCP Threads | Deep Threads | Repositories | Files |
-|------|-------------|--------------|--------------|-------|
-| 🐢 Low | 2 | 1 | 3 | 20 |
-| ⚡ Medium | 4 | 2 | 8 | 50 |
-| 🚀 High | 8 | 3 | 15 | 150 |
-
-### CLI
-
-```bash
-# Search subscriptions
-python3 -m proxy_skitchen search "vless subscription" --output sources.txt
-
-# Full pipeline: search → download → TCP test → save
-python3 -m proxy_skitchen pipeline "vless subscription" --deep --output working.txt
-
-# Test a single proxy
-python3 -m proxy_skitchen test 1.2.3.4 443
-```
+*Requires Python 3.10+ and curl. sing-box is optional (needed for deep test).*
 
 ---
 
-## Project Structure
+## CLI mode
 
-```
-proxy-skitchen/
-├── proxy_skitchen/
-│   ├── ui.py               # GUI (PySide6)
-│   ├── workers.py          # Background workers
-│   ├── models.py           # Data + settings
-│   ├── parsers.py          # Protocol parsing
-│   ├── tester.py           # TCP + Deep testing
-│   ├── exporters.py        # Export formats
-│   └── compat.py           # PySide2/PySide6 compat
-├── requirements.txt
-├── pyproject.toml
-└── README.md
+```bash
+# Search and save
+python3 -m proxy_skitchen search "vless subscription" --output sources.txt
+
+# Full pipeline
+python3 -m proxy_skitchen pipeline "vless subscription" --deep --output working.txt
+
+# Quick test
+python3 -m proxy_skitchen test 1.2.3.4 443
 ```
 
 ---
