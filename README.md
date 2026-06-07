@@ -8,6 +8,8 @@
 
 Fork of [proxy-fetcher-gui](https://github.com/igareck/proxy-fetcher-gui).
 
+![screenshot](screenshot.png)
+
 ## Features
 
 - 🔍 **Source Search** — GitHub repository parsing by keywords + direct URL entry.
