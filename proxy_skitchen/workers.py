@@ -14,9 +14,11 @@ from .models import ProxyEntry, _auth_data, _settings_data
 from .parsers import is_proxy_uri, extract_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
 from .tester import test_tcp, test_tls, resolve_host
 
+_WORKERS_LOG = os.path.join(TMP_DIR, "workers.log")
+
 def _debug(msg: str):
     try:
-        with open("/tmp/proxy-fetcher-workers.log", "a") as f:
+        with open(_WORKERS_LOG, "a") as f:
             f.write(f"[{datetime.now().isoformat()}] {msg}\n")
     except Exception:
         pass
@@ -177,29 +179,46 @@ class NetworkWorker(QObject):
             if self._stop:
                 return None
             try:
-                cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "20"]
-                if use_proxy and proxy_enabled:
-                    cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
-                cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
-                _debug(f"_http_get: curl attempt={attempt} proxy={use_proxy} url={url[:80]}")
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                with self._procs_lock:
-                    self._procs.append(proc)
                 try:
-                    out, _ = proc.communicate(timeout=25)
+                    import shutil
+                    if shutil.which("curl"):
+                        cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "20"]
+                        if use_proxy and proxy_enabled:
+                            cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
+                        cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
+                        _debug(f"_http_get: curl attempt={attempt} proxy={use_proxy}")
+                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        with self._procs_lock:
+                            self._procs.append(proc)
+                        try:
+                            out, _ = proc.communicate(timeout=25)
+                            if self._stop:
+                                return None
+                            if proc.returncode == 0:
+                                return out.decode("utf-8", errors="ignore")
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait(2)
+                        finally:
+                            with self._procs_lock:
+                                if proc in self._procs:
+                                    self._procs.remove(proc)
+                    else:
+                        raise FileNotFoundError("curl not found")
+                except FileNotFoundError:
+                    _debug(f"_http_get: curl not found, using urllib")
                     if self._stop:
                         return None
-                    _debug(f"_http_get: curl done rc={proc.returncode} len={len(out)}")
-                    if proc.returncode == 0:
-                        return out.decode("utf-8", errors="ignore")
-                except subprocess.TimeoutExpired:
-                    _debug("_http_get: timeout")
-                    proc.kill()
-                    proc.wait(2)
-                finally:
-                    with self._procs_lock:
-                        if proc in self._procs:
-                            self._procs.remove(proc)
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    if use_proxy and proxy_enabled:
+                        handler = urllib.request.ProxyHandler({"http": HIDDIFY_PROXY, "https": HIDDIFY_PROXY})
+                        opener = urllib.request.build_opener(handler)
+                        resp = opener.open(req, timeout=20)
+                    else:
+                        resp = urllib.request.urlopen(req, timeout=20)
+                    data = resp.read().decode("utf-8", errors="ignore")
+                    _debug(f"_http_get: urllib done len={len(data)}")
+                    return data
             except Exception as e:
                 _debug(f"_http_get: error {e}")
             if self._stop:
@@ -348,43 +367,71 @@ class GitHubSearchWorker(QObject):
             for use_proxy in [False, True] if _settings_data.get("proxy_enabled", True) else [False]:
                 if self._stop:
                     return None
-                cmd = ["curl", "-s", "--connect-timeout", "8", "--max-time", str(timeout)]
-                if use_proxy:
-                    cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
-                cmd.extend(["-H", "Accept: application/vnd.github.v3+json",
-                            "-H", "User-Agent: proxy-skitchen/2.0"])
-                if token:
-                    cmd.extend(["-H", f"Authorization: token {token}"])
-                cmd.append(url)
                 try:
-                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    with self._procs_lock:
-                        self._procs.append(proc)
                     try:
-                        out, err = proc.communicate(timeout=timeout + 5)
-                        if self._stop:
-                            return None
-                        if proc.returncode != 0:
-                            self.progress_signal.emit(f"  ⚠ curl err: {err.decode()[:80]}")
-                            continue
-                        data = json.loads(out)
+                        import shutil
+                        if shutil.which("curl"):
+                            cmd = ["curl", "-s", "--connect-timeout", "8", "--max-time", str(timeout)]
+                            if use_proxy:
+                                cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
+                            cmd.extend(["-H", "Accept: application/vnd.github.v3+json",
+                                        "-H", "User-Agent: proxy-skitchen/2.0"])
+                            if token:
+                                cmd.extend(["-H", f"Authorization: token {token}"])
+                            cmd.append(url)
+                            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            with self._procs_lock:
+                                self._procs.append(proc)
+                            try:
+                                out, err = proc.communicate(timeout=timeout + 5)
+                                if self._stop:
+                                    return None
+                                if proc.returncode != 0:
+                                    self.progress_signal.emit(f"  ⚠ curl err: {err.decode()[:80]}")
+                                    continue
+                                data = json.loads(out)
+                                if isinstance(data, dict) and data.get("message"):
+                                    self.progress_signal.emit(f"  ⚠ API: {data['message'][:60]}")
+                                    if "rate" in data["message"].lower():
+                                        time.sleep(2)
+                                    continue
+                                return data
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                proc.wait(2)
+                                self.progress_signal.emit(f"  ⚠ timeout")
+                                continue
+                            finally:
+                                with self._procs_lock:
+                                    if proc in self._procs:
+                                        self._procs.remove(proc)
+                        else:
+                            raise FileNotFoundError("curl not found")
+                    except FileNotFoundError:
+                        req = urllib.request.Request(url, headers={
+                            "Accept": "application/vnd.github.v3+json",
+                            "User-Agent": "proxy-skitchen/2.0",
+                        })
+                        if token:
+                            req.add_header("Authorization", f"token {token}")
+                        if use_proxy:
+                            handler = urllib.request.ProxyHandler({"http": HIDDIFY_PROXY, "https": HIDDIFY_PROXY})
+                            opener = urllib.request.build_opener(handler)
+                            resp = opener.open(req, timeout=timeout)
+                        else:
+                            resp = urllib.request.urlopen(req, timeout=timeout)
+                        data = json.loads(resp.read())
                         if isinstance(data, dict) and data.get("message"):
                             self.progress_signal.emit(f"  ⚠ API: {data['message'][:60]}")
                             if "rate" in data["message"].lower():
                                 time.sleep(2)
                             continue
                         return data
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait(2)
-                        self.progress_signal.emit(f"  ⚠ timeout")
-                        continue
-                    finally:
-                        with self._procs_lock:
-                            if proc in self._procs:
-                                self._procs.remove(proc)
                 except json.JSONDecodeError:
                     self.progress_signal.emit(f"  ⚠ bad json")
+                    continue
+                except Exception as e:
+                    self.progress_signal.emit(f"  ⚠ {str(e)[:60]}")
                     continue
         return None
 
@@ -509,14 +556,25 @@ class GitHubSearchWorker(QObject):
         url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{path}"
         file_url = item.get("download_url", url)
         try:
-            cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
-            if _settings_data.get("proxy_enabled", True):
-                cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
-            cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
-            result = subprocess.run(cmd, capture_output=True, timeout=15)
-            if result.returncode != 0:
+            body = None
+            try:
+                import shutil
+                if shutil.which("curl"):
+                    cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
+                    if _settings_data.get("proxy_enabled", True):
+                        cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
+                    cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
+                    result = subprocess.run(cmd, capture_output=True, timeout=15)
+                    if result.returncode == 0:
+                        body = result.stdout.decode("utf-8", errors="ignore")
+                else:
+                    raise FileNotFoundError("curl not found")
+            except FileNotFoundError:
+                req = urllib.request.Request(file_url, headers={"User-Agent": "Mozilla/5.0"})
+                resp = urllib.request.urlopen(req, timeout=10)
+                body = resp.read().decode("utf-8", errors="ignore")
+            if body is None:
                 return results
-            body = result.stdout.decode("utf-8", errors="ignore")
             embedded_links = []
             for line in body.splitlines():
                 line = line.strip()
