@@ -31,7 +31,8 @@ def _crash_log(msg: str):
 def excepthook(etype, value, tb):
     msg = "".join(traceback.format_exception(etype, value, tb))
     _crash_log(msg)
-    sys.__excepthook__(etype, value, tb)
+    if sys.stderr:
+        sys.__excepthook__(etype, value, tb)
 
 sys.excepthook = excepthook
 
