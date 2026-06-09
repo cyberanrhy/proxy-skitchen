@@ -3,7 +3,7 @@
 proxy-skitchen v2 — Wizard-based GUI + CLI pipeline for proxy subscription management.
 """
 
-import sys, os, json, argparse, re, time, faulthandler, traceback
+import sys, os, json, argparse, re, time, faulthandler, traceback, shutil, urllib.request
 from datetime import datetime
 
 os.environ["QT_API"] = "pyside6"
@@ -11,7 +11,10 @@ os.environ["QT_API"] = "pyside6"
 # Crash safety
 faulthandler.enable()
 
-FAULT_LOG = "/tmp/proxy-fetcher-fault.log"
+from .compat import TMP_DIR
+
+FAULT_LOG = os.path.join(TMP_DIR, "fault.log")
+CRASH_LOG = os.path.join(TMP_DIR, "crash.log")
 
 def _debug(msg: str):
     try:
@@ -21,7 +24,7 @@ def _debug(msg: str):
         pass
 
 def _crash_log(msg: str):
-    with open("/tmp/proxy-fetcher-crash.log", "a") as f:
+    with open(CRASH_LOG, "a") as f:
         f.write(f"\n=== {datetime.now().isoformat()} ===\n{msg}\n")
 
 def excepthook(etype, value, tb):
@@ -68,25 +71,33 @@ class CliRunner:
         else:
             self._json_out({"status": "ok", "count": len(found), "sources": found})
 
-    def cmd_fetch(self, args):
-        proxies = []
-        for url in args.urls:
+    def _http_fetch(self, url: str, timeout: int = 15) -> str:
+        if shutil.which("curl"):
             try:
                 import subprocess
-                cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "15",
+                cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", str(timeout),
                        "-H", "User-Agent: Mozilla/5.0", url]
                 from proxy_skitchen.models import _settings_data
                 if _settings_data.get("proxy_enabled", True):
                     cmd.insert(1, "--proxy")
                     cmd.insert(2, "socks5://127.0.0.1:12334")
-                result = subprocess.run(cmd, capture_output=True, timeout=25)
-                if result.returncode != 0:
-                    raise Exception(result.stderr.decode()[:80])
-                data = result.stdout.decode("utf-8", errors="ignore")
+                result = subprocess.run(cmd, capture_output=True, timeout=timeout + 10)
+                if result.returncode == 0:
+                    return result.stdout.decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="ignore")
+
+    def cmd_fetch(self, args):
+        proxies = []
+        for url in args.urls:
+            try:
+                data = self._http_fetch(url)
                 from proxy_skitchen.parsers import extract_uris, parse_json_proxies
                 uris = extract_uris(data)
                 json_uris = parse_json_proxies(data)
-                # Combine and deduplicate while preserving order
                 seen = set()
                 for u in uris + json_uris:
                     if u not in seen:
@@ -162,40 +173,25 @@ class CliRunner:
             self._json_out({"status": "ok", "total": 0, "tcp_ok": 0, "deep_ok": 0, "message": "ничего не найдено"})
             return
 
-        import subprocess
         all_uris = []
         for src in found:
             url = src["file_url"]
             if args.verbose:
                 print(f"  fetch {url[:60]}...", file=sys.stderr, flush=True)
             try:
-                cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "15",
-                       "-H", "User-Agent: Mozilla/5.0", url]
-                from proxy_skitchen.models import _settings_data
-                if _settings_data.get("proxy_enabled", True):
-                    cmd.insert(1, "--proxy")
-                    cmd.insert(2, "socks5://127.0.0.1:12334")
-                result = subprocess.run(cmd, capture_output=True, timeout=25)
-                if result.returncode != 0:
-                    if args.verbose:
-                        print(f"  ✗ curl err: {result.stderr.decode()[:60]}", file=sys.stderr, flush=True)
-                    continue
-                data = result.stdout.decode("utf-8", errors="ignore")
+                data = self._http_fetch(url)
                 if args.verbose:
                     print(f"  📄 fetched {len(data)} chars: {data[:200]}", file=sys.stderr, flush=True)
                 from proxy_skitchen.parsers import extract_uris, parse_json_proxies
                 uris = extract_uris(data)
                 json_uris = parse_json_proxies(data)
-                # Combine and deduplicate while preserving order
                 seen_local = set()
                 for u in uris + json_uris:
                     if u not in seen_local:
                         seen_local.add(u)
                         all_uris.append(u)
                 if args.verbose:
-                    print(f"  🔍 Extracted {len(uris)} + {len(json_uris)} = {len(all_uris)} uris from this source", file=sys.stderr, flush=True)
-                if args.verbose:
-                    print(f"  🔍 extracted {len(uris)} + {len(json_uris)} = {len(all_uris)} uris from this source", file=sys.stderr, flush=True)
+                    print(f"  🔍 Extracted {len(uris) + len(json_uris)} uris from this source", file=sys.stderr, flush=True)
             except Exception as e:
                 if args.verbose:
                     print(f"  ✗ {str(e)[:60]}", file=sys.stderr, flush=True)

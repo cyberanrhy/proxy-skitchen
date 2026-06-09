@@ -54,7 +54,7 @@ jobs:
 
       - name: Build with PyInstaller
         shell: bash
-        run: pyinstaller --onefile --windowed --console --name proxy-skitchen-windows --hidden-import PySide6.QtSvg --hidden-import PySide6.QtNetwork --add-data "proxy_skitchen/icon.png;proxy_skitchen" --paths . run_proxy_skitchen.py
+        run: pyinstaller --onefile --windowed --name proxy-skitchen-windows --hidden-import PySide6.QtSvg --hidden-import PySide6.QtNetwork --add-data "proxy_skitchen/icon.png;proxy_skitchen" --paths . run_proxy_skitchen.py
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

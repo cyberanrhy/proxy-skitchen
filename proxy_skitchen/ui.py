@@ -1,27 +1,20 @@
 import os, sys, json, re, threading, time
 from datetime import datetime
 
-_DEBUG_LOG = "/tmp/proxy-fetcher-debug-ui.log"
+from .compat import *
+
+_DEBUG_LOG = os.path.join(TMP_DIR, "debug-ui.log")
 def _debug(msg: str):
     try:
         with open(_DEBUG_LOG, "a") as f:
             f.write(f"[{datetime.now().isoformat()}] {msg}\n")
     except Exception:
         pass
-
-from .compat import *
 from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag
 from .parsers import is_proxy_uri, extract_uris, get_server_port
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker, GeoWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
-
-DESKTOP_DIR = next((p for p in [
-    os.path.expanduser("~/Desktop"),
-    os.path.expanduser("~/Рабочий стол"),
-    os.path.expanduser("~/Escritorio"),
-    os.path.expanduser("~/桌面"),
-] if os.path.isdir(p)), os.path.expanduser("~"))
 
 
 def _cleanup_thread(thread, worker, wait_sec=3.0):

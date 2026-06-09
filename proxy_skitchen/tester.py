@@ -1,21 +1,23 @@
-import os, sys, json, socket, ssl, subprocess, time, random, tempfile, threading, urllib.request, re, base64
+import os, sys, json, socket, ssl, subprocess, time, random, tempfile, threading, urllib.request, re, base64, shutil
 from collections import Counter
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 
-from .compat import TMP_DIR, HIDDIFY_PROXY
+from .compat import TMP_DIR, HIDDIFY_PROXY, DEVNULL
 from .parsers import get_protocol, get_server_port, is_ip
+
+_TESTER_LOG = os.path.join(TMP_DIR, "tester.log")
 
 def _debug(msg: str):
     try:
-        with open("/tmp/proxy-fetcher-tester.log", "a") as f:
+        with open(_TESTER_LOG, "a") as f:
             f.write(f"[{datetime.now().isoformat()}] {msg}\n")
     except Exception:
         pass
 
-SING_BOX = "/usr/local/bin/sing-box"
-XRAY = "/usr/local/bin/xray"
+SING_BOX = os.environ.get("SING_BOX_PATH") or shutil.which("sing-box") or "/usr/local/bin/sing-box"
+XRAY = os.environ.get("XRAY_PATH") or shutil.which("xray") or "/usr/local/bin/xray"
 TEST_URL = "http://cp.cloudflare.com/generate_204"
 TCP_TIMEOUT = 12
 SB_TIMEOUT = 8
@@ -143,7 +145,7 @@ class SingBoxTester:
             return None
         outbound["tag"] = "proxy"
         return {
-            "log": {"level": "error", "output": "/dev/null"},
+            "log": {"level": "error", "output": DEVNULL},
             "inbounds": [{"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": local_port}],
             "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
             "route": {"rules": [{"rule_set": [], "outbound": "proxy"}], "final": "proxy"},
