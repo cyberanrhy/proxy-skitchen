@@ -52,11 +52,9 @@ class NetworkWorker(QObject):
 
     @Slot()
     def fetch_all(self, sources: list[tuple[str, str]]):
-        _debug(f"fetch_all: start total={len(sources)}")
         self._stop = False
         total = len(sources)
         if not total:
-            _debug("fetch_all: no sources, emitting finished")
             self.finished.emit()
             return
         pool = ThreadPoolExecutor(max_workers=4)
@@ -181,23 +179,16 @@ class NetworkWorker(QObject):
                         cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
                         creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
-                        with self._procs_lock:
-                            self._procs.append(proc)
                         try:
                             out, _ = proc.communicate(timeout=25)
-                            if self._stop:
-                                return None
                             if proc.returncode == 0:
                                 return out.decode("utf-8", errors="ignore")
                         finally:
-                            with self._procs_lock:
-                                if proc in self._procs:
-                                    self._procs.remove(proc)
+                            if proc.poll() is None:
+                                proc.kill()
                     else:
                         raise FileNotFoundError("curl not found")
-                except FileNotFoundError:
-                    if self._stop:
-                        return None
+                except Exception:
                     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                     if use_proxy and proxy_enabled:
                         handler = urllib.request.ProxyHandler({"http": HIDDIFY_PROXY, "https": HIDDIFY_PROXY})
@@ -381,25 +372,8 @@ class GitHubSearchWorker(QObject):
                                         self._procs.remove(proc)
                         else:
                             raise FileNotFoundError("curl not found")
-                    except FileNotFoundError:
-                        req = urllib.request.Request(url, headers={
-                            "Accept": "application/vnd.github.v3+json",
-                            "User-Agent": "proxy-skitchen/2.0",
-                        })
-                        if token:
-                            req.add_header("Authorization", f"token {token}")
-                        if use_proxy:
-                            handler = urllib.request.ProxyHandler({"http": HIDDIFY_PROXY, "https": HIDDIFY_PROXY})
-                            opener = urllib.request.build_opener(handler)
-                            resp = opener.open(req, timeout=timeout)
-                        else:
-                            resp = urllib.request.urlopen(req, timeout=timeout)
-                        data = json.loads(resp.read())
-                        if isinstance(data, dict) and data.get("message"):
-                            if "rate" in data["message"].lower():
-                                time.sleep(2)
-                            continue
-                        return data
+                    except Exception:
+                        continue
                 except Exception:
                     continue
         return None
