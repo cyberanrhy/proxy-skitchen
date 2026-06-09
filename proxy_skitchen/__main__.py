@@ -48,7 +48,8 @@ class CliRunner:
         self._entries: list[ProxyEntry] = []
 
     def _json_out(self, data):
-        print(json.dumps(data, ensure_ascii=False))
+        if sys.stdout:
+            print(json.dumps(data, ensure_ascii=False))
 
     def cmd_search(self, args):
         tokens = _auth_data.get("github_tokens", [])
@@ -153,7 +154,7 @@ class CliRunner:
         self._json_out(out)
 
     def cmd_pipeline(self, args):
-        if args.verbose:
+        if args.verbose and sys.stderr:
             print("Pipeline: поиск...", file=sys.stderr, flush=True)
         tokens = _auth_data.get("github_tokens", [])
         if args.token:
@@ -167,7 +168,7 @@ class CliRunner:
         found = []
         worker.result_signal.connect(lambda res: found.extend(res))
         worker.run()
-        if args.verbose:
+        if args.verbose and sys.stderr:
             print(f"Pipeline: найдено {len(found)} подписок", file=sys.stderr, flush=True)
         if not found:
             self._json_out({"status": "ok", "total": 0, "tcp_ok": 0, "deep_ok": 0, "message": "ничего не найдено"})
@@ -176,11 +177,11 @@ class CliRunner:
         all_uris = []
         for src in found:
             url = src["file_url"]
-            if args.verbose:
+            if args.verbose and sys.stderr:
                 print(f"  fetch {url[:60]}...", file=sys.stderr, flush=True)
             try:
                 data = self._http_fetch(url)
-                if args.verbose:
+                if args.verbose and sys.stderr:
                     print(f"  📄 fetched {len(data)} chars: {data[:200]}", file=sys.stderr, flush=True)
                 from proxy_skitchen.parsers import extract_uris, parse_json_proxies
                 uris = extract_uris(data)
@@ -190,10 +191,10 @@ class CliRunner:
                     if u not in seen_local:
                         seen_local.add(u)
                         all_uris.append(u)
-                if args.verbose:
+                if args.verbose and sys.stderr:
                     print(f"  🔍 Extracted {len(uris) + len(json_uris)} uris from this source", file=sys.stderr, flush=True)
             except Exception as e:
-                if args.verbose:
+                if args.verbose and sys.stderr:
                     print(f"  ✗ {str(e)[:60]}", file=sys.stderr, flush=True)
 
         # dedup
@@ -205,7 +206,7 @@ class CliRunner:
                 if (host, port) not in seen:
                     seen.add((host, port))
                     unique.append(u)
-        if args.verbose:
+        if args.verbose and sys.stderr:
             print(f"Pipeline: {len(unique)} уникальных URI", file=sys.stderr, flush=True)
 
         # tcp test
@@ -216,14 +217,14 @@ class CliRunner:
             if host and port and test_tcp(host, port):
                 tcp_ok += 1
                 ok_uris.append(u)
-        if args.verbose:
+        if args.verbose and sys.stderr:
             print(f"Pipeline: TCP ok {tcp_ok}/{len(unique)}", file=sys.stderr, flush=True)
 
         deep_ok = 0
         sb_tester = SingBoxTester() if args.deep else None
         if args.deep:
             for i, u in enumerate(ok_uris):
-                if args.verbose:
+                if args.verbose and sys.stderr:
                     print(f"  deep {i+1}/{len(ok_uris)}...", file=sys.stderr, flush=True)
                 d_ok, lat, err = sb_tester.test(u, 19999 + (i % 10000))
                 if d_ok:
