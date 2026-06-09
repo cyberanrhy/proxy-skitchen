@@ -431,7 +431,8 @@ class SourcesPage(WizardPage):
 
     def _on_gh_error(self, err: str):
         self.gh_progress_bar.setVisible(False)
-        self.btn_gh_search.setEnabled(True)
+        self.btn_quick_search.setEnabled(True)
+        self.btn_deep_search.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.gh_status.setText(f"⚠ {err[:60]}")
         self.gh_found_label.setText("⚠")
