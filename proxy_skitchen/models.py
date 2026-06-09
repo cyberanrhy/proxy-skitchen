@@ -1,6 +1,12 @@
 import json, base64, urllib.parse
 from .compat import *
 
+def country_flag(code: str) -> str:
+    if len(code) != 2:
+        return ""
+    code = code.upper()
+    return chr(ord(code[0]) - ord("A") + 0x1F1E6) + chr(ord(code[1]) - ord("A") + 0x1F1E6)
+
 _GOOD_SNI_DOMAINS = {
     'bing.com', 'microsoft.com', 'apple.com', 'icloud.com', 'office.com', 'office365.com',
     'azure.com', 'windows.com', 'live.com', 'outlook.com', 'skype.com', 'yammer.com',
