@@ -1,3 +1,26 @@
+from PySide6.QtCore import QObject, Signal, Slot
+from .parsers import geo_lookup
+
+class GeoWorker(QObject):
+    geo_result_signal = Signal(int, str, str)  # row, country_code, country_name
+    log_signal = Signal(str)
+    finished = Signal()
+
+    @Slot(list, list)
+    def geo_batch(self, entries: list, indices: list):
+        for i, entry in enumerate(entries):
+            row = indices[i]
+            host = entry.host
+            country_name = geo_lookup(host)
+            
+            # Simple mapping to code (or empty if not found)
+            code = ""
+            if country_name:
+                # Use standard country mappings if available, or just capitalize
+                code = country_name[:2].upper() 
+            
+            self.geo_result_signal.emit(row, code, country_name or "Unknown")
+        self.finished.emit()
 import os, sys, json, re, base64, time, socket, urllib.request, urllib.error, concurrent.futures, html, subprocess, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, TimeoutError as FUTURE_TIMEOUT
 from typing import Optional
@@ -542,6 +565,23 @@ class GitHubSearchWorker(QObject):
                         if len(results) >= self.max_files:
                             return results
         return results
+
+class GeoWorker(QObject):
+    geo_result_signal = Signal(int, str, str)
+    log_signal = Signal(str)
+    finished = Signal()
+
+    @Slot(list, list)
+    def geo_batch(self, entries: list, indices: list):
+        for i, entry in enumerate(entries):
+            row = indices[i]
+            host = entry.host
+            country_name = geo_lookup(host)
+            code = ""
+            if country_name:
+                code = country_name[:2].upper()
+            self.geo_result_signal.emit(row, code, country_name or "Unknown")
+        self.finished.emit()
 
     def _check_file(self, item: dict, full_name: str, branch: str) -> list[dict]:
         results = []
