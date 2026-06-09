@@ -468,16 +468,6 @@ class GitHubSearchWorker(QObject):
         self._stop = False
         results = []
         try:
-            if self.deep_search:
-                extras = ["vless subscription", "vmess subscription", "trojan subscription",
-                          "shadowsocks subscription", "v2ray config", "v2ray subscription",
-                          "proxy subscription", "clash subscription", "sing-box subscription",
-                          "free proxy config", "xray config", "hysteria2 subscription",
-                          "proxy list", "free proxy", "ss://", "vmess://", "trojan://"]
-                for kw in extras:
-                    if kw not in self.keywords:
-                        self.keywords.append(kw)
-                self.keywords = self.keywords[:15]
             seen_repos = set()
             for repo_url in self.explicit_repos:
                 if self._stop:
