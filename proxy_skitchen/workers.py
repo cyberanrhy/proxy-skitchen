@@ -210,7 +210,8 @@ class NetworkWorker(QObject):
                             cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
                         cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
                         _debug(f"_http_get: curl attempt={attempt} proxy={use_proxy}")
-                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
                         with self._procs_lock:
                             self._procs.append(proc)
                         try:
@@ -609,14 +610,15 @@ class GeoWorker(QObject):
             body = None
             try:
                 import shutil
-                if shutil.which("curl"):
-                    cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
-                    if _settings_data.get("proxy_enabled", True):
-                        cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
-                    cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
-                    result = subprocess.run(cmd, capture_output=True, timeout=15)
-                    if result.returncode == 0:
-                        body = result.stdout.decode("utf-8", errors="ignore")
+                    if shutil.which("curl"):
+                        cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
+                        if _settings_data.get("proxy_enabled", True):
+                            cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
+                        cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
+                        creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                        result = subprocess.run(cmd, capture_output=True, timeout=15, creationflags=creationflags)
+                        if result.returncode == 0:
+                            body = result.stdout.decode("utf-8", errors="ignore")
                 else:
                     raise FileNotFoundError("curl not found")
             except FileNotFoundError:
