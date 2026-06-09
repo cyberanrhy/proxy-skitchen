@@ -464,10 +464,20 @@ class GitHubSearchWorker(QObject):
 
     @Slot()
     def run(self):
-        print("DEBUG: GitHubSearchWorker.run() started", file=sys.stderr)
+        _debug("GitHubSearchWorker.run() started")
         self._stop = False
         results = []
         try:
+            if self.deep_search:
+                extras = ["vless subscription", "vmess subscription", "trojan subscription",
+                          "shadowsocks subscription", "v2ray config", "v2ray subscription",
+                          "proxy subscription", "clash subscription", "sing-box subscription",
+                          "free proxy config", "xray config", "hysteria2 subscription",
+                          "proxy list", "free proxy", "ss://", "vmess://", "trojan://"]
+                for kw in extras:
+                    if kw not in self.keywords:
+                        self.keywords.append(kw)
+                self.keywords = self.keywords[:15]
             seen_repos = set()
             for repo_url in self.explicit_repos:
                 if self._stop:
@@ -490,7 +500,7 @@ class GitHubSearchWorker(QObject):
             self.result_signal.emit(results)
         except Exception as e:
             self.error_signal.emit(f"Search critical error: {e}")
-        print("DEBUG: GitHubSearchWorker.run() finished", file=sys.stderr)
+        _debug("GitHubSearchWorker.run() finished")
 
     def _search_and_walk(self, keyword: str, seen_repos: set) -> list[dict]:
         query = urllib.parse.quote(keyword)
@@ -561,7 +571,7 @@ class GitHubSearchWorker(QObject):
                 skip_dirs = () if self.deep_search else ('.git', '.github', 'node_modules', '__pycache__',
                                                           '.vscode', '.idea', 'venv', '.env', 'dist', 'build', 'assets', 'images')
                 if item_type == 'dir':
-                    if name not in skip_dirs and not name.startswith('.'):
+                    if name not in skip_dirs and (self.deep_search or not name.startswith('.')):
                         stack.append(item_path)
                 elif item_type == 'file':
                     ext = os.path.splitext(name)[1].lower()
