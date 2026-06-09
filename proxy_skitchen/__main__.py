@@ -9,7 +9,8 @@ from datetime import datetime
 os.environ["QT_API"] = "pyside6"
 
 # Crash safety
-faulthandler.enable()
+if sys.stderr:
+    faulthandler.enable()
 
 from .compat import TMP_DIR
 
