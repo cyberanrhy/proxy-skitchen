@@ -352,7 +352,8 @@ class GitHubSearchWorker(QObject):
     def __init__(self, keywords: list[str], known_sources: set,
                  explicit_repos: Optional[list[str]] = None,
                  time_filter_days: int = 7, github_tokens: Optional[list[str]] = None,
-                 max_repos: int = 12, max_files: int = 50):
+                 max_repos: int = 12, max_files: int = 50,
+                 owner: Optional[str] = None, weak_hw: bool = False, deep_search: bool = False):
         super().__init__()
         self.keywords = keywords
         self.known_sources = known_sources
@@ -361,6 +362,9 @@ class GitHubSearchWorker(QObject):
         self.github_tokens = github_tokens or []
         self.max_repos = max_repos
         self.max_files = max_files
+        self.owner = owner
+        self.weak_hw = weak_hw
+        self.deep_search = deep_search
         self._stop = False
         self._token_idx = 0
         self._procs: list[subprocess.Popen] = []
@@ -496,11 +500,13 @@ class GitHubSearchWorker(QObject):
             from datetime import datetime, timedelta, timezone
             since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%d")
             date_filter = f"+pushed:>={since}"
-        url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={min(self.max_repos, 30)}"
+        per_page = 100 if self.deep_search else 30
+        limit = self.max_repos * 3 if self.deep_search else self.max_repos
+        url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={per_page}"
         data = self._api(url)
         if data is None:
             return results
-        for repo in data.get("items", [])[:self.max_repos]:
+        for repo in data.get("items", [])[:limit]:
             if self._stop:
                 break
             repo_url = repo.get("html_url", "")
@@ -542,27 +548,31 @@ class GitHubSearchWorker(QObject):
                 name = item.get("name", "")
                 item_path = item.get("path", "")
                 item_type = item.get("type", "")
-                skip_patterns = ('.git', '.github', 'node_modules', '__pycache__',
-                                 '.vscode', '.idea', 'venv', '.env', 'dist', 'build',
-                                 '.img', '.png', '.jpg', '.jpeg', '.gif', '.svg',
-                                 '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp3',
-                                 '.mp4', '.avi', '.mkv', '.zip', '.rar', '.tar', '.gz',
-                                 '.exe', '.dll', '.so', '.dmg', '.iso')
+                skip_patterns = ()
+                if not self.deep_search:
+                    skip_patterns = ('.git', '.github', 'node_modules', '__pycache__',
+                                     '.vscode', '.idea', 'venv', '.env', 'dist', 'build',
+                                     '.img', '.png', '.jpg', '.jpeg', '.gif', '.svg',
+                                     '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp3',
+                                     '.mp4', '.avi', '.mkv', '.zip', '.rar', '.tar', '.gz',
+                                     '.exe', '.dll', '.so', '.dmg', '.iso')
                 if any(name.lower().endswith(s) for s in skip_patterns):
                     continue
-                skip_dirs = ('.git', '.github', 'node_modules', '__pycache__',
-                             '.vscode', '.idea', 'venv', '.env', 'dist', 'build', 'assets', 'images')
+                skip_dirs = () if self.deep_search else ('.git', '.github', 'node_modules', '__pycache__',
+                                                          '.vscode', '.idea', 'venv', '.env', 'dist', 'build', 'assets', 'images')
                 if item_type == 'dir':
                     if name not in skip_dirs and not name.startswith('.'):
                         stack.append(item_path)
                 elif item_type == 'file':
                     ext = os.path.splitext(name)[1].lower()
-                    if ext in ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', ''):
+                    allowed_exts = ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', '') if not self.deep_search else ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', '', '.py', '.js', '.toml', '.ini', '.xml')
+                    if ext in allowed_exts:
                         self.progress_signal.emit(f"    📄 {full_name}/{item_path}")
                         found = self._check_file(item, full_name, default_branch)
                         results.extend(found)
                         self.count_signal.emit(len(results))
-                        if len(results) >= self.max_files:
+                        maxf = self.max_files * 3 if self.deep_search else self.max_files
+                        if len(results) >= maxf:
                             return results
         return results
 
