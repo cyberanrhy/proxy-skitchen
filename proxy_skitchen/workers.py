@@ -1,30 +1,9 @@
-from PySide6.QtCore import QObject, Signal, Slot
-from .parsers import geo_lookup
-
-class GeoWorker(QObject):
-    geo_result_signal = Signal(int, str, str)  # row, country_code, country_name
-    log_signal = Signal(str)
-    finished = Signal()
-
-    @Slot(list, list)
-    def geo_batch(self, entries: list, indices: list):
-        for i, entry in enumerate(entries):
-            row = indices[i]
-            host = entry.host
-            country_name = geo_lookup(host)
-            
-            # Simple mapping to code (or empty if not found)
-            code = ""
-            if country_name:
-                # Use standard country mappings if available, or just capitalize
-                code = country_name[:2].upper() 
-            
-            self.geo_result_signal.emit(row, code, country_name or "Unknown")
-        self.finished.emit()
 import os, sys, json, re, base64, time, socket, urllib.request, urllib.error, concurrent.futures, html, subprocess, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, TimeoutError as FUTURE_TIMEOUT
 from typing import Optional
 from datetime import datetime
+
+from PySide6.QtCore import QObject, Signal, Slot
 
 try:
     import requests as _requests
@@ -34,7 +13,7 @@ except ImportError:
 
 from .compat import *
 from .models import ProxyEntry, _auth_data, _settings_data
-from .parsers import is_proxy_uri, extract_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
+from .parsers import is_proxy_uri, extract_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip, geo_lookup as _geo_lookup
 from .tester import test_tcp, test_tls, resolve_host
 
 _WORKERS_LOG = os.path.join(TMP_DIR, "workers.log")
@@ -45,7 +24,6 @@ def _debug(msg: str):
             f.write(f"[{datetime.now().isoformat()}] {msg}\n")
     except Exception:
         pass
-
 
 class NetworkWorker(QObject):
     progress_signal = Signal(int, int, str)
@@ -85,18 +63,16 @@ class NetworkWorker(QObject):
         futs = {}
         names = {}
         start_time = time.time()
-        MAX_WAIT = max(30, total * 20)  # at most 20s per source
+        MAX_WAIT = max(30, total * 20)
         try:
             for name, url in sources:
                 if self._stop:
-                    _debug("fetch_all: stopped before submit")
                     break
                 fut = pool.submit(self._fetch_one, name, url)
                 idx = len(futs)
                 futs[fut] = idx
                 names[fut] = name
                 self.source_started.emit(name, idx)
-            _debug(f"fetch_all: submitted {len(futs)} tasks")
             pending = set(futs)
             done_count = 0
             while pending and not self._stop:
@@ -131,7 +107,6 @@ class NetworkWorker(QObject):
                             if len(batch) >= 50:
                                 self.proxy_parsed.emit(batch)
                                 batch = []
-                        # Parallel geo lookup for IP hosts
                         if geo_ips:
                             with ThreadPoolExecutor(max_workers=8) as geo_pool:
                                 geo_futs = {geo_pool.submit(geo_lookup, ip): ip for ip in geo_ips}
@@ -148,22 +123,17 @@ class NetworkWorker(QObject):
                         self.source_status.emit(name, True, count)
                         self.log_signal.emit(f"  ✓ {name}: {count} proxies")
                     done_count += 1
-                # Total timeout guard
                 if time.time() - start_time > MAX_WAIT:
                     self.log_signal.emit(f"  ⚠ Timeout {MAX_WAIT}s, aborting")
                     break
         finally:
-            _debug(f"fetch_all: done {done_count}/{total} stop={self._stop}")
             for fut in futs:
                 fut.cancel()
             pool.shutdown(wait=False)
-            _debug("fetch_all: emitting finished")
             self.finished.emit()
 
     def _fetch_one(self, name: str, url: str) -> Optional[list[str]]:
-        _debug(f"_fetch_one: start {name[:60]}")
         proxy_enabled = _settings_data.get("proxy_enabled", True)
-        # Try direct first, then with proxy
         data = self._http_get(url, use_proxy=False)
         if data is None and proxy_enabled:
             data = self._http_get(url, use_proxy=True)
@@ -209,7 +179,6 @@ class NetworkWorker(QObject):
                         if use_proxy and proxy_enabled:
                             cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
                         cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
-                        _debug(f"_http_get: curl attempt={attempt} proxy={use_proxy}")
                         creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
                         with self._procs_lock:
@@ -220,9 +189,6 @@ class NetworkWorker(QObject):
                                 return None
                             if proc.returncode == 0:
                                 return out.decode("utf-8", errors="ignore")
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait(2)
                         finally:
                             with self._procs_lock:
                                 if proc in self._procs:
@@ -230,7 +196,6 @@ class NetworkWorker(QObject):
                     else:
                         raise FileNotFoundError("curl not found")
                 except FileNotFoundError:
-                    _debug(f"_http_get: curl not found, using urllib")
                     if self._stop:
                         return None
                     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -241,16 +206,12 @@ class NetworkWorker(QObject):
                     else:
                         resp = urllib.request.urlopen(req, timeout=20)
                     data = resp.read().decode("utf-8", errors="ignore")
-                    _debug(f"_http_get: urllib done len={len(data)}")
                     return data
-            except Exception as e:
-                _debug(f"_http_get: error {e}")
-            if self._stop:
-                return None
+            except Exception:
+                pass
             if proxy_enabled:
                 use_proxy = True
         return None
-
 
 class TesterWorker(QObject):
     progress_signal = Signal(int, int, int, str)
@@ -269,16 +230,13 @@ class TesterWorker(QObject):
         self._sb_tester = None
 
     def stop(self):
-        _debug(f"TesterWorker.stop() called, was_stop={self._stop}")
         self._stop = True
 
     @Slot()
     def test_batch(self, entries: list[ProxyEntry]):
-        _debug(f"test_batch: start total={len(entries)} deep={self._deep}")
         self._stop = False
         total = len(entries)
         if not total:
-            _debug("test_batch: no entries, emitting finished")
             self.finished.emit()
             return
         threads = self._deep_threads if self._deep else self._test_threads
@@ -288,13 +246,11 @@ class TesterWorker(QObject):
         try:
             for i, entry in enumerate(entries):
                 if self._stop:
-                    _debug(f"test_batch: stopped at entry {i}")
                     break
                 self.testing_signal.emit(i, f"{entry.protocol} {entry.host}:{entry.port}")
                 futs[pool.submit(self._test_one, entry, resolved)] = i
-            _debug(f"test_batch: submitted {len(futs)}/{total}")
-            done_count = 0
             pending = set(futs)
+            done_count = 0
             while pending and not self._stop:
                 done, pending = wait(pending, timeout=0.5)
                 for fut in done:
@@ -302,19 +258,16 @@ class TesterWorker(QObject):
                     try:
                         ok, latency, error, ttype = fut.result()
                         self.result_signal.emit(row, ok, latency, error, ttype)
-                    except Exception as ex:
-                        _debug(f"test_batch: fut {row} raised {ex}")
-                        self.result_signal.emit(row, False, 0.0, str(ex), 0)
+                    except Exception:
+                        self.result_signal.emit(row, False, 0.0, "fail", 0)
                     done_count += 1
                     self.count_signal.emit(done_count)
                 if done:
                     self.progress_signal.emit(done_count, total, threads, "deep" if self._deep else "tcp")
         finally:
-            _debug(f"test_batch: done {done_count}/{total} stop={self._stop}")
             for fut in futs:
                 fut.cancel()
             pool.shutdown(wait=False)
-            _debug("test_batch: emitting finished")
             self.finished.emit()
 
     def _test_one(self, entry: ProxyEntry, resolved: dict) -> tuple[bool, float, str, int]:
@@ -342,10 +295,9 @@ class TesterWorker(QObject):
         port = 19999 + (hash(entry.uri) % 10000)
         return self._sb_tester.test(entry.uri, port)
 
-
 class GitHubSearchWorker(QObject):
     result_signal = Signal(list)
-    partial_result_signal = Signal(list) # Новый сигнал
+    partial_result_signal = Signal(list)
     error_signal = Signal(str)
     progress_signal = Signal(str)
     count_signal = Signal(int)
@@ -407,7 +359,8 @@ class GitHubSearchWorker(QObject):
                             if token:
                                 cmd.extend(["-H", f"Authorization: token {token}"])
                             cmd.append(url)
-                            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
                             with self._procs_lock:
                                 self._procs.append(proc)
                             try:
@@ -415,20 +368,13 @@ class GitHubSearchWorker(QObject):
                                 if self._stop:
                                     return None
                                 if proc.returncode != 0:
-                                    self.progress_signal.emit(f"  ⚠ curl err: {err.decode()[:80]}")
                                     continue
                                 data = json.loads(out)
                                 if isinstance(data, dict) and data.get("message"):
-                                    self.progress_signal.emit(f"  ⚠ API: {data['message'][:60]}")
                                     if "rate" in data["message"].lower():
                                         time.sleep(2)
                                     continue
                                 return data
-                            except subprocess.TimeoutExpired:
-                                proc.kill()
-                                proc.wait(2)
-                                self.progress_signal.emit(f"  ⚠ timeout")
-                                continue
                             finally:
                                 with self._procs_lock:
                                     if proc in self._procs:
@@ -450,16 +396,11 @@ class GitHubSearchWorker(QObject):
                             resp = urllib.request.urlopen(req, timeout=timeout)
                         data = json.loads(resp.read())
                         if isinstance(data, dict) and data.get("message"):
-                            self.progress_signal.emit(f"  ⚠ API: {data['message'][:60]}")
                             if "rate" in data["message"].lower():
                                 time.sleep(2)
                             continue
                         return data
-                except json.JSONDecodeError:
-                    self.progress_signal.emit(f"  ⚠ bad json")
-                    continue
-                except Exception as e:
-                    self.progress_signal.emit(f"  ⚠ {str(e)[:60]}")
+                except Exception:
                     continue
         return None
 
@@ -473,17 +414,14 @@ class GitHubSearchWorker(QObject):
             for repo_url in self.explicit_repos:
                 if self._stop:
                     break
-                self.progress_signal.emit(f"  explicit: {repo_url}")
                 found = self._walk_explicit(repo_url)
                 results.extend(found)
                 self.count_signal.emit(len(results))
             for kw in self.keywords:
                 if self._stop:
                     break
-                self.progress_signal.emit(f"  keyword: {kw}")
                 found = self._search_and_walk(kw, seen_repos)
                 if found is None:
-                    _debug(f"CRITICAL: _search_and_walk returned None for {kw}")
                     continue
                 results.extend(found)
                 self.count_signal.emit(len(results))
@@ -495,6 +433,8 @@ class GitHubSearchWorker(QObject):
 
     def _search_and_walk(self, keyword: str, seen_repos: set) -> list[dict]:
         query = urllib.parse.quote(keyword)
+        if self.owner:
+            query += f"+user:{self.owner}"
         results = []
         date_filter = ""
         if self.time_filter_days > 0:
@@ -514,7 +454,6 @@ class GitHubSearchWorker(QObject):
             if repo_url in seen_repos:
                 continue
             seen_repos.add(repo_url)
-            self.progress_signal.emit(f"  scan {repo['full_name']} ⭐{repo['stargazers_count']}")
             found = self._walk(repo)
             results.extend(found)
             self.partial_result_signal.emit(list(results))
@@ -532,11 +471,9 @@ class GitHubSearchWorker(QObject):
             if path in visited:
                 continue
             visited.add(path)
-            self.progress_signal.emit(f"  📁 {full_name}/{path or '.'}")
             api_url = f"https://api.github.com/repos/{full_name}/contents/{path}"
             data = self._api(api_url)
             if data is None:
-                self.progress_signal.emit(f"  ⚠ API returned None for {path}")
                 continue
             items = data if isinstance(data, list) else [data]
             if not items:
@@ -568,7 +505,6 @@ class GitHubSearchWorker(QObject):
                     ext = os.path.splitext(name)[1].lower()
                     allowed_exts = ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', '') if not self.deep_search else ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', '', '.py', '.js', '.toml', '.ini', '.xml')
                     if ext in allowed_exts:
-                        self.progress_signal.emit(f"    📄 {full_name}/{item_path}")
                         found = self._check_file(item, full_name, default_branch)
                         results.extend(found)
                         self.count_signal.emit(len(results))
@@ -576,23 +512,6 @@ class GitHubSearchWorker(QObject):
                         if len(results) >= maxf:
                             return results
         return results
-
-class GeoWorker(QObject):
-    geo_result_signal = Signal(int, str, str)
-    log_signal = Signal(str)
-    finished = Signal()
-
-    @Slot(list, list)
-    def geo_batch(self, entries: list, indices: list):
-        for i, entry in enumerate(entries):
-            row = indices[i]
-            host = entry.host
-            country_name = geo_lookup(host)
-            code = ""
-            if country_name:
-                code = country_name[:2].upper()
-            self.geo_result_signal.emit(row, code, country_name or "Unknown")
-        self.finished.emit()
 
     def _check_file(self, item: dict, full_name: str, branch: str) -> list[dict]:
         results = []
@@ -610,18 +529,18 @@ class GeoWorker(QObject):
             body = None
             try:
                 import shutil
-                    if shutil.which("curl"):
-                        cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
-                        if _settings_data.get("proxy_enabled", True):
-                            cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
-                        cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
-                        creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                        result = subprocess.run(cmd, capture_output=True, timeout=15, creationflags=creationflags)
-                        if result.returncode == 0:
-                            body = result.stdout.decode("utf-8", errors="ignore")
+                if shutil.which("curl"):
+                    cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
+                    if _settings_data.get("proxy_enabled", True):
+                        cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
+                    cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
+                    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    result = subprocess.run(cmd, capture_output=True, timeout=15, creationflags=creationflags)
+                    if result.returncode == 0:
+                        body = result.stdout.decode("utf-8", errors="ignore")
                 else:
                     raise FileNotFoundError("curl not found")
-            except FileNotFoundError:
+            except Exception:
                 req = urllib.request.Request(file_url, headers={"User-Agent": "Mozilla/5.0"})
                 resp = urllib.request.urlopen(req, timeout=10)
                 body = resp.read().decode("utf-8", errors="ignore")
@@ -645,7 +564,6 @@ class GeoWorker(QObject):
             }
             if embedded_links:
                 entry["count"] = len(embedded_links)
-                self.progress_signal.emit(f"      🔗 {len(embedded_links)} proxies in {name}")
             results.append(entry)
         except Exception:
             pass
@@ -656,7 +574,6 @@ class GeoWorker(QObject):
         if not m:
             return []
         full_name = m.group(1).rstrip('/')
-        self.progress_signal.emit(f"  📁 explicit: {full_name}")
         results = []
         stack = [""]
         visited = set()
@@ -665,11 +582,9 @@ class GeoWorker(QObject):
             if path in visited:
                 continue
             visited.add(path)
-            self.progress_signal.emit(f"    📁 {full_name}/{path or '.'}")
             api_url = f"https://api.github.com/repos/{full_name}/contents/{path}"
             data = self._api(api_url)
             if data is None:
-                self.progress_signal.emit(f"    ⚠ API None for {path}")
                 continue
             items = data if isinstance(data, list) else [data]
             if not items:
@@ -693,10 +608,8 @@ class GeoWorker(QObject):
                 elif item_type == 'file':
                     ext = os.path.splitext(name)[1].lower()
                     if ext in ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', ''):
-                        self.progress_signal.emit(f"      📄 {full_name}/{item_path}")
                         found = self._check_file(item, full_name, "main")
                         results.extend(found)
-                        self.partial_result_signal.emit(list(results))
                         self.count_signal.emit(len(results))
                         if len(results) >= self.max_files:
                             return results
