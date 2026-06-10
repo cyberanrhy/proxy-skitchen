@@ -251,6 +251,7 @@ class SourcesPage(WizardPage):
         self.src_list.setAlternatingRowColors(True)
         self.src_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(self._on_src_context)
+        self.src_list.itemDoubleClicked.connect(self._on_src_double_click)
         layout.addWidget(self.src_list, 1)
 
         nav = QHBoxLayout()
@@ -500,6 +501,11 @@ class SourcesPage(WizardPage):
         menu.addAction(_("sources.context.remove"), lambda: self._remove_source(item.data(Qt.ItemDataRole.UserRole)))
         menu.exec_(self.src_list.mapToGlobal(pos))
 
+    def _on_src_double_click(self, item):
+        url = item.data(Qt.ItemDataRole.UserRole)
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
     def _on_clear(self):
         self.src_list.clear()
         self._sources.clear()
@@ -608,6 +614,7 @@ class DownloadPage(WizardPage):
         self.src_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.src_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.src_table.setAlternatingRowColors(True)
+        self.src_table.cellDoubleClicked.connect(self._on_src_table_double_click)
         src_layout.addWidget(self.src_table)
         layout.addWidget(self.src_group)
 
@@ -726,8 +733,8 @@ class DownloadPage(WizardPage):
         self._sources_total = 0
 
         self.src_table.setRowCount(0)
-        for name, _url in sources:
-            self._add_source_row(name)
+        for name, url in sources:
+            self._add_source_row(name, url)
 
         self.src_group.show()
         self.btn_toggle_sources.show()
@@ -773,7 +780,7 @@ class DownloadPage(WizardPage):
                         cell.setBackground(QColor("#1a1a2e"))
                 break
 
-    def _add_source_row(self, name: str):
+    def _add_source_row(self, name: str, url: str = ""):
         row = self.src_table.rowCount()
         self.src_table.insertRow(row)
         icon_item = QTableWidgetItem("⏳")
@@ -781,11 +788,19 @@ class DownloadPage(WizardPage):
         self.src_table.setItem(row, 0, icon_item)
         name_item = QTableWidgetItem(name[:60])
         name_item.setToolTip(name)
+        name_item.setData(Qt.ItemDataRole.UserRole, url)
         self.src_table.setItem(row, 1, name_item)
         count_item = QTableWidgetItem("...")
         count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.src_table.setItem(row, 2, count_item)
         self._sources_total += 1
+
+    def _on_src_table_double_click(self, row: int, col: int):
+        item = self.src_table.item(row, 1)
+        if item:
+            url = item.data(Qt.ItemDataRole.UserRole)
+            if url:
+                QDesktopServices.openUrl(QUrl(url))
 
     def _update_source_row(self, name: str, ok: bool, count: int):
         for row in range(self.src_table.rowCount()):
