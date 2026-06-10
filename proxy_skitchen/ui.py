@@ -703,8 +703,13 @@ class DownloadPage(WizardPage):
             self._log(_("log.no_proxies_warning"))
 
     def _on_next(self):
-        self._main.test_page.load_entries(self._entries)
-        self._main.set_page(2)
+        try:
+            self._main.test_page.load_entries(self._entries)
+            self._main.set_page(2)
+        except Exception as ex:
+            self._log(f"❌ _on_next error: {ex}")
+            import traceback
+            self._log(traceback.format_exc())
 
     def fetch_sources(self, sources: list[tuple[str, str]]):
         _debug(f"fetch_sources: start n={len(sources)}")
