@@ -16,6 +16,7 @@ from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, 
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
 from .geo import GeoWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
+from .notifier import notify
 
 
 def _cleanup_thread(thread, worker, wait_sec=3.0):
@@ -424,6 +425,7 @@ class SourcesPage(WizardPage):
         self.gh_found_label.setText(f"✅ {added}")
         self._cleanup_gh()
         self._completed = True
+        notify("GitHub Search", f"Found {added} subscription sources")
         
         # Bright success indicator
         self._main._status_search.setStyleSheet("color: #00ff00; font-weight: bold; padding: 1px 4px;")
@@ -832,6 +834,7 @@ class DownloadPage(WizardPage):
 
         self.btn_next.setEnabled(len(self._entries) > 0)
         self._main.update_status_bar()
+        notify("Download Complete", f"{len(self._entries)} proxies loaded")
 
     def on_enter(self):
         self._main.update_status_bar()
@@ -1148,6 +1151,7 @@ class TestPage(WizardPage):
         self._log(_("log.geo_done", count=total))
         self._set_phase(self.PHASE_IDLE)
         self._main.update_status_bar()
+        notify("Geo Lookup Complete", f"{total} locations resolved")
 
     def _on_tcp_test(self):
         if self._phase == self.PHASE_TEST:
@@ -1253,6 +1257,8 @@ class TestPage(WizardPage):
         self.btn_geo.setEnabled(self._valid_cnt > 0)
         self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
         self._main.update_status_bar()
+        mode = "Deep" if self._test_type == "deep" else "TCP"
+        notify(f"{mode} Test Complete", f"{self._valid_cnt} alive of {len(self._entries)}")
 
     def _on_filter_change(self, idx: int):
         proto_map = [None, "TUIC", "VLESS", "VMESS", "Trojan", "SS", "Hy2"]
@@ -1503,6 +1509,7 @@ class ExportPage(WizardPage):
         with open(path, "w") as f:
             f.write(content)
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
+        notify("Export Saved", f"File: {os.path.basename(path)}")
 
     def _on_save_desktop(self):
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
@@ -1511,6 +1518,7 @@ class ExportPage(WizardPage):
         with open(path, "w") as f:
             f.write(content)
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
+        notify("Export Saved", f"File: sub_ski_{ts}.txt")
 
 
 class SettingsDialog(QDialog):
