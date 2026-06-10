@@ -84,7 +84,8 @@ def set_theme(theme: str):
 
 class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
-                 'tcp_ok', 'deep_ok', 'latency_ms', 'deep_error', 'is_embedded')
+                 'tcp_ok', 'deep_ok', 'latency_ms', 'deep_error', 'is_embedded',
+                 'tcp_tested', 'deep_tested')
 
     def __init__(self, uri: str, source: str = ""):
         self.uri = uri
@@ -99,6 +100,8 @@ class ProxyEntry:
         self.latency_ms = 0.0
         self.deep_error = ""
         self.is_embedded = False
+        self.tcp_tested = False
+        self.deep_tested = False
         self._parse()
 
     def _parse(self):
@@ -293,9 +296,11 @@ class ProxyTableModel(QAbstractTableModel):
             p = self.proxies[row]
             if ttype == 0:
                 p.tcp_ok = ok
+                p.tcp_tested = True
                 p.latency_ms = latency
             else:
                 p.deep_ok = ok
+                p.deep_tested = True
                 p.deep_error = error
             self.dataChanged.emit(self.index(row, 0), self.index(row, len(self.HEADERS) - 1))
 
