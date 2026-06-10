@@ -85,7 +85,7 @@ def set_theme(theme: str):
 class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
                  'tcp_ok', 'deep_ok', 'latency_ms', 'deep_error', 'is_embedded',
-                 'tcp_tested', 'deep_tested')
+                 'tcp_tested', 'deep_tested', 'geo_tested')
 
     def __init__(self, uri: str, source: str = ""):
         self.uri = uri
@@ -102,6 +102,7 @@ class ProxyEntry:
         self.is_embedded = False
         self.tcp_tested = False
         self.deep_tested = False
+        self.geo_tested = False
         self._parse()
 
     def _parse(self):
@@ -276,7 +277,7 @@ class ProxyTableModel(QAbstractTableModel):
             if col == 5: return f"{p.latency_ms:.0f}ms" if p.latency_ms else ""
         if role == Qt.ItemDataRole.DecorationRole and col == 0:
             return None
-        if role == Qt.ItemDataRole.ForegroundRole:
+        if role == Qt.ItemDataRole.ForegroundRole and col == 6:
             if p.deep_ok: return QColor("#00e676")
             if p.tcp_ok: return QColor("#69f0ae")
             return QColor("#ff5252")
