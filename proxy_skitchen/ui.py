@@ -1845,8 +1845,16 @@ def get_style_string(colors: dict) -> str:
             text-align: center; color: {colors['fg']}; height: 18px;
         }}
         QProgressBar::chunk {{ background-color: {colors['accent']}; }}
-        QListWidget, QTableWidget {{
+        QListWidget, QTableWidget, QTableView {{
             background-color: {colors['input_bg']}; border: 1px solid {colors['border']};
+            color: {colors['fg']};
+        }}
+        QTableView::item, QTableWidget::item {{
+            color: {colors['fg']};
+        }}
+        QHeaderView::section {{
+            background-color: {colors['button_bg']}; color: {colors['fg']};
+            border: 1px solid {colors['border']}; padding: 4px;
         }}
         #StatusBarLabel {{
             padding: 1px 4px;
