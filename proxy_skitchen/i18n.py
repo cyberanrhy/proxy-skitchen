@@ -114,7 +114,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "download.stats.detail": "📦 {total} прокси | Источники: {sources_ok} | ⏱ {duration}\n{protos}",
         "download.phase.fetch": "📥 Загрузка...",
         "test.btn.continue": "▶ Продолжить →",
-        "test.btn.geo": "🌍 Гео",
         "test.threads": "Потоки:",
         "test.filter.all": "Все",
         "test.filter.tuic": "TUIC",
@@ -123,7 +122,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "test.filter.trojan": "Trojan",
         "test.filter.ss": "SS",
         "test.filter.hy2": "Hy2",
-        "test.phase.geo": "🌍 Определение страны...",
 
         # ── log messages ──
         "log.fetch_start": "Загрузка {count} источников...",
@@ -310,7 +308,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "download.stats.detail": "📦 {total} proxies | Sources: {sources_ok} | ⏱ {duration}\n{protos}",
         "download.phase.fetch": "📥 Downloading...",
         "test.btn.continue": "▶ Continue →",
-        "test.btn.geo": "🌍 Geo",
         "test.threads": "Threads:",
         "test.filter.all": "All",
         "test.filter.tuic": "TUIC",
@@ -319,7 +316,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "test.filter.trojan": "Trojan",
         "test.filter.ss": "SS",
         "test.filter.hy2": "Hy2",
-        "test.phase.geo": "🌍 Geo lookup...",
 
         # ── log messages ──
         "log.fetch_start": "Fetching {count} sources...",

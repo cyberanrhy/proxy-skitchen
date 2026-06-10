@@ -14,7 +14,6 @@ from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _sa
 from .parsers import is_proxy_uri, extract_uris, get_server_port
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
-from .geo import GeoWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
 from .notifier import notify
 
@@ -42,6 +41,34 @@ def _cleanup_thread(thread, worker, wait_sec=8.0):
             worker.deleteLater()
         except Exception:
             pass
+
+
+def _view_source_url(parent, url: str):
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        QMessageBox.warning(parent, "Error", f"Failed to load:\n{url}\n\n{e}")
+        return
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(url.rsplit("/", 1)[-1][:60])
+    dlg.resize(700, 500)
+    layout = QVBoxLayout(dlg)
+    edit = QPlainTextEdit(data)
+    edit.setReadOnly(True)
+    edit.setFont(QFont("Consolas, Courier New, monospace", 10))
+    layout.addWidget(edit)
+    btn_row = QHBoxLayout()
+    btn_row.addStretch()
+    info = QLabel(f"  {len(data)} bytes  |  {len(data.splitlines())} lines  ")
+    btn_row.addWidget(info)
+    btn_close = QPushButton("Close")
+    btn_close.clicked.connect(dlg.accept)
+    btn_row.addWidget(btn_close)
+    layout.addLayout(btn_row)
+    dlg.exec()
 
 
 class WizardPage(QWidget):
@@ -504,7 +531,7 @@ class SourcesPage(WizardPage):
     def _on_src_double_click(self, item):
         url = item.data(Qt.ItemDataRole.UserRole)
         if url:
-            QDesktopServices.openUrl(QUrl(url))
+            _view_source_url(self, url)
 
     def _on_clear(self):
         self.src_list.clear()
@@ -800,7 +827,7 @@ class DownloadPage(WizardPage):
         if item:
             url = item.data(Qt.ItemDataRole.UserRole)
             if url:
-                QDesktopServices.openUrl(QUrl(url))
+                _view_source_url(self, url)
 
     def _update_source_row(self, name: str, ok: bool, count: int):
         for row in range(self.src_table.rowCount()):
@@ -892,7 +919,6 @@ class DownloadPage(WizardPage):
 class TestPage(WizardPage):
     PHASE_IDLE = 0
     PHASE_TEST = 1
-    PHASE_GEO = 2
 
     def __init__(self, main):
         super().__init__(main)
@@ -910,8 +936,6 @@ class TestPage(WizardPage):
         self._completed = False
         self._test_type: str | None = None
         self._stop_requested = False
-        self._geo_thread = None
-        self._geo_worker = None
 
         layout = QVBoxLayout(self)
 
@@ -966,10 +990,6 @@ class TestPage(WizardPage):
         self.btn_continue.setVisible(False)
         stats_row.addWidget(self.btn_continue)
 
-        self.btn_geo = QPushButton(_("test.btn.geo"))
-        self.btn_geo.setEnabled(False)
-        self.btn_geo.clicked.connect(self._on_geo)
-        
         self.lbl_threads = QLabel(_("test.threads"))
         stats_row.addWidget(self.lbl_threads)
         self.spin_threads = QSpinBox()
@@ -978,8 +998,6 @@ class TestPage(WizardPage):
         self.spin_threads.setFixedWidth(50)
         self.spin_threads.setStyleSheet("QSpinBox { font-size: 10px; padding: 2px; }")
         stats_row.addWidget(self.spin_threads)
-        
-        stats_row.addWidget(self.btn_geo)
 
         self.btn_delete_dead = QPushButton(_("test.btn.delete_dead"))
         self.btn_delete_dead.clicked.connect(self._on_delete_dead)
@@ -1054,21 +1072,9 @@ class TestPage(WizardPage):
             self.btn_tcp.setEnabled(False)
             self.btn_deep.setEnabled(False)
             self.btn_continue.setVisible(False)
-            self.btn_geo.setEnabled(False)
             self.btn_export.setEnabled(False)
             self.progress_bar.setVisible(True)
             self.lbl_phase.setText(_("test.phase.test"))
-        elif phase == self.PHASE_GEO:
-            self.btn_stop.setText(_("test.btn.stop_test"))
-            self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
-            self.btn_stop.setEnabled(True)
-            self.btn_tcp.setEnabled(False)
-            self.btn_deep.setEnabled(False)
-            self.btn_continue.setVisible(False)
-            self.btn_geo.setEnabled(False)
-            self.btn_export.setEnabled(False)
-            self.progress_bar.setVisible(True)
-            self.lbl_phase.setText(_("test.phase.geo"))
         else:
             self.btn_stop.setText(_("test.btn.stop"))
             self.btn_stop.setStyleSheet("")
@@ -1079,9 +1085,8 @@ class TestPage(WizardPage):
             has_valid = self._valid_cnt > 0
             self.btn_tcp.setEnabled(has_entries)
             self.btn_deep.setEnabled(has_entries)
-            self.btn_geo.setEnabled(has_valid)
             self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
-            self.btn_export.setEnabled(has_valid)
+            self.btn_export.setEnabled(has_entries)
 
     def _log(self, msg: str):
         self.log_out.append(msg)
@@ -1096,12 +1101,6 @@ class TestPage(WizardPage):
     def _on_stop(self):
         _debug("TestPage._on_stop")
         self._stop_requested = True
-        if self._phase == self.PHASE_GEO:
-            self._cleanup_geo()
-            self._log(_("log.geo_stopped"))
-            self._set_phase(self.PHASE_IDLE)
-            self._main.update_status_bar()
-            return
         self._cleanup_test()
         self._log(_("log.test_stopped"))
         self.model.dedup_by_key()
@@ -1130,57 +1129,6 @@ class TestPage(WizardPage):
         indices, entries = zip(*remaining) if remaining else ([], [])
         self._log(_("log.test_resumed", count=len(entries)))
         self._run_test(deep=(self._test_type == "deep"), subset=list(entries), subset_indices=list(indices))
-
-    def _count_geo_remaining(self) -> int:
-        return sum(1 for e in self._entries if (e.tcp_ok or e.deep_ok) and not e.geo_tested)
-
-    def _cleanup_geo(self):
-        _cleanup_thread(getattr(self, '_geo_thread', None), getattr(self, '_geo_worker', None))
-        self._geo_thread = None
-        self._geo_worker = None
-
-    def _on_geo(self):
-        _debug(f"_on_geo: phase={self._phase}")
-        if self._phase != self.PHASE_IDLE:
-            return
-        entry_set = set(id(e) for e in self._filtered_entries)
-        valid = [(i, e) for i, e in enumerate(self._entries) if id(e) in entry_set and (e.tcp_ok or e.deep_ok) and not e.geo_tested]
-        if not valid:
-            self._log(_("log.geo_done", count=0))
-            return
-        indices, entries = zip(*valid)
-        self._log(_("log.geo_start", count=len(entries)))
-        self._set_phase(self.PHASE_GEO)
-        self.progress_bar.setMaximum(len(entries))
-        self.progress_bar.setValue(0)
-
-        self._geo_worker = GeoWorker()
-        self._geo_worker.geo_result_signal.connect(self._on_geo_result)
-        self._geo_worker.log_signal.connect(self._log)
-        self._geo_worker.finished.connect(self._on_geo_finished)
-
-        self._geo_thread = QThread()
-        self._geo_worker.moveToThread(self._geo_thread)
-        self._geo_thread.started.connect(
-            lambda: self._geo_worker.geo_batch(list(entries), list(indices)),
-            Qt.ConnectionType.DirectConnection)
-        self._geo_thread.start()
-
-    def _on_geo_result(self, row: int, code: str, name: str):
-        if 0 <= row < len(self._entries):
-            e = self._entries[row]
-            e.country = f"{country_flag(code)} {name}"
-            e.geo_tested = True
-            idx = self.model.index(row, 4)
-            self.model.dataChanged.emit(idx, idx)
-
-    def _on_geo_finished(self):
-        self._cleanup_geo()
-        total = sum(1 for e in self._entries if e.geo_tested)
-        self._log(_("log.geo_done", count=total))
-        self._set_phase(self.PHASE_IDLE)
-        self._main.update_status_bar()
-        notify("Geo Lookup Complete", f"{total} locations resolved")
 
     def _on_tcp_test(self):
         if self._phase == self.PHASE_TEST:
@@ -1283,7 +1231,6 @@ class TestPage(WizardPage):
         self._completed = True
         self._set_phase(self.PHASE_IDLE)
         self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
-        self.btn_geo.setEnabled(self._valid_cnt > 0)
         self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
         self._main.update_status_bar()
         mode = "Deep" if self._test_type == "deep" else "TCP"
@@ -1331,13 +1278,11 @@ class TestPage(WizardPage):
 
     def on_enter(self):
         self._update_stats()
-        self.btn_export.setEnabled(self._valid_cnt > 0)
-        self.btn_geo.setEnabled(self._valid_cnt > 0 and self._count_geo_remaining() > 0)
+        self.btn_export.setEnabled(len(self._entries) > 0)
         self._main.update_status_bar()
 
     def on_leave(self):
         self._cleanup_test()
-        self._cleanup_geo()
 
     def retranslate(self):
         self.lbl_title.setText(_("test.title"))
@@ -1349,7 +1294,6 @@ class TestPage(WizardPage):
         self.btn_tcp.setText(_("test.btn.tcp"))
         self.btn_deep.setText(_("test.btn.deep"))
         self.btn_continue.setText(_("test.btn.continue"))
-        self.btn_geo.setText(_("test.btn.geo"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))
         self.btn_export.setText(_("test.btn.export"))
         # Rebuild filter combo
@@ -1368,8 +1312,6 @@ class TestPage(WizardPage):
         if self._phase == self.PHASE_TEST:
             self.btn_stop.setText(_("test.btn.stop_test"))
             self.lbl_phase.setText(_("test.phase.test"))
-        elif self._phase == self.PHASE_GEO:
-            self.lbl_phase.setText(_("test.phase.geo"))
         else:
             self.lbl_phase.setText("")
         self._update_stats()
@@ -1832,7 +1774,6 @@ class MainWindow(QMainWindow):
         self.source_page._cleanup_gh()
         self.download_page._cleanup_net()
         self.test_page._cleanup_test()
-        self.test_page._cleanup_geo()
         event.accept()
 
 def get_style_string(colors: dict) -> str:
@@ -1864,10 +1805,9 @@ def get_style_string(colors: dict) -> str:
         QProgressBar::chunk {{ background-color: {colors['accent']}; }}
         QListWidget, QTableWidget, QTableView {{
             background-color: {colors['input_bg']}; border: 1px solid {colors['border']};
+            alternate-background-color: {colors['button_bg']};
             color: {colors['fg']};
-        }}
-        QTableView::item, QTableWidget::item {{
-            color: {colors['fg']};
+            gridline-color: {colors['border']};
         }}
         QHeaderView::section {{
             background-color: {colors['button_bg']}; color: {colors['fg']};
