@@ -396,6 +396,7 @@ class SourcesPage(WizardPage):
         self.gh_found_label.setText(f"📄 {count}")
 
     def _on_gh_partial(self, results: list):
+        _debug(f"_on_gh_partial: {len(results)} results")
         self._gh_results = results
         for r in results:
             url = r.get("file_url", "")
@@ -467,14 +468,17 @@ class SourcesPage(WizardPage):
         self.url_input.clear()
 
     def _add_source(self, name: str, url: str):
+        _debug(f"_add_source: {name[:60]}")
         for i in range(self.src_list.count()):
             item = self.src_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == url:
+                _debug("_add_source: duplicate, skipped")
                 return
         item = QListWidgetItem(name)
         item.setData(Qt.ItemDataRole.UserRole, url)
         self.src_list.addItem(item)
         self._sources.append((name, url))
+        _debug(f"_add_source: sources={len(self._sources)}")
         self._update_fetch_btn()
 
     def _remove_source(self, url: str):
@@ -501,11 +505,13 @@ class SourcesPage(WizardPage):
 
     def _update_fetch_btn(self):
         has = len(self._sources) > 0
+        _debug(f"_update_fetch_btn: sources={len(self._sources)} enabled={has}")
         self.btn_fetch.setEnabled(has)
         self.btn_clear.setEnabled(has)
 
     def _on_fetch(self):
         if not self._sources:
+            _debug("_on_fetch: no sources")
             return
         _debug(f"_on_fetch: {len(self._sources)} sources")
         self._main.download_page.fetch_sources(list(self._sources))
@@ -692,8 +698,9 @@ class DownloadPage(WizardPage):
         self._log(_("log.fetch_stopped", count=len(self._entries)))
         self._set_phase(self.PHASE_IDLE)
         self._main.update_status_bar()
-        if self._entries:
-            self.btn_next.setEnabled(True)
+        self.btn_next.setEnabled(True)
+        if not self._entries:
+            self._log(_("log.no_proxies_warning"))
 
     def _on_next(self):
         self._main.test_page.load_entries(self._entries)
