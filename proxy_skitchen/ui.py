@@ -26,13 +26,15 @@ def _cleanup_thread(thread, worker, wait_sec=1.5):
             worker.stop()
         except Exception:
             pass
+    finished = True
     if thread is not None:
         try:
             thread.quit()
-            thread.wait(int(wait_sec * 1000))
+            if not thread.wait(int(wait_sec * 1000)):
+                finished = False
         except Exception:
             pass
-    if worker is not None:
+    if worker is not None and finished:
         try:
             worker.deleteLater()
         except Exception:
@@ -54,7 +56,9 @@ def _view_source_url(parent, url: str):
     layout = QVBoxLayout(dlg)
     edit = QPlainTextEdit(data)
     edit.setReadOnly(True)
-    edit.setFont(QFont("Consolas, Courier New, monospace", 10))
+    f = QFont("Courier New", 10)
+    f.setStyleHint(QFont.Monospace)
+    edit.setFont(f)
     layout.addWidget(edit)
     btn_row = QHBoxLayout()
     btn_row.addStretch()
@@ -488,7 +492,7 @@ class SourcesPage(WizardPage):
             self.repo_input.setText(repo)
             self.url_input.clear()
             self.gh_status.setText(_("gh.repo_url", repo=repo))
-            QTimer.singleShot(100, self._on_github_search)
+            QTimer.singleShot(200, lambda: self._on_github_search() if self._main._current_page == 0 else None)
             return
         self._add_source(url, url)
         self.url_input.clear()
@@ -1489,6 +1493,8 @@ class ExportPage(WizardPage):
 
 
 class SettingsDialog(QDialog):
+    check_result_signal = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._main = parent
@@ -1550,6 +1556,7 @@ class SettingsDialog(QDialog):
         gh_layout.addWidget(btn_check)
 
         self.check_result = QLabel("")
+        self.check_result_signal.connect(self.check_result.setText)
         gh_layout.addWidget(self.check_result)
         gh_layout.addStretch()
         tabs.addTab(gh, "GitHub")
@@ -1573,8 +1580,6 @@ class SettingsDialog(QDialog):
             return
         token = tokens[0]
         self.check_result.setText(_("settings.token.checking"))
-        from concurrent.futures import ThreadPoolExecutor
-        pool = ThreadPoolExecutor(1)
         def _check():
             try:
                 req = urllib.request.Request("https://api.github.com/user",
@@ -1585,11 +1590,11 @@ class SettingsDialog(QDialog):
                 return _("settings.token.ok", login=data.get('login', '?'), limit=limit)
             except Exception as e:
                 return _("settings.token.error", error=str(e)[:60])
-        def _on_done(fut):
-            result = fut.result()
-            QTimer.singleShot(0, lambda: self.check_result.setText(result))
-        fut = pool.submit(_check)
-        fut.add_done_callback(_on_done)
+        def _on_done(result):
+            self.check_result_signal.emit(result)
+        import threading
+        t = threading.Thread(target=lambda: _on_done(_check()), daemon=True)
+        t.start()
 
     def _on_save(self):
         tokens = [t.strip() for t in self.tokens_edit.toPlainText().strip().splitlines() if t.strip()]

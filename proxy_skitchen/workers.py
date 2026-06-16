@@ -73,7 +73,10 @@ class NetworkWorker(QObject):
             for name, url in sources:
                 if self._stop:
                     break
-                fut = pool.submit(self._fetch_one, name, url)
+                try:
+                    fut = pool.submit(self._fetch_one, name, url)
+                except RuntimeError:
+                    break
                 idx = len(futs)
                 futs[fut] = idx
                 names[fut] = name
