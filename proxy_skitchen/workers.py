@@ -39,6 +39,7 @@ class NetworkWorker(QObject):
         self._resolved = {}
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
+        self._pool = None
 
     def stop(self):
         self._stop = True
@@ -49,6 +50,11 @@ class NetworkWorker(QObject):
                 except Exception:
                     pass
             self._procs.clear()
+        try:
+            if self._pool:
+                self._pool.shutdown(wait=False)
+        except Exception:
+            pass
 
     @Slot()
     def fetch_all(self, sources: list[tuple[str, str]]):
@@ -57,7 +63,8 @@ class NetworkWorker(QObject):
         if not total:
             self.finished.emit()
             return
-        pool = ThreadPoolExecutor(max_workers=4)
+        self._pool = ThreadPoolExecutor(max_workers=4)
+        pool = self._pool
         futs = {}
         names = {}
         start_time = time.time()
@@ -179,16 +186,23 @@ class NetworkWorker(QObject):
                         cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
                         creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags)
+                        with self._procs_lock:
+                            self._procs.append(proc)
                         try:
                             out, _ = proc.communicate(timeout=25)
                             if proc.returncode == 0:
                                 return out.decode("utf-8", errors="ignore")
                         finally:
+                            with self._procs_lock:
+                                if proc in self._procs:
+                                    self._procs.remove(proc)
                             if proc.poll() is None:
                                 proc.kill()
                     else:
                         raise FileNotFoundError("curl not found")
                 except Exception:
+                    if self._stop:
+                        return None
                     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                     if use_proxy and proxy_enabled:
                         handler = urllib.request.ProxyHandler({"http": HIDDIFY_PROXY, "https": HIDDIFY_PROXY})
