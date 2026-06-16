@@ -253,12 +253,26 @@ def extract_uris(text: str) -> list[str]:
     return uris
 
 
+def _extract_from_dict(item: dict) -> Optional[str]:
+    host = item.get('query') or item.get('ip') or item.get('address') or item.get('server')
+    port = item.get('port')
+    if host and port:
+        protocol = item.get('type') or item.get('protocol') or 'http'
+        protocol = protocol.lower().strip()
+        if not protocol.endswith('://'):
+            protocol = protocol + '://'
+        uri = f"{protocol}{host}:{port}"
+        if is_proxy_uri(uri):
+            return uri
+    return None
+
 def parse_json_proxies(data: str) -> list[str]:
     uris = []
     try:
         obj = json.loads(data)
-        if isinstance(obj, dict):
-            for val in obj.values():
+        values = obj.values() if isinstance(obj, dict) else obj
+        if isinstance(obj, (dict, list)):
+            for val in values:
                 if isinstance(val, str) and is_proxy_uri(val):
                     uris.append(val)
                 elif isinstance(val, list):
@@ -266,35 +280,13 @@ def parse_json_proxies(data: str) -> list[str]:
                         if isinstance(item, str) and is_proxy_uri(item):
                             uris.append(item)
                         elif isinstance(item, dict):
-                            # Try to extract host and port from the dict
-                            host = item.get('query') or item.get('ip') or item.get('address') or item.get('server')
-                            port = item.get('port')
-                            if host and port:
-                                protocol = item.get('type') or item.get('protocol') or 'http'
-                                # Normalize protocol to lower case and ensure it ends with :// if not already
-                                protocol = protocol.lower().strip()
-                                if not protocol.endswith('://'):
-                                    protocol = protocol + '://'
-                                uri = f"{protocol}{host}:{port}"
-                                if is_proxy_uri(uri):
-                                    uris.append(uri)
-        elif isinstance(obj, list):
-            for item in obj:
-                if isinstance(item, str) and is_proxy_uri(item):
-                    uris.append(item)
-                elif isinstance(item, dict):
-                    # Try to extract host and port from the dict
-                    host = item.get('query') or item.get('ip') or item.get('address') or item.get('server')
-                    port = item.get('port')
-                    if host and port:
-                        protocol = item.get('type') or item.get('protocol') or 'http'
-                        # Normalize protocol to lower case and ensure it ends with :// if not already
-                        protocol = protocol.lower().strip()
-                        if not protocol.endswith('://'):
-                            protocol = protocol + '://'
-                        uri = f"{protocol}{host}:{port}"
-                        if is_proxy_uri(uri):
-                            uris.append(uri)
+                            uri = _extract_from_dict(item)
+                            if uri:
+                                uris.append(uri)
+                elif isinstance(val, dict):
+                    uri = _extract_from_dict(val)
+                    if uri:
+                        uris.append(uri)
     except Exception:
         pass
     return uris
