@@ -18,16 +18,12 @@ from .i18n import _, LANGUAGES, current_lang, set_lang
 from .notifier import notify
 
 
-def _cleanup_thread(thread, worker, wait_sec=8.0):
+def _cleanup_thread(thread, worker, wait_sec=1.5):
     if thread is None and worker is None:
         return
     if worker is not None:
         try:
             worker.stop()
-        except Exception:
-            pass
-        try:
-            worker.disconnect()
         except Exception:
             pass
     if thread is not None:
