@@ -26,7 +26,7 @@ DESKTOP_DIR = next((p for p in [
     os.path.expanduser("~/桌面"),
 ] if os.path.isdir(p)), os.path.expanduser("~"))
 FORK_NAME = "proxy-skitchen"
-FORK_VERSION = "2.1.17"
+FORK_VERSION = "2.1.18"
 DEVNULL = os.devnull
 
 os.makedirs(SETTINGS_DIR, exist_ok=True)
