@@ -1,0 +1,65 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libglib2.0-0 libxkbcommon0
+
+      - name: Install Python deps
+        run: pip install pyinstaller -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --windowed --name proxy-skitchen-linux --hidden-import PySide6.QtSvg --hidden-import PySide6.QtNetwork --add-data "proxy_skitchen/icon.png:proxy_skitchen" --paths . run_proxy_skitchen.py
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/proxy-skitchen-linux
+          name: proxy-skitchen-linux-x86_64
+          tag_name: ${{ github.ref_name }}
+          overwrite: true
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: pip install pyinstaller -r requirements.txt
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: pyinstaller --onefile --windowed --name proxy-skitchen-windows --hidden-import PySide6.QtSvg --hidden-import PySide6.QtNetwork --add-data "proxy_skitchen/icon.png;proxy_skitchen" --paths . run_proxy_skitchen.py
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/proxy-skitchen-windows.exe
+          name: proxy-skitchen-windows-x86_64.exe
+          tag_name: ${{ github.ref_name }}
+          overwrite: true
