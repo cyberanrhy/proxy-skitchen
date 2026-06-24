@@ -4,7 +4,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 
-from .compat import TMP_DIR, HIDDIFY_PROXY, DEVNULL
+from .compat import TMP_DIR, HIDDIFY_PROXY, DEVNULL, HIDDEN_SUBPOPEN_KWARGS
 from .parsers import get_protocol, get_server_port, is_ip
 
 _TESTER_LOG = os.path.join(TMP_DIR, "tester.log")
@@ -127,7 +127,7 @@ class SingBoxTester:
                     proc = subprocess.Popen(
                         [SING_BOX, "run", "-c", config_path],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        cwd=tmp_dir,
+                        cwd=tmp_dir, **HIDDEN_SUBPOPEN_KWARGS,
                     )
                     time.sleep(0.3)
                     try:

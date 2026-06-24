@@ -13,7 +13,7 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 faulthandler.enable()
 
-from .compat import TMP_DIR
+from .compat import TMP_DIR, HIDDEN_SUBPOPEN_KWARGS
 
 FAULT_LOG = os.path.join(TMP_DIR, "fault.log")
 CRASH_LOG = os.path.join(TMP_DIR, "crash.log")
@@ -83,7 +83,7 @@ class CliRunner:
                 if _settings_data.get("proxy_enabled", True):
                     cmd.insert(1, "--proxy")
                     cmd.insert(2, "socks5://127.0.0.1:12334")
-                result = subprocess.run(cmd, capture_output=True, timeout=timeout + 10)
+                result = subprocess.run(cmd, capture_output=True, timeout=timeout + 10, **HIDDEN_SUBPOPEN_KWARGS)
                 if result.returncode == 0:
                     return result.stdout.decode("utf-8", errors="ignore")
             except Exception:

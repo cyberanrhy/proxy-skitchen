@@ -26,8 +26,14 @@ DESKTOP_DIR = next((p for p in [
     os.path.expanduser("~/桌面"),
 ] if os.path.isdir(p)), os.path.expanduser("~"))
 FORK_NAME = "proxy-skitchen"
-FORK_VERSION = "2.1.19"
+FORK_VERSION = "2.1.20"
 DEVNULL = os.devnull
+
+# Windows: suppress console window for child processes (PyInstaller --windowed)
+if IS_WINDOWS:
+    HIDDEN_SUBPOPEN_KWARGS = {"creationflags": subprocess.CREATE_NO_WINDOW}
+else:
+    HIDDEN_SUBPOPEN_KWARGS = {}
 
 os.makedirs(SETTINGS_DIR, exist_ok=True)
 os.makedirs(VPN_DIR, exist_ok=True)

@@ -187,7 +187,7 @@ class NetworkWorker(QObject):
                             cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
                         cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
                         _debug(f"_http_get: curl attempt={attempt} proxy={use_proxy}")
-                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **HIDDEN_SUBPOPEN_KWARGS)
                         with self._procs_lock:
                             self._procs.append(proc)
                         try:
@@ -384,7 +384,7 @@ class GitHubSearchWorker(QObject):
                             if token:
                                 cmd.extend(["-H", f"Authorization: token {token}"])
                             cmd.append(url)
-                            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **HIDDEN_SUBPOPEN_KWARGS)
                             with self._procs_lock:
                                 self._procs.append(proc)
                             try:
@@ -586,7 +586,7 @@ class GeoWorker(QObject):
                     if _settings_data.get("proxy_enabled", True):
                         cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
                     cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
-                    result = subprocess.run(cmd, capture_output=True, timeout=15)
+                    result = subprocess.run(cmd, capture_output=True, timeout=15, **HIDDEN_SUBPOPEN_KWARGS)
                     if result.returncode == 0:
                         body = result.stdout.decode("utf-8", errors="ignore")
                 else:
