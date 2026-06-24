@@ -410,7 +410,7 @@ class SourcesPage(WizardPage):
         self.btn_deep_search.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._gh_results = results
-        added = 0
+        before = len(self._sources)
         for r in results:
             url = r.get("file_url", "")
             name = r.get("name", url)
@@ -418,7 +418,7 @@ class SourcesPage(WizardPage):
                 self._add_source(_("gh.embed_prefix", name=name), url)
             else:
                 self._add_source(name, url)
-            added += 1
+        added = len(self._sources) - before
         self.gh_status.setText(_("gh.found_files", count=added))
         self.gh_found_label.setText(f"✅ {added}")
         self._cleanup_gh()
@@ -1624,6 +1624,7 @@ class SettingsDialog(QDialog):
     def _on_save(self):
         tokens = [t.strip() for t in self.tokens_edit.toPlainText().strip().splitlines() if t.strip()]
         _auth_data["github_tokens"] = tokens
+        _save_auth(_auth_data)
 
         _settings_data["perf_mode"] = {"low 🐢": "low", "medium ⚡": "medium", "high 🚀": "high"}.get(self.perf_combo.currentText(), "medium")
         _settings_data["proxy_enabled"] = self.cb_proxy.isChecked()

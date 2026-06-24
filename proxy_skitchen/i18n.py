@@ -51,6 +51,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "preset.free": "бесплатные прокси",
         "preset.xray": "xray конфиг",
         "preset.hysteria2": "hysteria2 подписка",
+        "preset.tuic": "tuic подписка",
 
         # ── period combo (нейтральные) ──
         "period.1h": "1h",
@@ -254,6 +255,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "preset.free": "free proxy config",
         "preset.xray": "xray config",
         "preset.hysteria2": "hysteria2 subscription",
+        "preset.tuic": "tuic subscription",
 
         # ── period combo (нейтральные) ──
         "period.1h": "1h",
