@@ -9,8 +9,9 @@ from datetime import datetime
 os.environ["QT_API"] = "pyside6"
 
 # Crash safety (stderr may be None in PyInstaller --windowed mode)
-if sys.stderr is not None:
-    faulthandler.enable()
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+faulthandler.enable()
 
 from .compat import TMP_DIR
 
