@@ -347,9 +347,9 @@ class SourcesPage(WizardPage):
             QMessageBox.warning(self, _("msg.warning"), _("msg.no_keywords"))
             return
         keywords = [kw.strip() for kw in kw_text.replace(',', ' ').split() if kw.strip()]
-        period_map = {_("period.1h"): 1/24, _("period.2h"): 2/24, _("period.4h"): 4/24, _("period.6h"): 6/24,
-                      _("period.8h"): 8/24, _("period.12h"): 12/24, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7}
-        time_days = period_map.get(self.period_combo.currentText(), 1)
+        period_map = {_("period.1h"): 1, _("period.2h"): 1, _("period.4h"): 1, _("period.6h"): 1,
+                      _("period.8h"): 1, _("period.12h"): 1, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7}
+        time_days = period_map.get(self.period_combo.currentText(), 7)
         tokens = _auth_data.get("github_tokens", [])
         repos = []
         owner = None
@@ -364,7 +364,7 @@ class SourcesPage(WizardPage):
         cfg = PERF_PRESETS.get(_settings_data.get("perf_mode", "medium"))
         self._gh_worker = GitHubSearchWorker(
             keywords, set(), explicit_repos=repos,
-            time_filter_days=max(1, round(time_days)) if time_days < 1 else int(time_days), github_tokens=tokens,
+            time_filter_days=time_days, github_tokens=tokens,
             max_repos=cfg["max_repos"], max_files=cfg["max_files"],
             owner=owner, weak_hw=weak_hw, deep_search=deep_search
         )
