@@ -83,17 +83,14 @@ cd /home/skitchen/vpn-configs && python3 filter_ru_sni.py
 # proxy-skitchen — параллельная разработка
 
 ## Файлы
-- **Локально**: `/home/skitchen/.local/bin/proxy-skitchen`
+- **На флешке**: `/media/skitchen/SKI/proxy-skitchen`
 - **SMB-шара**: `smb://satellite-l850-cjk.local/publicshare/обмен/proxy-skitchen/proxy-skitchen`
-- **Оригинал**: `smb://satellite-l850-cjk.local/publicshare/обмен/proxy-fetcher/proxy-fetcher-gui`
 - **Ярлык**: `/home/skitchen/Рабочий стол/proxy-skitchen.desktop`
-- **AGENTS.md проекта**: `/home/skitchen/PublicShare/обмен/proxy-skitchen/AGENTS.md`
+- **AGENTS.md проекта**: `/media/skitchen/SKI/proxy-skitchen/AGENTS.md`
 
 ## Протокол синхронизации
 1. Перед работой — скачать последнюю версию из SMB-шары
 2. После изменений — выложить обратно в SMB-шару
-3. Форк живёт под именем `proxy-skitchen`, оригинал не трогать
-4. При конфликтах — версия с большим `FORK_VERSION` в коде считается актуальной
 
 ## Работа с opencode
 - `proxy-skitchen` — монолит ~4036 строк, PySide2

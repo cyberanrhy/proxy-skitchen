@@ -1,4 +1,4 @@
-import re, json, base64, urllib.parse, html, os
+import re, json, base64, urllib.parse, html, os, atexit
 from typing import Optional
 
 GOOD_SNI_DOMAINS = {
@@ -175,11 +175,13 @@ def guess_country(uri: str) -> str:
 
 
 _GEO_CACHE: dict[str, str] = {}
-_GEO_CACHE_FILE = os.path.join(os.path.expanduser("~/.config/proxy-fetcher"), "geo_cache.json")
+_GEO_CACHE_DIRTY = False
 
 
 def _load_geo_cache():
     global _GEO_CACHE
+    from .compat import SETTINGS_DIR
+    _GEO_CACHE_FILE = os.path.join(SETTINGS_DIR, "geo_cache.json")
     try:
         if os.path.exists(_GEO_CACHE_FILE):
             with open(_GEO_CACHE_FILE) as f:
@@ -189,19 +191,30 @@ def _load_geo_cache():
 
 
 def _save_geo_cache():
+    global _GEO_CACHE_DIRTY
+    from .compat import SETTINGS_DIR
+    _GEO_CACHE_FILE = os.path.join(SETTINGS_DIR, "geo_cache.json")
     try:
         d = os.path.dirname(_GEO_CACHE_FILE)
         os.makedirs(d, exist_ok=True)
         with open(_GEO_CACHE_FILE, "w") as f:
             json.dump(_GEO_CACHE, f, indent=2)
+        _GEO_CACHE_DIRTY = False
     except Exception:
         pass
 
 
+def flush_geo_cache():
+    if _GEO_CACHE_DIRTY:
+        _save_geo_cache()
+
+
 _load_geo_cache()
+atexit.register(flush_geo_cache)
 
 
 def geo_lookup(ip: str) -> str:
+    global _GEO_CACHE_DIRTY
     if ip in _GEO_CACHE:
         return _GEO_CACHE[ip]
     try:
@@ -213,11 +226,12 @@ def geo_lookup(ip: str) -> str:
         country = data.get("country", "")
         if country:
             _GEO_CACHE[ip] = country
-            _save_geo_cache()
+            _GEO_CACHE_DIRTY = True
+            if len(_GEO_CACHE) % 10 == 0:
+                _save_geo_cache()
             return country
     except Exception:
         pass
-    _GEO_CACHE[ip] = ""
     return ""
 
 

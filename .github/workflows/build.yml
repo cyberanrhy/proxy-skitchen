@@ -63,3 +63,27 @@ jobs:
           name: proxy-skitchen-windows-x86_64.exe
           tag_name: ${{ github.ref_name }}
           overwrite: true
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps
+        run: pip install pyinstaller -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --windowed --name proxy-skitchen-macos --hidden-import PySide6.QtSvg --hidden-import PySide6.QtNetwork --add-data "proxy_skitchen/icon.png:proxy_skitchen" --paths . run_proxy_skitchen.py
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/proxy-skitchen-macos
+          name: proxy-skitchen-macos-universal
+          tag_name: ${{ github.ref_name }}
+          overwrite: true

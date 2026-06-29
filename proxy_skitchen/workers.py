@@ -10,16 +10,17 @@ except ImportError:
     _HAS_REQUESTS = False
 
 from .compat import *
+from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, _auth_data, _settings_data
 from .parsers import is_proxy_uri, extract_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
 from .tester import test_tcp, test_tls, resolve_host
 
 def _debug(msg: str):
-    try:
-        with open("/tmp/proxy-fetcher-workers.log", "a") as f:
-            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
-    except Exception:
-        pass
+    from .compat import TMP_DIR
+    _WRK_LOG = os.path.join(TMP_DIR, "workers.log")
+    if _WRK_LOG not in DEBUG_LOG_PATHS:
+        DEBUG_LOG_PATHS.append(_WRK_LOG)
+    _write_log(_WRK_LOG, msg)
 
 
 class NetworkWorker(QObject):
@@ -204,8 +205,6 @@ class NetworkWorker(QObject):
                 _debug(f"_http_get: error {e}")
             if self._stop:
                 return None
-            if proxy_enabled:
-                use_proxy = True
         return None
 
 
@@ -213,13 +212,15 @@ class TesterWorker(QObject):
     progress_signal = Signal(int, int, int, str)
     testing_signal = Signal(int, str)
     result_signal = Signal(int, bool, float, str, int)
+    rkn_result_signal = Signal(int, bool, list)
     log_signal = Signal(str)
     finished = Signal()
     count_signal = Signal(int)
 
-    def __init__(self, deep: bool = False, test_threads: int = 4, deep_threads: int = 2):
+    def __init__(self, deep: bool = False, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2):
         super().__init__()
         self._deep = deep
+        self._rkn = rkn
         self._test_threads = test_threads
         self._deep_threads = deep_threads
         self._stop = False
@@ -230,8 +231,8 @@ class TesterWorker(QObject):
         self._stop = True
 
     @Slot()
-    def test_batch(self, entries: list[ProxyEntry]):
-        _debug(f"test_batch: start total={len(entries)} deep={self._deep}")
+    def test_batch(self, entries: list[ProxyEntry], indices: list[int] | None = None):
+        _debug(f"test_batch: start total={len(entries)} deep={self._deep} rkn={self._rkn}")
         self._stop = False
         total = len(entries)
         if not total:
@@ -247,8 +248,9 @@ class TesterWorker(QObject):
                 if self._stop:
                     _debug(f"test_batch: stopped at entry {i}")
                     break
-                self.testing_signal.emit(i, f"{entry.protocol} {entry.host}:{entry.port}")
-                futs[pool.submit(self._test_one, entry, resolved)] = i
+                orig_idx = indices[i] if indices else i
+                self.testing_signal.emit(orig_idx, f"{entry.protocol} {entry.host}:{entry.port}")
+                futs[pool.submit(self._test_one, entry, resolved)] = orig_idx
             _debug(f"test_batch: submitted {len(futs)}/{total}")
             done_count = 0
             pending = set(futs)
@@ -265,7 +267,8 @@ class TesterWorker(QObject):
                     done_count += 1
                     self.count_signal.emit(done_count)
                 if done:
-                    self.progress_signal.emit(done_count, total, threads, "deep" if self._deep else "tcp")
+                    mode = "rkn" if self._rkn else ("deep" if self._deep else "tcp")
+                    self.progress_signal.emit(done_count, total, threads, mode)
         finally:
             _debug(f"test_batch: done {done_count}/{total} stop={self._stop}")
             for fut in futs:
@@ -279,14 +282,16 @@ class TesterWorker(QObject):
         port = entry.port
         if not host or not port:
             return False, 0, "no host/port", 0
+        start = time.time()
         ok = test_tcp(host, port)
-        latency = 0.0
-        if ok:
-            start = time.time()
-            test_tcp(host, port)
-            latency = (time.time() - start) * 1000
+        latency = (time.time() - start) * 1000
         if not ok:
             return False, 0, "tcp fail", 0
+        if self._rkn:
+            rkn_ok, rkn_lat, rkn_err, rkn_results = self._rkn_test(entry)
+            entry.rkn_ok = rkn_ok
+            entry.rkn_results = rkn_results
+            return rkn_ok, rkn_lat or latency, rkn_err, 2
         if self._deep:
             deep_ok, deep_lat, deep_err = self._deep_test(entry)
             return deep_ok, deep_lat or latency, deep_err, 1
@@ -299,6 +304,13 @@ class TesterWorker(QObject):
         port = 19999 + (hash(entry.uri) % 10000)
         return self._sb_tester.test(entry.uri, port)
 
+    def _rkn_test(self, entry: ProxyEntry) -> tuple[bool, float, str, list]:
+        if not self._sb_tester:
+            from .tester import SingBoxTester
+            self._sb_tester = SingBoxTester()
+        port = 29999 + (hash(entry.uri) % 10000)
+        return self._sb_tester.test_rkn_bypass(entry.uri, port)
+
 
 class GitHubSearchWorker(QObject):
     result_signal = Signal(list)
@@ -310,7 +322,9 @@ class GitHubSearchWorker(QObject):
     def __init__(self, keywords: list[str], known_sources: set,
                  explicit_repos: Optional[list[str]] = None,
                  time_filter_days: int = 7, github_tokens: Optional[list[str]] = None,
-                 max_repos: int = 12, max_files: int = 50):
+                 max_repos: int = 12, max_files: int = 50,
+                 owner: Optional[str] = None,
+                 weak_hw: bool = False, deep_search: bool = False):
         super().__init__()
         self.keywords = keywords
         self.known_sources = known_sources
@@ -319,6 +333,9 @@ class GitHubSearchWorker(QObject):
         self.github_tokens = github_tokens or []
         self.max_repos = max_repos
         self.max_files = max_files
+        self.owner = owner
+        self.weak_hw = weak_hw
+        self.deep_search = deep_search
         self._stop = False
         self._token_idx = 0
         self._procs: list[subprocess.Popen] = []
@@ -339,13 +356,13 @@ class GitHubSearchWorker(QObject):
         for attempt in range(max(1, len(tokens) + 1)):
             if self._stop:
                 return None
-            time.sleep(0.5)
+            time.sleep(2.0 if self.weak_hw else 0.5)
             if tokens:
                 token = tokens[self._token_idx % len(tokens)]
                 self._token_idx += 1
             else:
                 token = None
-            for use_proxy in [False, True] if _settings_data.get("proxy_enabled", True) else [False]:
+            for use_proxy in [False, True]:
                 if self._stop:
                     return None
                 cmd = ["curl", "-s", "--connect-timeout", "8", "--max-time", str(timeout)]
@@ -369,8 +386,13 @@ class GitHubSearchWorker(QObject):
                             continue
                         data = json.loads(out)
                         if isinstance(data, dict) and data.get("message"):
-                            self.progress_signal.emit(f"  ⚠ API: {data['message'][:60]}")
-                            if "rate" in data["message"].lower():
+                            msg = data['message'][:60]
+                            self.progress_signal.emit(f"  ⚠ API: {msg}")
+                            if "bad credentials" in msg.lower():
+                                self.progress_signal.emit(f"  ⚠ Токен невалиден, ищу без токена...")
+                                token = None
+                                continue
+                            if "rate" in msg.lower():
                                 time.sleep(2)
                             continue
                         return data
@@ -402,24 +424,62 @@ class GitHubSearchWorker(QObject):
                 found = self._walk_explicit(repo_url)
                 results.extend(found)
                 self.count_signal.emit(len(results))
-            for kw in self.keywords:
-                if self._stop:
-                    break
-                self.progress_signal.emit(f"  keyword: {kw}")
-                found = self._search_and_walk(kw, seen_repos)
-                if found is None:
-                    _debug(f"CRITICAL: _search_and_walk returned None for {kw}")
-                    continue
-                results.extend(found)
-                self.count_signal.emit(len(results))
-            results.sort(key=lambda r: r.get("embedded", False))
+                self.partial_result_signal.emit(list(results))
+            # If only owner (no keywords): fetch user repos and walk each
+            if self.owner and not self.keywords:
+                self.progress_signal.emit(f"  📁 fetching repos for {self.owner}")
+                user_repos = self._fetch_user_repos(self.owner)
+                for i, repo_name in enumerate(user_repos):
+                    if self._stop:
+                        break
+                    self.progress_signal.emit(f"  📁 user repo [{i+1}/{len(user_repos)}]: {repo_name}")
+                    found = self._walk_explicit(repo_name)
+                    results.extend(found)
+                    self.count_signal.emit(len(results))
+                    self.partial_result_signal.emit(list(results))
+            else:
+                for kw in self.keywords:
+                    if self._stop:
+                        break
+                    self.progress_signal.emit(f"  keyword: {kw}")
+                    found = self._search_and_walk(kw, seen_repos)
+                    if found is None:
+                        _debug(f"CRITICAL: _search_and_walk returned None for {kw}")
+                        continue
+                    results.extend(found)
+                    self.count_signal.emit(len(results))
+            results.sort(key=lambda r: not r.get("embedded", False))
             self.result_signal.emit(results)
         except Exception as e:
             self.error_signal.emit(f"Search critical error: {e}")
         print("DEBUG: GitHubSearchWorker.run() finished", file=sys.stderr)
 
+    def _fetch_user_repos(self, owner: str) -> list[str]:
+        """Fetch all non-derived repos for a user/org via API."""
+        repos = []
+        page = 1
+        while True:
+            if self._stop:
+                break
+            url = f"https://api.github.com/users/{owner}/repos?per_page=100&page={page}&sort=updated&type=all"
+            data = self._api(url, timeout=15)
+            if data is None:
+                break
+            if not isinstance(data, list):
+                break
+            for r in data:
+                name = r.get("full_name", "")
+                if name and not r.get("fork", False):
+                    repos.append(name)
+            if len(data) < 100:
+                break
+            page += 1
+        return repos
+
     def _search_and_walk(self, keyword: str, seen_repos: set) -> list[dict]:
         query = urllib.parse.quote(keyword)
+        if self.owner:
+            query += f"+user:{self.owner}"
         results = []
         date_filter = ""
         if self.time_filter_days > 0:
@@ -448,74 +508,99 @@ class GitHubSearchWorker(QObject):
         full_name = repo.get("full_name", "")
         default_branch = repo.get("default_branch", "main")
         results = []
-        stack = [""]
-        visited = set()
-        while stack and not self._stop:
-            path = stack.pop()
-            if path in visited:
-                continue
-            visited.add(path)
-            self.progress_signal.emit(f"  📁 {full_name}/{path or '.'}")
-            api_url = f"https://api.github.com/repos/{full_name}/contents/{path}"
-            data = self._api(api_url)
-            if data is None:
-                self.progress_signal.emit(f"  ⚠ API returned None for {path}")
-                continue
-            items = data if isinstance(data, list) else [data]
-            if not items:
-                continue
-            for item in items:
-                if self._stop:
-                    break
-                if not isinstance(item, dict):
-                    continue
-                name = item.get("name", "")
-                item_path = item.get("path", "")
-                item_type = item.get("type", "")
-                skip_patterns = ('.git', '.github', 'node_modules', '__pycache__',
-                                 '.vscode', '.idea', 'venv', '.env', 'dist', 'build',
-                                 '.img', '.png', '.jpg', '.jpeg', '.gif', '.svg',
-                                 '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp3',
-                                 '.mp4', '.avi', '.mkv', '.zip', '.rar', '.tar', '.gz',
-                                 '.exe', '.dll', '.so', '.dmg', '.iso')
-                if any(name.lower().endswith(s) for s in skip_patterns):
-                    continue
-                skip_dirs = ('.git', '.github', 'node_modules', '__pycache__',
-                             '.vscode', '.idea', 'venv', '.env', 'dist', 'build', 'assets', 'images')
-                if item_type == 'dir':
-                    if name not in skip_dirs and not name.startswith('.'):
-                        stack.append(item_path)
-                elif item_type == 'file':
-                    ext = os.path.splitext(name)[1].lower()
-                    if ext in ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', ''):
-                        self.progress_signal.emit(f"    📄 {full_name}/{item_path}")
-                        found = self._check_file(item, full_name, default_branch)
-                        results.extend(found)
-                        self.count_signal.emit(len(results))
-                        if len(results) >= self.max_files:
-                            return results
+        api_url = f"https://api.github.com/repos/{full_name}/git/trees/{default_branch}?recursive=1"
+        self.progress_signal.emit(f"  🌲 {full_name} fetching tree...")
+        data = self._api(api_url)
+        if data is None or not isinstance(data, dict):
+            return results
+        tree = data.get("tree", [])
+        self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries")
+        candidates = self._filter_tree_items(full_name, tree)
+        if not candidates:
+            return results
+        self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
+        results = self._download_files(full_name, default_branch, candidates)
+        self.count_signal.emit(len(results))
         return results
 
-    def _check_file(self, item: dict, full_name: str, branch: str) -> list[dict]:
+    def _filter_tree_items(self, full_name: str, tree: list) -> list[dict]:
+        skip_dirs = frozenset((
+            '.git', '.github', 'node_modules', '__pycache__',
+            '.vscode', '.idea', 'venv', '.env', 'dist', 'build',
+            'assets', 'images', 'tests', 'docs', 'examples',
+            'benchmarks', 'spec', '__tests__',
+        ))
+        skip_exts = frozenset((
+            '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
+            '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4',
+            '.avi', '.mkv', '.zip', '.rar', '.tar', '.gz', '.bz2',
+            '.7z', '.exe', '.dll', '.so', '.dmg', '.iso',
+            '.pyc', '.o', '.obj', '.class', '.img',
+        ))
+        text_exts = frozenset((
+            '.md', '.rst', '.txt', '.yaml', '.yml', '.json',
+            '.conf', '.cfg', '',
+        ))
+        candidates = []
+        for item in tree:
+            if self._stop:
+                break
+            if item.get("type") != "blob":
+                continue
+            path = item.get("path", "")
+            name = os.path.basename(path)
+            parts = path.split("/")
+            parent_dirs = parts[:-1]
+            ext = os.path.splitext(name)[1].lower()
+            if ext in skip_exts:
+                continue
+            if any(d in skip_dirs for d in parent_dirs):
+                continue
+            if not self.deep_search:
+                if any(d.startswith(".") for d in parent_dirs):
+                    continue
+                if ext not in text_exts:
+                    continue
+            candidates.append(item)
+            if len(candidates) >= self.max_files:
+                break
+        return candidates
+
+    def _download_files(self, full_name: str, branch: str, candidates: list) -> list[dict]:
         results = []
-        download_url = item.get("download_url", "")
-        if not download_url:
-            return results
-        name = item.get("name", "")
-        path = item.get("path", "")
-        size = item.get("size", 0) or 0
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            fut_map = {}
+            for item in candidates:
+                path = item.get("path", "")
+                raw_url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{path}"
+                size = item.get("size", 0) or 0
+                fut = pool.submit(self._download_file, raw_url, size, full_name, path)
+                fut_map[fut] = path
+                self.progress_signal.emit(f"    📄 {full_name}/{path}")
+            for fut in as_completed(fut_map):
+                if self._stop:
+                    break
+                try:
+                    res = fut.result()
+                    if res:
+                        results.append(res)
+                except Exception:
+                    pass
+        return results
+
+    def _download_file(self, raw_url: str, size: int, full_name: str, path: str) -> dict | None:
         if size > 5 * 1024 * 1024:
-            return results
-        url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{path}"
-        file_url = item.get("download_url", url)
+            return None
         try:
             cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
+            if self.weak_hw:
+                cmd.extend(["--range", "0-51200"])
             if _settings_data.get("proxy_enabled", True):
                 cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
-            cmd.extend(["-H", "User-Agent: Mozilla/5.0", file_url])
+            cmd.extend(["-H", "User-Agent: Mozilla/5.0", raw_url])
             result = subprocess.run(cmd, capture_output=True, timeout=15)
             if result.returncode != 0:
-                return results
+                return None
             body = result.stdout.decode("utf-8", errors="ignore")
             embedded_links = []
             for line in body.splitlines():
@@ -525,7 +610,7 @@ class GitHubSearchWorker(QObject):
                         self.known_sources.add(line)
                         embedded_links.append(line)
             entry = {
-                "file_url": file_url,
+                "file_url": raw_url,
                 "name": f"{full_name}/{path}",
                 "repo_url": f"https://github.com/{full_name}",
                 "size": size,
@@ -533,13 +618,13 @@ class GitHubSearchWorker(QObject):
                 "updated": "",
                 "embedded": False,
             }
+            name = os.path.basename(path)
             if embedded_links:
                 entry["count"] = len(embedded_links)
                 self.progress_signal.emit(f"      🔗 {len(embedded_links)} proxies in {name}")
-            results.append(entry)
+            return entry
         except Exception:
-            pass
-        return results
+            return None
 
     def _walk_explicit(self, repo_url: str) -> list[dict]:
         m = re.match(r'(?:https?://github\.com/)?([^/]+/[^/]+?)(?:\.git)?$', repo_url)
@@ -547,47 +632,77 @@ class GitHubSearchWorker(QObject):
             return []
         full_name = m.group(1).rstrip('/')
         self.progress_signal.emit(f"  📁 explicit: {full_name}")
-        results = []
-        stack = [""]
-        visited = set()
-        while stack and not self._stop:
-            path = stack.pop()
-            if path in visited:
-                continue
-            visited.add(path)
-            self.progress_signal.emit(f"    📁 {full_name}/{path or '.'}")
-            api_url = f"https://api.github.com/repos/{full_name}/contents/{path}"
-            data = self._api(api_url)
-            if data is None:
-                self.progress_signal.emit(f"    ⚠ API None for {path}")
-                continue
-            items = data if isinstance(data, list) else [data]
-            if not items:
-                continue
-            for item in items:
-                if self._stop or not isinstance(item, dict):
-                    break
-                name = item.get("name", "")
-                item_path = item.get("path", "")
-                item_type = item.get("type", "")
-                skip_suffix = ('.git', '.github', 'node_modules', '__pycache__',
-                               '.vscode', '.idea', 'venv', '.env', 'dist', 'build',
-                               '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
-                               '.zip', '.rar', '.tar', '.gz', '.exe', '.dll', '.so')
-                if any(name.lower().endswith(s) for s in skip_suffix):
-                    continue
-                if item_type == 'dir':
-                    if name not in ('.git', '.github', 'node_modules', '__pycache__',
-                                    '.vscode', '.idea', 'venv', '.env', 'dist', 'build'):
-                        stack.append(item_path)
-                elif item_type == 'file':
-                    ext = os.path.splitext(name)[1].lower()
-                    if ext in ('.md', '.rst', '.txt', '.yaml', '.yml', '.json', '.conf', '.cfg', ''):
-                        self.progress_signal.emit(f"      📄 {full_name}/{item_path}")
-                        found = self._check_file(item, full_name, "main")
-                        results.extend(found)
-                        self.partial_result_signal.emit(list(results))
-                        self.count_signal.emit(len(results))
-                        if len(results) >= self.max_files:
-                            return results
+        api_url = f"https://api.github.com/repos/{full_name}/git/trees/main?recursive=1"
+        self.progress_signal.emit(f"  🌲 {full_name} fetching tree...")
+        data = self._api(api_url)
+        if data is None or not isinstance(data, dict):
+            return []
+        tree = data.get("tree", [])
+        self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries")
+        candidates = self._filter_tree_items(full_name, tree)
+        if not candidates:
+            return []
+        self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
+        results = self._download_files(full_name, "main", candidates)
+        self.partial_result_signal.emit(list(results))
+        self.count_signal.emit(len(results))
         return results
+
+
+class GeoWorker(QObject):
+    geo_result_signal = Signal(int, str, str)
+    log_signal = Signal(str)
+    finished = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    @Slot()
+    def geo_batch(self, entries: list[ProxyEntry], indices: list[int] | None = None):
+        _debug(f"geo_batch: start total={len(entries)}")
+        self._stop = False
+        total = len(entries)
+        if not total:
+            self.finished.emit()
+            return
+        done = 0
+        proxy = _settings_data.get("proxy_enabled", False) and _settings_data.get("proxy_type") == "http"
+        proxy_url = None
+        if proxy:
+            ph = _settings_data.get("proxy_host", "127.0.0.1")
+            pp = _settings_data.get("proxy_port", 12334)
+            proxy_url = f"http://{ph}:{pp}"
+
+        for i, entry in enumerate(entries):
+            if self._stop:
+                _debug(f"geo_batch: stopped at {i}")
+                break
+            orig = indices[i] if indices else i
+            host = entry.host
+            if not host:
+                done += 1
+                continue
+            try:
+                url = f"http://ip-api.com/json/{host}?fields=country,countryCode"
+                req = urllib.request.Request(url)
+                if proxy_url:
+                    req.set_proxy(proxy_url, "http")
+                resp = urllib.request.urlopen(req, timeout=10)
+                data = json.loads(resp.read().decode())
+                code = data.get("countryCode", "")
+                name = data.get("country", "")
+                if code and name:
+                    self.geo_result_signal.emit(orig, code, name)
+                else:
+                    self.log_signal.emit(f"⚠ Geo: {host} — no data")
+            except Exception as ex:
+                self.log_signal.emit(f"⚠ Geo: {host} — {ex}")
+            done += 1
+            if i < total - 1:
+                time.sleep(1.5)
+        _debug(f"geo_batch: done {done}/{total}")
+        self.finished.emit()

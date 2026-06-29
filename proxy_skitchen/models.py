@@ -1,6 +1,12 @@
 import json, base64, urllib.parse
 from .compat import *
 
+
+def country_flag(code: str) -> str:
+    if not code or len(code) != 2:
+        return ""
+    return chr(ord(code[0]) + 127397) + chr(ord(code[1]) + 127397)
+
 _GOOD_SNI_DOMAINS = {
     'bing.com', 'microsoft.com', 'apple.com', 'icloud.com', 'office.com', 'office365.com',
     'azure.com', 'windows.com', 'live.com', 'outlook.com', 'skype.com', 'yammer.com',
@@ -42,20 +48,42 @@ PERF_PRESETS = {
 
 THEMES = {
     "dark": {
-        "bg": "#1a1b26",
-        "fg": "#a9b1d6",
-        "input_bg": "#16161e",
-        "button_bg": "#1f2335",
-        "border": "#292e42",
-        "accent": "#7aa2f7",
+        "bg": "#181c2e",
+        "fg": "#d8dee9",
+        "input_bg": "#1e2338",
+        "button_bg": "#282e45",
+        "border": "#363d57",
+        "accent": "#5b8def",
+        "success": "#74c7a0",
+        "success_bg": "#1a2e26",
+        "success_border": "#2d4d3e",
+        "danger": "#e36262",
+        "danger_bg": "#2e1a1e",
+        "danger_border": "#523238",
+        "warning": "#ebcb8b",
+        "warning_bg": "rgba(235,203,139,0.10)",
+        "warning_border": "rgba(235,203,139,0.3)",
+        "muted": "#4a5168",
+        "muted_fg": "#7c89a8",
     },
     "light": {
-        "bg": "#f8f9fa",
-        "fg": "#343a40",
+        "bg": "#f5f2ed",
+        "fg": "#3d424a",
         "input_bg": "#ffffff",
-        "button_bg": "#e9ecef",
-        "border": "#dee2e6",
-        "accent": "#0d6efd",
+        "button_bg": "#e6e2da",
+        "border": "#d0cbc0",
+        "accent": "#5f8bc8",
+        "success": "#2e7d32",
+        "success_bg": "#e8f5e9",
+        "success_border": "#a5d6a7",
+        "danger": "#c62828",
+        "danger_bg": "#ffebee",
+        "danger_border": "#ef9a9a",
+        "warning": "#f57f17",
+        "warning_bg": "rgba(245,127,23,0.08)",
+        "warning_border": "rgba(245,127,23,0.25)",
+        "muted": "#9e9e9e",
+        "muted_fg": "#616161",
     }
 }
 
@@ -64,7 +92,9 @@ DEFAULT_SETTINGS = {
     "proxy_enabled": True, "proxy_type": "http", "proxy_host": "127.0.0.1",
     "proxy_port": 12334, "perf_mode": "medium", "sources": [], "language": "en",
     "theme": "dark",
+    "default_repo": "",
     "proxy_cache": [],
+    "clean_uris": True,
 }
 
 def current_theme() -> str:
@@ -78,7 +108,8 @@ def set_theme(theme: str):
 
 class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
-                 'tcp_ok', 'deep_ok', 'latency_ms', 'deep_error', 'is_embedded')
+                 'tcp_ok', 'deep_ok', 'rkn_ok', 'latency_ms', 'deep_error', 'is_embedded',
+                 'tcp_tested', 'deep_tested', 'rkn_tested', 'geo_tested', 'rkn_results')
 
     def __init__(self, uri: str, source: str = ""):
         self.uri = uri
@@ -90,9 +121,15 @@ class ProxyEntry:
         self.source = source
         self.tcp_ok = False
         self.deep_ok = False
+        self.rkn_ok = False
         self.latency_ms = 0.0
         self.deep_error = ""
         self.is_embedded = False
+        self.tcp_tested = False
+        self.deep_tested = False
+        self.rkn_tested = False
+        self.geo_tested = False
+        self.rkn_results = []
         self._parse()
 
     def _parse(self):
@@ -145,13 +182,33 @@ class ProxyEntry:
                 except Exception:
                     pass
                 return
+            if uri_lower.startswith('tuic://'):
+                self.protocol = 'TUIC'
+                try:
+                    u = urllib.parse.urlparse(self.uri)
+                    self.host = u.hostname or ""
+                    self.port = u.port or 0
+                    if u.query:
+                        qs = urllib.parse.parse_qs(u.query, keep_blank_values=True)
+                        for k in ('sni', 'peer', 'host', 'servername'):
+                            if qs.get(k):
+                                self.sni = qs[k][0]
+                                break
+                    if u.fragment:
+                        import html
+                        frag = html.unescape(u.fragment)
+                        if '📡' in frag:
+                            parts = frag.split('📡')
+                            if len(parts) > 1:
+                                self.country = parts[1].strip()
+                except Exception:
+                    pass
+                return
             u = urllib.parse.urlparse(self.uri)
             self.protocol = u.scheme.rstrip(':').upper()
             self.host = u.hostname or ""
             self.port = u.port or 0
-            if u.password:
-                self.sni = urllib.parse.unquote(u.password)
-            elif u.query:
+            if u.query:
                 qs = urllib.parse.parse_qs(u.query, keep_blank_values=True)
                 for k in ('sni', 'peer', 'host', 'servername'):
                     if qs.get(k):
@@ -178,6 +235,7 @@ class ProxyEntry:
         return p
 
     def status_emoji(self) -> str:
+        if self.rkn_ok: return "🛡"
         if self.deep_ok: return "⚡"
         if self.tcp_ok: return "✅"
         return "❌"
@@ -215,11 +273,13 @@ def _load_auth() -> dict:
 
 
 def _save_auth(data: dict):
+    from .compat import IS_WINDOWS
     os.makedirs(SETTINGS_DIR, exist_ok=True)
     tmp = AUTH_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    os.chmod(tmp, 0o600)
+    if not IS_WINDOWS:
+        os.chmod(tmp, 0o600)
     os.replace(tmp, AUTH_FILE)
 
 
@@ -272,7 +332,9 @@ class ProxyTableModel(QAbstractTableModel):
             if p.tcp_ok: return QColor("#69f0ae")
             return QColor("#ff5252")
         if role == Qt.ItemDataRole.ToolTipRole:
-            return f"{p.display_protocol()} {p.host}:{p.port}\nSNI: {p.sni or '-'}\nСтрана: {p.country or '-'}\nИсточник: {p.source or '-'}\nTCP: {'✅' if p.tcp_ok else '❌'}  Deep: {'⚡' if p.deep_ok else '-'}  Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}"
+            country_display = p.country or "-"
+            rkn_str = f"  RKN: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""
+            return f"{p.display_protocol()} {p.host}:{p.port}\nSNI: {p.sni or '-'}\nСтрана: {country_display}\nИсточник: {p.source or '-'}\nTCP: {'✅' if p.tcp_ok else '❌'}  Deep: {'⚡' if p.deep_ok else '-'}{rkn_str}  Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}"
         return None
 
     def add_proxies(self, entries: list[ProxyEntry]):
@@ -288,9 +350,18 @@ class ProxyTableModel(QAbstractTableModel):
             if ttype == 0:
                 p.tcp_ok = ok
                 p.latency_ms = latency
-            else:
+                p.tcp_tested = True
+            elif ttype == 1:
                 p.deep_ok = ok
                 p.deep_error = error
+                p.deep_tested = True
+                if ok:
+                    p.tcp_ok = True
+            elif ttype == 2:
+                p.rkn_ok = ok
+                p.rkn_tested = True
+                if latency:
+                    p.latency_ms = latency
             self.dataChanged.emit(self.index(row, 0), self.index(row, len(self.HEADERS) - 1))
 
     def clear(self):

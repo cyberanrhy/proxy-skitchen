@@ -11,18 +11,21 @@ os.environ["QT_API"] = "pyside6"
 # Crash safety
 faulthandler.enable()
 
-FAULT_LOG = "/tmp/proxy-fetcher-fault.log"
+from .compat import TMP_DIR
+FAULT_LOG = os.path.join(TMP_DIR, "fault.log")
+CRASH_LOG = os.path.join(TMP_DIR, "crash.log")
 
 def _debug(msg: str):
-    try:
-        with open(FAULT_LOG, "a") as f:
-            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
-    except Exception:
-        pass
+    from .compat import _write_log, DEBUG_LOG_PATHS
+    if FAULT_LOG not in DEBUG_LOG_PATHS:
+        DEBUG_LOG_PATHS.append(FAULT_LOG)
+    _write_log(FAULT_LOG, msg)
 
 def _crash_log(msg: str):
-    with open("/tmp/proxy-fetcher-crash.log", "a") as f:
-        f.write(f"\n=== {datetime.now().isoformat()} ===\n{msg}\n")
+    from .compat import _write_log, DEBUG_LOG_PATHS
+    if CRASH_LOG not in DEBUG_LOG_PATHS:
+        DEBUG_LOG_PATHS.append(CRASH_LOG)
+    _write_log(CRASH_LOG, msg)
 
 def excepthook(etype, value, tb):
     msg = "".join(traceback.format_exception(etype, value, tb))
@@ -34,7 +37,7 @@ sys.excepthook = excepthook
 from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6
 from .models import ProxyEntry, _auth_data
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
-from .exporters import format_raw
+from .exporters import format_raw, _clean_uri
 from .tester import test_tcp, test_tls, SingBoxTester
 from .workers import GitHubSearchWorker
 
@@ -54,7 +57,7 @@ class CliRunner:
         known = set()
         worker = GitHubSearchWorker(
             args.keywords, known, explicit_repos=args.repos or [],
-            time_filter_days=7, github_tokens=tokens,
+            time_filter_days=args.period, github_tokens=tokens,
             max_repos=args.max_repos, max_files=args.max_files,
         )
         found = []
@@ -91,7 +94,7 @@ class CliRunner:
                 for u in uris + json_uris:
                     if u not in seen:
                         seen.add(u)
-                        proxies.append(u)
+                        proxies.append(_clean_uri(u) if args.clean else u)
             except Exception as e:
                 self._json_out({"status": "error", "url": url, "message": str(e)})
                 return
@@ -104,19 +107,18 @@ class CliRunner:
             self._json_out({"status": "ok", "count": len(proxies), "uris": proxies})
 
     def cmd_test(self, args):
-        ok, ms = test_tcp(args.host, args.port), 0.0
-        if ok:
-            start = time.time()
-            test_tcp(args.host, args.port)
-            ms = (time.time() - start) * 1000
+        start = time.time()
+        ok = test_tcp(args.host, args.port)
+        ms = (time.time() - start) * 1000
         self._json_out({"status": "ok" if ok else "fail", "host": args.host, "port": args.port, "latency_ms": round(ms, 1)})
 
     def cmd_test_file(self, args):
         with open(args.file) as f:
-            uris = [l.strip() for l in f if l.strip() and is_proxy_uri(l.strip())]
+            uris = [_clean_uri(l.strip()) if args.clean else l.strip() for l in f if l.strip() and is_proxy_uri(l.strip())]
         total = len(uris)
-        tcp_ok = deep_ok = 0
-        results = []
+        tcp_ok = deep_ok = rkn_ok = 0
+        ok_uris = []
+        sb_tester = SingBoxTester() if args.deep or args.rkn else None
         for i, uri in enumerate(uris):
             host, port = get_server_port(uri)
             if not host or not port:
@@ -124,17 +126,17 @@ class CliRunner:
             ok = test_tcp(host, port)
             if ok:
                 tcp_ok += 1
-            if args.deep and ok:
-                tester = SingBoxTester()
-                d_ok, lat, err = tester.test(uri, 19999 + (i % 10000))
+                ok_uris.append(uri)
+            if args.rkn and ok and sb_tester:
+                r_ok, lat, err, results = sb_tester.test_rkn_bypass(uri, 29999 + (i % 10000))
+                if r_ok:
+                    rkn_ok += 1
+            elif args.deep and ok and sb_tester:
+                d_ok, lat, err = sb_tester.test(uri, 19999 + (i % 10000))
                 if d_ok:
                     deep_ok += 1
-        out = {"status": "ok", "total": total, "tcp_ok": tcp_ok, "deep_ok": deep_ok}
+        out = {"status": "ok", "total": total, "tcp_ok": tcp_ok, "deep_ok": deep_ok, "rkn_ok": rkn_ok}
         if args.output:
-            def _valid(uri):
-                h, p = get_server_port(uri)
-                return h and p
-            ok_uris = [u for u in uris if _valid(u) and test_tcp(*get_server_port(u))]
             with open(args.output, "w") as f:
                 for u in ok_uris:
                     f.write(f"{u}\n")
@@ -150,7 +152,7 @@ class CliRunner:
         known = set()
         worker = GitHubSearchWorker(
             args.keywords, known, explicit_repos=args.repos or [],
-            time_filter_days=7, github_tokens=tokens,
+            time_filter_days=args.period, github_tokens=tokens,
             max_repos=args.max_repos, max_files=args.max_files,
         )
         found = []
@@ -194,8 +196,6 @@ class CliRunner:
                         all_uris.append(u)
                 if args.verbose:
                     print(f"  🔍 Extracted {len(uris)} + {len(json_uris)} = {len(all_uris)} uris from this source", file=sys.stderr, flush=True)
-                if args.verbose:
-                    print(f"  🔍 extracted {len(uris)} + {len(json_uris)} = {len(all_uris)} uris from this source", file=sys.stderr, flush=True)
             except Exception as e:
                 if args.verbose:
                     print(f"  ✗ {str(e)[:60]}", file=sys.stderr, flush=True)
@@ -224,8 +224,16 @@ class CliRunner:
             print(f"Pipeline: TCP ok {tcp_ok}/{len(unique)}", file=sys.stderr, flush=True)
 
         deep_ok = 0
-        sb_tester = SingBoxTester() if args.deep else None
-        if args.deep:
+        rkn_ok = 0
+        sb_tester = SingBoxTester() if args.deep or args.rkn else None
+        if args.rkn and sb_tester:
+            for i, u in enumerate(ok_uris):
+                if args.verbose:
+                    print(f"  rkn {i+1}/{len(ok_uris)}...", file=sys.stderr, flush=True)
+                r_ok, lat, err, results = sb_tester.test_rkn_bypass(u, 29999 + (i % 10000))
+                if r_ok:
+                    rkn_ok += 1
+        elif args.deep and sb_tester:
             for i, u in enumerate(ok_uris):
                 if args.verbose:
                     print(f"  deep {i+1}/{len(ok_uris)}...", file=sys.stderr, flush=True)
@@ -233,11 +241,18 @@ class CliRunner:
                 if d_ok:
                     deep_ok += 1
 
-        out = {"status": "ok", "total": len(unique), "tcp_ok": tcp_ok, "deep_ok": deep_ok}
+        out = {"status": "ok", "total": len(unique), "tcp_ok": tcp_ok, "deep_ok": deep_ok, "rkn_ok": rkn_ok}
         if args.output:
+            lines = [
+                "#profile-title: VPN Config",
+                "#profile-update-interval: 24",
+                f"#subscription-userinfo: upload=0; download=0; total={len(ok_uris)}; expire=0",
+                "",
+            ]
+            for u in ok_uris:
+                lines.append(_clean_uri(u) if args.clean else u)
             with open(args.output, "w") as f:
-                for u in ok_uris:
-                    f.write(f"{u}\n")
+                f.write("\n".join(lines) + "\n")
             out["output"] = args.output
         self._json_out(out)
 
@@ -257,11 +272,14 @@ def build_parser(runner: CliRunner):
     ps.add_argument("--token", default="")
     ps.add_argument("--max-repos", type=int, default=8)
     ps.add_argument("--max-files", type=int, default=30)
+    ps.add_argument("--period", type=int, default=7, help="Фильтр по дням (по умолчанию 7)")
     ps.add_argument("--output", "-o", default="")
 
     pf = sub.add_parser("fetch", help="Скачать и спарсить подписку")
     pf.add_argument("urls", nargs="+")
     pf.add_argument("--output", "-o", default="")
+    pf.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")
+    pf.add_argument("--no-clean", dest="clean", action="store_false", help="Сохранять оригинальные URI с #fragment")
 
     pt = sub.add_parser("test", help="TCP-тест одного прокси")
     pt.add_argument("host")
@@ -270,7 +288,10 @@ def build_parser(runner: CliRunner):
     ptf = sub.add_parser("test-file", help="Проверить все URI из файла")
     ptf.add_argument("file")
     ptf.add_argument("--deep", action="store_true")
+    ptf.add_argument("--rkn", action="store_true", help="RKN bypass тест")
     ptf.add_argument("--output", "-o", default="")
+    ptf.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")
+    ptf.add_argument("--no-clean", dest="clean", action="store_false", help="Сохранять оригинальные URI с #fragment")
 
     pp = sub.add_parser("pipeline", help="Полный конвейер: поиск → тест → сохранение",
         epilog="Пресеты: vless subscription, vmess subscription, trojan subscription, "
@@ -282,8 +303,12 @@ def build_parser(runner: CliRunner):
     pp.add_argument("--token", default="")
     pp.add_argument("--max-repos", type=int, default=8)
     pp.add_argument("--max-files", type=int, default=30)
+    pp.add_argument("--period", type=int, default=7, help="Фильтр по дням (по умолчанию 7)")
     pp.add_argument("--deep", action="store_true")
+    pp.add_argument("--rkn", action="store_true", help="RKN bypass тест (проверка доступа к заблокированным сайтам)")
     pp.add_argument("--output", "-o", default="")
+    pp.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")
+    pp.add_argument("--no-clean", dest="clean", action="store_false", help="Сохранять оригинальные URI с #fragment")
 
     return p
 
