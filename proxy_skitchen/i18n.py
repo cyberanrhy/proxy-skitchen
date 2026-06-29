@@ -46,6 +46,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "sources.import.paste_done": "✅ Добавлено {count} конфигов из вставки",
         "sources.import.no_uris": "Не найдено валидных URI-конфигов в тексте",
         "sources.context.remove": "🗑 Удалить",
+        "sources.chk.hidden_configs": "🧪 Скрытые конфиги (экспериментально)",
+        "sources.chk.hidden_configs.tooltip": "Ищет прокси внутри JSON, .env, исходников и Gists.\nМедленнее, но находит скрытые конфигурации.",
         
         "preset.vless": "vless подписка",
         "preset.vmess": "vmess подписка",
@@ -272,6 +274,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "sources.import.paste_done": "✅ Added {count} configs from paste",
         "sources.import.no_uris": "No valid URI configs found in text",
         "sources.context.remove": "🗑 Remove",
+        "sources.chk.hidden_configs": "🧪 Hidden configs (experimental)",
+        "sources.chk.hidden_configs.tooltip": "Searches for proxies inside JSON, .env, source code and Gists.\nSlower, but finds hidden configurations.",
 
         "preset.vless": "vless subscription",
         "preset.vmess": "vmess subscription",

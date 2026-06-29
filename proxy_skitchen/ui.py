@@ -194,13 +194,18 @@ class SourcesPage(WizardPage):
         self.btn_quick_search = QPushButton(_("sources.btn.quick_search"))
         self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #4a5168; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(91,141,239,0.08); }")
         self.btn_quick_search.clicked.connect(lambda: self._on_github_search(False, False))
-        
+
         self.btn_deep_search = QPushButton(_("sources.btn.deep_search"))
         self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #7c5cbf; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(124,92,191,0.12); }")
         self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
-        
+
+        self.chk_hidden_configs = QCheckBox(_("sources.chk.hidden_configs"))
+        self.chk_hidden_configs.setToolTip(_("sources.chk.hidden_configs.tooltip"))
+        self.chk_hidden_configs.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
+
         search_layout.addWidget(self.btn_quick_search)
         search_layout.addWidget(self.btn_deep_search)
+        search_layout.addWidget(self.chk_hidden_configs)
         gh_body.addLayout(search_layout)
 
         # Progress + status
@@ -362,11 +367,13 @@ class SourcesPage(WizardPage):
                 owner = m_user.group(1)
         self._cleanup_gh()
         cfg = PERF_PRESETS.get(_settings_data.get("perf_mode", "medium"))
+        hidden = self.chk_hidden_configs.isChecked()
         self._gh_worker = GitHubSearchWorker(
             keywords, set(), explicit_repos=repos,
             time_filter_days=time_days, github_tokens=tokens,
             max_repos=cfg["max_repos"], max_files=cfg["max_files"],
-            owner=owner, weak_hw=weak_hw, deep_search=deep_search
+            owner=owner, weak_hw=weak_hw, deep_search=deep_search,
+            hidden_search=hidden
         )
         self._gh_thread = QThread()
         self._gh_worker.moveToThread(self._gh_thread)
