@@ -1,7 +1,7 @@
 import os, sys, json, re, base64, time, socket, urllib.request, urllib.error, concurrent.futures, html, subprocess, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, TimeoutError as FUTURE_TIMEOUT
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 try:
     import requests as _requests
@@ -418,43 +418,53 @@ class GitHubSearchWorker(QObject):
         self._stop = False
         results = []
         try:
-            seen_repos = set()
-            for repo_url in self.explicit_repos:
-                if self._stop:
-                    break
-                self.progress_signal.emit(f"  explicit: {repo_url}")
-                found = self._walk_explicit(repo_url)
-                results.extend(found)
-                self.count_signal.emit(len(results))
-                self.partial_result_signal.emit(list(results))
-            # If only owner (no keywords): fetch user repos and walk each
-            if self.owner and not self.keywords:
-                self.progress_signal.emit(f"  📁 fetching repos for {self.owner}")
-                user_repos = self._fetch_user_repos(self.owner)
-                for i, repo_name in enumerate(user_repos):
-                    if self._stop:
-                        break
-                    self.progress_signal.emit(f"  📁 user repo [{i+1}/{len(user_repos)}]: {repo_name}")
-                    found = self._walk_explicit(repo_name)
-                    results.extend(found)
-                    self.count_signal.emit(len(results))
-                    self.partial_result_signal.emit(list(results))
-            else:
+            if self.hidden_search:
+                self.progress_signal.emit("  🧪 Hidden config search mode")
                 for kw in self.keywords:
                     if self._stop:
                         break
-                    self.progress_signal.emit(f"  keyword: {kw}")
-                    found = self._search_and_walk(kw, seen_repos)
-                    if found is None:
-                        _debug(f"CRITICAL: _search_and_walk returned None for {kw}")
-                        continue
+                    self.progress_signal.emit(f"  🔍 scanning repos for: {kw}")
+                    found = self._search_hidden(kw)
+                    if found:
+                        results.extend(found)
+                        self.count_signal.emit(len(results))
+                if not self._stop:
+                    gist_results = self._search_gists(self.keywords)
+                    if gist_results:
+                        results.extend(gist_results)
+                        self.count_signal.emit(len(results))
+            else:
+                seen_repos = set()
+                for repo_url in self.explicit_repos:
+                    if self._stop:
+                        break
+                    self.progress_signal.emit(f"  explicit: {repo_url}")
+                    found = self._walk_explicit(repo_url)
                     results.extend(found)
                     self.count_signal.emit(len(results))
-            if self.hidden_search and not self._stop:
-                gist_results = self._search_gists(self.keywords)
-                if gist_results:
-                    results.extend(gist_results)
-                    self.count_signal.emit(len(results))
+                    self.partial_result_signal.emit(list(results))
+                if self.owner and not self.keywords:
+                    self.progress_signal.emit(f"  📁 fetching repos for {self.owner}")
+                    user_repos = self._fetch_user_repos(self.owner)
+                    for i, repo_name in enumerate(user_repos):
+                        if self._stop:
+                            break
+                        self.progress_signal.emit(f"  📁 user repo [{i+1}/{len(user_repos)}]: {repo_name}")
+                        found = self._walk_explicit(repo_name)
+                        results.extend(found)
+                        self.count_signal.emit(len(results))
+                        self.partial_result_signal.emit(list(results))
+                else:
+                    for kw in self.keywords:
+                        if self._stop:
+                            break
+                        self.progress_signal.emit(f"  keyword: {kw}")
+                        found = self._search_and_walk(kw, seen_repos)
+                        if found is None:
+                            _debug(f"CRITICAL: _search_and_walk returned None for {kw}")
+                            continue
+                        results.extend(found)
+                        self.count_signal.emit(len(results))
             results.sort(key=lambda r: not r.get("embedded", False))
             self.result_signal.emit(results)
         except Exception as e:
@@ -482,6 +492,41 @@ class GitHubSearchWorker(QObject):
                 break
             page += 1
         return repos
+
+    def _search_hidden(self, keyword: str) -> list[dict]:
+        results = []
+        query = urllib.parse.quote(keyword)
+        date_filter = ""
+        if self.time_filter_days > 0:
+            since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%d")
+            date_filter = f"+pushed:>={since}"
+        url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={min(self.max_repos, 30)}"
+        data = self._api(url)
+        if data is None:
+            return results
+        for repo in data.get("items", [])[:self.max_repos]:
+            if self._stop:
+                break
+            repo_url = repo.get("html_url", "")
+            full_name = repo.get("full_name", "")
+            default_branch = repo.get("default_branch", "main")
+            self.progress_signal.emit(f"  🔍 hidden scan: {full_name} ⭐{repo.get('stargazers_count', 0)}")
+            api_url = f"https://api.github.com/repos/{full_name}/git/trees/{default_branch}?recursive=1"
+            tree_data = self._api(api_url)
+            if tree_data is None or not isinstance(tree_data, dict):
+                continue
+            tree = tree_data.get("tree", [])
+            candidates = self._filter_tree_items(full_name, tree)
+            if not candidates:
+                continue
+            self.progress_signal.emit(f"    🎯 {len(candidates)} files to scan for hidden URIs")
+            file_results = self._download_files(full_name, default_branch, candidates)
+            for r in file_results:
+                r["embedded"] = True
+            results.extend(file_results)
+            self.count_signal.emit(len(results))
+            self.partial_result_signal.emit(list(results))
+        return results
 
     def _search_gists(self, keywords: list[str]) -> list[dict]:
         results = []
@@ -625,7 +670,9 @@ class GitHubSearchWorker(QObject):
                 continue
             if any(d in active_skip for d in parent_dirs):
                 continue
-            if not self.deep_search:
+            if self.hidden_search:
+                pass
+            elif not self.deep_search:
                 if any(d.startswith(".") for d in parent_dirs):
                     continue
                 if ext not in text_exts:
@@ -678,17 +725,18 @@ class GitHubSearchWorker(QObject):
                 line = line.strip()
                 if not line or line.startswith('//') or line.startswith('#'):
                     continue
-                if is_proxy_uri(line):
-                    if line not in self.known_sources and line not in seen:
-                        seen.add(line)
-                        embedded_links.append(line)
-                elif self.hidden_search:
+                if self.hidden_search:
                     inlines = extract_inline_uris(line)
                     for u in inlines:
                         if u not in self.known_sources and u not in seen:
                             seen.add(u)
                             embedded_links.append(u)
-            if self.hidden_search and ext in ('.json', '.yml', '.yaml', '.conf', '.cfg'):
+                else:
+                    if is_proxy_uri(line):
+                        if line not in self.known_sources and line not in seen:
+                            seen.add(line)
+                            embedded_links.append(line)
+            if self.hidden_search:
                 json_uris = parse_json_proxies(body)
                 for u in json_uris:
                     if u not in self.known_sources and u not in seen:
