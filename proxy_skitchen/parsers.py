@@ -246,6 +246,16 @@ def is_proxy_uri(s: str) -> bool:
     return False
 
 
+_INLINE_URI_RE = re.compile(
+    r'(?:vless|vmess|trojan|ss|shadowsocks|hysteria2|hy2|tuic|socks5|socks4)://[^\s"\'`,;}\])]+',
+    re.IGNORECASE
+)
+
+
+def extract_inline_uris(line: str) -> list[str]:
+    return _INLINE_URI_RE.findall(line)
+
+
 def extract_uris(text: str) -> list[str]:
     uris = []
     for line in text.splitlines():

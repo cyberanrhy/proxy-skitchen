@@ -12,7 +12,7 @@ except ImportError:
 from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, _auth_data, _settings_data
-from .parsers import is_proxy_uri, extract_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
+from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
 from .tester import test_tcp, test_tls, resolve_host
 
 def _debug(msg: str):
@@ -324,7 +324,8 @@ class GitHubSearchWorker(QObject):
                  time_filter_days: int = 7, github_tokens: Optional[list[str]] = None,
                  max_repos: int = 12, max_files: int = 50,
                  owner: Optional[str] = None,
-                 weak_hw: bool = False, deep_search: bool = False):
+                 weak_hw: bool = False, deep_search: bool = False,
+                 hidden_search: bool = False):
         super().__init__()
         self.keywords = keywords
         self.known_sources = known_sources
@@ -336,6 +337,7 @@ class GitHubSearchWorker(QObject):
         self.owner = owner
         self.weak_hw = weak_hw
         self.deep_search = deep_search
+        self.hidden_search = hidden_search
         self._stop = False
         self._token_idx = 0
         self._procs: list[subprocess.Popen] = []
@@ -448,6 +450,11 @@ class GitHubSearchWorker(QObject):
                         continue
                     results.extend(found)
                     self.count_signal.emit(len(results))
+            if self.hidden_search and not self._stop:
+                gist_results = self._search_gists(self.keywords)
+                if gist_results:
+                    results.extend(gist_results)
+                    self.count_signal.emit(len(results))
             results.sort(key=lambda r: not r.get("embedded", False))
             self.result_signal.emit(results)
         except Exception as e:
@@ -475,6 +482,66 @@ class GitHubSearchWorker(QObject):
                 break
             page += 1
         return repos
+
+    def _search_gists(self, keywords: list[str]) -> list[dict]:
+        results = []
+        for kw in keywords:
+            if self._stop:
+                break
+            self.progress_signal.emit(f"  🔍 gist search: {kw}")
+            query = urllib.parse.quote(kw)
+            url = f"https://api.github.com/search/gists?q={query}&per_page=10"
+            data = self._api(url)
+            if data is None or not isinstance(data, dict):
+                continue
+            for gist in data.get("items", [])[:10]:
+                if self._stop:
+                    break
+                gist_id = gist.get("id", "")
+                desc = gist.get("description", "") or gist_id
+                files = gist.get("files", {})
+                for fname, fdata in files.items():
+                    raw_url = fdata.get("raw_url", "")
+                    content = fdata.get("content", "")
+                    if not content:
+                        continue
+                    found_uris = []
+                    seen = set()
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if not line or line.startswith('//') or line.startswith('#'):
+                            continue
+                        if is_proxy_uri(line):
+                            if line not in self.known_sources and line not in seen:
+                                seen.add(line)
+                                found_uris.append(line)
+                        else:
+                            inlines = extract_inline_uris(line)
+                            for u in inlines:
+                                if u not in self.known_sources and u not in seen:
+                                    seen.add(u)
+                                    found_uris.append(u)
+                    json_uris = parse_json_proxies(content)
+                    for u in json_uris:
+                        if u not in self.known_sources and u not in seen:
+                            seen.add(u)
+                            found_uris.append(u)
+                    if found_uris:
+                        entry = {
+                            "file_url": raw_url,
+                            "name": f"gist:{gist_id}/{fname}",
+                            "repo_url": f"https://gist.github.com/{gist_id}",
+                            "size": fdata.get("size", 0),
+                            "stars": 0,
+                            "updated": gist.get("updated_at", ""),
+                            "embedded": True,
+                            "count": len(found_uris),
+                        }
+                        results.append(entry)
+                        self.progress_signal.emit(f"      🔗 {len(found_uris)} proxies in gist {fname}")
+                        self.count_signal.emit(len(results))
+                        break
+        return results
 
     def _search_and_walk(self, keyword: str, seen_repos: set) -> list[dict]:
         query = urllib.parse.quote(keyword)
@@ -526,10 +593,11 @@ class GitHubSearchWorker(QObject):
     def _filter_tree_items(self, full_name: str, tree: list) -> list[dict]:
         skip_dirs = frozenset((
             '.git', '.github', 'node_modules', '__pycache__',
-            '.vscode', '.idea', 'venv', '.env', 'dist', 'build',
+            '.vscode', '.idea', 'venv', 'dist', 'build',
             'assets', 'images', 'tests', 'docs', 'examples',
             'benchmarks', 'spec', '__tests__',
         ))
+        skip_dirs_normal = skip_dirs | frozenset(('.env',))
         skip_exts = frozenset((
             '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
             '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4',
@@ -541,6 +609,7 @@ class GitHubSearchWorker(QObject):
             '.md', '.rst', '.txt', '.yaml', '.yml', '.json',
             '.conf', '.cfg', '',
         ))
+        active_skip = skip_dirs if self.hidden_search else skip_dirs_normal
         candidates = []
         for item in tree:
             if self._stop:
@@ -554,7 +623,7 @@ class GitHubSearchWorker(QObject):
             ext = os.path.splitext(name)[1].lower()
             if ext in skip_exts:
                 continue
-            if any(d in skip_dirs for d in parent_dirs):
+            if any(d in active_skip for d in parent_dirs):
                 continue
             if not self.deep_search:
                 if any(d.startswith(".") for d in parent_dirs):
@@ -602,13 +671,29 @@ class GitHubSearchWorker(QObject):
             if result.returncode != 0:
                 return None
             body = result.stdout.decode("utf-8", errors="ignore")
+            ext = os.path.splitext(path)[1].lower()
             embedded_links = []
+            seen = set()
             for line in body.splitlines():
                 line = line.strip()
+                if not line or line.startswith('//') or line.startswith('#'):
+                    continue
                 if is_proxy_uri(line):
-                    if line not in self.known_sources:
-                        self.known_sources.add(line)
+                    if line not in self.known_sources and line not in seen:
+                        seen.add(line)
                         embedded_links.append(line)
+                elif self.hidden_search:
+                    inlines = extract_inline_uris(line)
+                    for u in inlines:
+                        if u not in self.known_sources and u not in seen:
+                            seen.add(u)
+                            embedded_links.append(u)
+            if self.hidden_search and ext in ('.json', '.yml', '.yaml', '.conf', '.cfg'):
+                json_uris = parse_json_proxies(body)
+                for u in json_uris:
+                    if u not in self.known_sources and u not in seen:
+                        seen.add(u)
+                        embedded_links.append(u)
             entry = {
                 "file_url": raw_url,
                 "name": f"{full_name}/{path}",
