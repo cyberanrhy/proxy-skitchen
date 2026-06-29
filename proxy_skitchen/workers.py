@@ -557,15 +557,12 @@ class GitHubSearchWorker(QObject):
                         if not line or line.startswith('//') or line.startswith('#'):
                             continue
                         if is_proxy_uri(line):
-                            if line not in self.known_sources and line not in seen:
-                                seen.add(line)
-                                found_uris.append(line)
-                        else:
-                            inlines = extract_inline_uris(line)
-                            for u in inlines:
-                                if u not in self.known_sources and u not in seen:
-                                    seen.add(u)
-                                    found_uris.append(u)
+                            continue
+                        inlines = extract_inline_uris(line)
+                        for u in inlines:
+                            if u not in self.known_sources and u not in seen:
+                                seen.add(u)
+                                found_uris.append(u)
                     json_uris = parse_json_proxies(content)
                     for u in json_uris:
                         if u not in self.known_sources and u not in seen:
@@ -655,6 +652,9 @@ class GitHubSearchWorker(QObject):
             '.conf', '.cfg', '',
         ))
         active_skip = skip_dirs if self.hidden_search else skip_dirs_normal
+        hidden_skip_exts = frozenset((
+            '.txt', '.rst', '.md', '.cfg', '.conf', '',
+        ))
         candidates = []
         for item in tree:
             if self._stop:
@@ -671,7 +671,8 @@ class GitHubSearchWorker(QObject):
             if any(d in active_skip for d in parent_dirs):
                 continue
             if self.hidden_search:
-                pass
+                if ext in hidden_skip_exts:
+                    continue
             elif not self.deep_search:
                 if any(d.startswith(".") for d in parent_dirs):
                     continue
@@ -726,6 +727,8 @@ class GitHubSearchWorker(QObject):
                 if not line or line.startswith('//') or line.startswith('#'):
                     continue
                 if self.hidden_search:
+                    if is_proxy_uri(line):
+                        continue
                     inlines = extract_inline_uris(line)
                     for u in inlines:
                         if u not in self.known_sources and u not in seen:
@@ -742,6 +745,8 @@ class GitHubSearchWorker(QObject):
                     if u not in self.known_sources and u not in seen:
                         seen.add(u)
                         embedded_links.append(u)
+            if not embedded_links:
+                return None
             entry = {
                 "file_url": raw_url,
                 "name": f"{full_name}/{path}",
@@ -749,12 +754,11 @@ class GitHubSearchWorker(QObject):
                 "size": size,
                 "stars": 0,
                 "updated": "",
-                "embedded": False,
+                "embedded": True,
             }
             name = os.path.basename(path)
-            if embedded_links:
-                entry["count"] = len(embedded_links)
-                self.progress_signal.emit(f"      🔗 {len(embedded_links)} proxies in {name}")
+            entry["count"] = len(embedded_links)
+            self.progress_signal.emit(f"      🔗 {len(embedded_links)} hidden proxies in {name}")
             return entry
         except Exception:
             return None
