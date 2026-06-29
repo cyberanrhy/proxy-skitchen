@@ -3128,6 +3128,7 @@ class MainWindow(QMainWindow):
         self._gh_worker.moveToThread(self._gh_thread)
         self._gh_search_keywords = keywords  # сохраняем для _on_gh_result
         self._gh_result_conn = self._gh_worker.result_signal.connect(self._on_gh_result, Qt.ConnectionType.QueuedConnection)
+        self._gh_partial_conn = self._gh_worker.partial_result_signal.connect(self._on_gh_partial, Qt.ConnectionType.QueuedConnection)
         self._gh_worker.error_signal.connect(self._on_gh_search_error, Qt.ConnectionType.QueuedConnection)
         self._gh_worker.progress_signal.connect(self._on_gh_progress, Qt.ConnectionType.QueuedConnection)
         self._gh_worker.count_signal.connect(self.gh_count_label.setNum, Qt.ConnectionType.QueuedConnection)
@@ -3140,6 +3141,10 @@ class MainWindow(QMainWindow):
             self._gh_worker.stop()
             try:
                 self._gh_worker.result_signal.disconnect()
+            except Exception:
+                pass
+            try:
+                self._gh_worker.partial_result_signal.disconnect()
             except Exception:
                 pass
             try:
@@ -3161,6 +3166,10 @@ class MainWindow(QMainWindow):
         kw_str = ", ".join(getattr(self, '_gh_search_keywords', ['?']))
         _debug(f"_on_gh_result: keywords={kw_str}, found={len(found) if found else 0}")
         self._on_gh_search_done(kw_str, found)
+
+    def _on_gh_partial(self, found: list):
+        _debug(f"_on_gh_partial: found={len(found) if found else 0}")
+        self.gh_count_label.setText(str(len(found)))
 
     def _on_gh_progress(self, msg: str):
         self.sb_label.setText(msg)
@@ -3401,6 +3410,7 @@ class _ProxyTestWorker(QObject):
 
 class GitHubSearchWorker(QObject):
     result_signal = Signal(list)
+    partial_result_signal = Signal(list)
     error_signal = Signal(str)
     progress_signal = Signal(str)
     count_signal = Signal(int)
@@ -3435,15 +3445,18 @@ class GitHubSearchWorker(QObject):
 
             def _api(url, timeout=5):
                 time.sleep(0.5)
-                attempts = [
-                    ("fallback http proxy", _http_fb),
-                ]
                 s = _load_settings()
-                if s.get("proxy_enabled"):
-                    ptype = s.get("proxy_type", "http")
-                    host = s.get("proxy_host", "127.0.0.1")
-                    port = s.get("proxy_port", 12334)
-                    if ptype == "socks5":
+                proxy_enabled = s.get("proxy_enabled", False)
+                proxy_type = s.get("proxy_type", "http")
+                proxy_host = s.get("proxy_host", "127.0.0.1")
+                proxy_port = s.get("proxy_port", 12334)
+                # Direct connection first
+                attempts = [
+                    ("direct", None),
+                ]
+                # Then proxy fallbacks
+                if proxy_enabled:
+                    if proxy_type == "socks5":
                         class _SocksOpener(urllib.request.HTTPHandler):
                             def http_open(self, req):
                                 def build(host, port=None, timeout=0, **kwargs):
@@ -3453,8 +3466,10 @@ class GitHubSearchWorker(QObject):
                                 return self.do_open(build, req)
                         attempts.append(("socks5", urllib.request.build_opener(_SocksOpener())))
                     else:
-                        url_p = f"http://{host}:{port}"
+                        url_p = f"http://{proxy_host}:{proxy_port}"
                         attempts.append(("http proxy", urllib.request.build_opener(urllib.request.ProxyHandler({"http": url_p, "https": url_p}))))
+                # Always try HTTP proxy as last resort
+                attempts.append(("http proxy fallback", _http_fb))
                 base_agent = {"User-Agent":"proxy-fetcher/1.0","Accept":"application/vnd.github.v3+json"}
                 agent = dict(base_agent)
                 for ti, token in enumerate(tokens):
@@ -3464,40 +3479,41 @@ class GitHubSearchWorker(QObject):
                     ok = False
                     for label, opener in attempts:
                         if self._stop: return None
-                        req = urllib.request.Request(url, headers=agent)
-                        try:
-                            with opener.open(req, timeout=timeout) as resp:
-                                return resp.read()
-                        except urllib.error.HTTPError as e:
-                            body = e.read().decode("utf-8", errors="replace")[:200]
-                            if e.code in (401, 403):
-                                if ti < len(tokens) - 1:
-                                    self.progress_signal.emit(f"↻ Токен #{ti+1} ошибка {e.code}, пробую следующий...")
+                        if opener is None:
+                            # Direct connection
+                            try:
+                                req = urllib.request.Request(url, headers=agent)
+                                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                                    return resp.read()
+                            except urllib.error.HTTPError as e:
+                                body = e.read().decode("utf-8", errors="replace")[:200]
+                                if e.code in (401, 403) and ti < len(tokens) - 1:
+                                    self.progress_signal.emit(f"↻ Токен #{ti+1} ошибка {e.code} (direct), пробую следующий...")
                                     ok = True
-                                    break  # перейти к следующему токену
-                            self.progress_signal.emit(f"⚠️ {label}: HTTP {e.code} — {body}")
-                            continue
-                        except Exception:
-                            continue
-                    if ok:
-                        continue  # токен не сработал, пробуем следующий
-                    # Прокси не сработали — пробуем прямой запрос с этим же токеном
-                    if not self._stop:
-                        try:
-                            req = urllib.request.Request(url, headers=agent)
-                            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                                return resp.read()
-                        except urllib.error.HTTPError as e:
-                            body = e.read().decode("utf-8", errors="replace")[:200]
-                            if e.code in (401, 403) and ti < len(tokens) - 1:
-                                self.progress_signal.emit(f"↻ Токен #{ti+1} ошибка {e.code} (direct), пробую следующий...")
-                                ok = True
+                                    break
+                                self.progress_signal.emit(f"⚠️ direct (токен #{ti+1}): HTTP {e.code} — {body}")
                                 continue
-                            self.progress_signal.emit(f"⚠️ direct (токен #{ti+1}): HTTP {e.code} — {body}")
-                            return None
-                        except Exception as e:
-                            self.progress_signal.emit(f"⚠️ direct (токен #{ti+1}): {type(e).__name__} — {e}")
-                            return None
+                            except Exception as e:
+                                self.progress_signal.emit(f"⚠️ direct (токен #{ti+1}): {type(e).__name__} — {e}")
+                                continue
+                        else:
+                            req = urllib.request.Request(url, headers=agent)
+                            try:
+                                with opener.open(req, timeout=timeout) as resp:
+                                    return resp.read()
+                            except urllib.error.HTTPError as e:
+                                body = e.read().decode("utf-8", errors="replace")[:200]
+                                if e.code in (401, 403):
+                                    if ti < len(tokens) - 1:
+                                        self.progress_signal.emit(f"↻ Токен #{ti+1} ошибка {e.code}, пробую следующий...")
+                                        ok = True
+                                        break
+                                self.progress_signal.emit(f"⚠️ {label}: HTTP {e.code} — {body}")
+                                continue
+                            except Exception:
+                                continue
+                    if ok:
+                        continue
                 return None
 
             if self.time_filter_days > 0:
@@ -3620,6 +3636,7 @@ class GitHubSearchWorker(QObject):
                             self.count_signal.emit(len(results))
 
                 _walk_explicit(f"https://api.github.com/repos/{full_name}/contents?ref={branch}", "", branch)
+                self.partial_result_signal.emit(list(results))
 
             # Поиск по ключевым словам
             for kw in self.keywords:
@@ -3637,6 +3654,7 @@ class GitHubSearchWorker(QObject):
                     repos = json.loads(data).get("items", [])
                     self.progress_signal.emit(f"📦 Запрос «{kw}»: {len(repos)} репозиториев")
                     all_repos.extend(repos)
+                    self.partial_result_signal.emit(list(results))
                 except Exception as e:
                     self.progress_signal.emit(f"❌ Ошибка для «{kw}»: {e}")
                     continue
@@ -3792,6 +3810,7 @@ class GitHubSearchWorker(QObject):
                     _walk(f"https://api.github.com/repos/{full}/contents?ref={branch}", "", branch)
                 except Exception:
                     continue
+                self.partial_result_signal.emit(list(results))
 
             results.sort(key=lambda r: r.get("embedded", False))
             if self._stop:

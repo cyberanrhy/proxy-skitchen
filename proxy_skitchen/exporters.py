@@ -1,8 +1,15 @@
 import os, json, base64
 from typing import Optional
-from datetime import datetime
+
 
 from .models import ProxyEntry
+
+
+def _clean_uri(uri: str) -> str:
+    uri = uri.strip()
+    if "#" in uri:
+        uri = uri.rsplit("#", 1)[0]
+    return uri
 
 
 def _is_valid_entry(e: ProxyEntry) -> bool:
@@ -16,25 +23,30 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
 
 
 def _entry_ok(e: ProxyEntry) -> bool:
-    return e.tcp_ok is True or e.deep_ok is True
+    base = e.tcp_ok is True or e.deep_ok is True
+    if not base:
+        return False
+    if e.rkn_tested and not e.rkn_ok:
+        return False
+    return True
 
 
 def _needs_user(proto: str) -> bool:
     return proto in ('VLESS', 'VMESS', 'TROJAN', 'HYSTERIA2', 'HY2', 'SS')
 
 
-def format_raw(entries: list[ProxyEntry], include_failed: bool = False) -> str:
+def format_raw(entries: list[ProxyEntry], include_failed: bool = False, clean: bool = True) -> str:
     lines = []
     for e in entries:
         if not _is_valid_entry(e):
             continue
         if include_failed or _entry_ok(e):
-            lines.append(e.uri)
+            lines.append(_clean_uri(e.uri) if clean else e.uri)
     return "\n".join(lines) + "\n"
 
 
-def format_v2rayn(entries: list[ProxyEntry], include_failed: bool = False) -> str:
-    raw = format_raw(entries, include_failed)
+def format_v2rayn(entries: list[ProxyEntry], include_failed: bool = False, clean: bool = True) -> str:
+    raw = format_raw(entries, include_failed, clean=clean)
     return base64.b64encode(raw.encode()).decode()
 
 
@@ -61,14 +73,14 @@ def format_singbox(entries: list[ProxyEntry], include_failed: bool = False) -> s
     return json.dumps(config, indent=2, ensure_ascii=False) + "\n"
 
 
-def format_clash(entries: list[ProxyEntry], include_failed: bool = False) -> str:
+def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_names: bool = False) -> str:
     proxies = []
-    for e in entries:
+    for i, e in enumerate(entries):
         if not _is_valid_entry(e):
             continue
         if not include_failed and not _entry_ok(e):
             continue
-        p = _entry_to_clash(e)
+        p = _entry_to_clash(e, i + 1, clean_names)
         if p:
             proxies.append(p)
     if not proxies:
@@ -98,21 +110,25 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False) -> str
     return "\n".join(lines) + "\n"
 
 
-def format_hiddify(entries: list[ProxyEntry], include_failed: bool = False) -> str:
+def format_hiddify(entries: list[ProxyEntry], include_failed: bool = False, title: str = "VPN Config", clean: bool = True) -> str:
     valid = [e for e in entries if _is_valid_entry(e) and (include_failed or _entry_ok(e))]
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = [
-        f"#profile-title: proxy-skitchen {now}",
+        f"#profile-title: {title}",
         "#profile-update-interval: 24",
         f"#subscription-userinfo: upload=0; download=0; total={len(valid)}; expire=0",
         "",
     ]
     for e in valid:
-        lines.append(e.uri)
+        lines.append(_clean_uri(e.uri) if clean else e.uri)
     return "\n".join(lines) + "\n"
 
 
-def smart_name(entry: ProxyEntry, idx: int = 0) -> str:
+def smart_name(entry: ProxyEntry, idx: int = 0, clean_names: bool = False) -> str:
+    if clean_names:
+        country_code = _country_to_code(entry.country) if entry.country else "XX"
+        proto = entry.protocol.replace("HYSTERIA2", "HY2").replace("WIREGUARD", "WG")
+        return f"server {idx} ({country_code} {proto} {entry.port if entry.port else ''})".strip()
+    
     country_code = _country_to_code(entry.country) if entry.country else ""
     flag = _country_to_flag(entry.country) if entry.country else ""
     proto = entry.protocol
@@ -187,9 +203,9 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
     return out
 
 
-def _entry_to_clash(e: ProxyEntry) -> Optional[dict]:
+def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> Optional[dict]:
     proto = e.protocol.lower()
-    name = smart_name(e)
+    name = smart_name(e, idx, clean_names)
     p = {"name": name, "server": e.host, "port": e.port}
     if proto in ('vless', 'trojan'):
         p["type"] = proto
@@ -207,7 +223,7 @@ def _entry_to_clash(e: ProxyEntry) -> Optional[dict]:
         pw = _extract_ss_pass(e.uri)
         if pw:
             p["password"] = pw
-            p["cipher"] = "chacha20-ietf-poly1305"
+            p["cipher"] = _extract_ss_cipher(e.uri) or "aes-256-gcm"
         return p
     if proto in ('hy2', 'hysteria2'):
         p["type"] = "hysteria2"
@@ -260,6 +276,32 @@ def _extract_ss_pass(uri: str) -> str:
             mp = mp.split('@', 1)[0]
         colon = mp.find(':')
         return mp[colon + 1:] if colon != -1 else mp
+    except Exception:
+        pass
+    return ""
+
+
+def _extract_ss_cipher(uri: str) -> str:
+    try:
+        clean = uri.replace('ss://', '').replace('SS://', '')
+        clean = clean.split('#')[0].split('?')[0]
+        at = clean.find('@')
+        if at != -1:
+            mp_b64 = clean[:at]
+        else:
+            mp_b64 = clean
+        try:
+            pad = 4 - len(mp_b64) % 4
+            if pad != 4:
+                mp_b64 += '=' * pad
+            mp = base64.b64decode(mp_b64).decode('utf-8', errors='ignore')
+        except Exception:
+            mp = mp_b64
+        colon = mp.find(':')
+        if colon != -1:
+            method = mp[:colon]
+            if method:
+                return method
     except Exception:
         pass
     return ""

@@ -1,25 +1,38 @@
-import os, sys, json, socket, ssl, subprocess, time, random, tempfile, threading, urllib.request, re, base64
+import os, sys, json, socket, ssl, subprocess, time, random, tempfile, threading, urllib.request, urllib.parse, re, base64
 from collections import Counter
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 
-from .compat import TMP_DIR, HIDDIFY_PROXY
+from .compat import TMP_DIR, HIDDIFY_PROXY, _write_log, DEBUG_LOG_PATHS, IS_WINDOWS, IS_MACOS
 from .parsers import get_protocol, get_server_port, is_ip
 
 def _debug(msg: str):
-    try:
-        with open("/tmp/proxy-fetcher-tester.log", "a") as f:
-            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
-    except Exception:
-        pass
+    _LOG = os.path.join(TMP_DIR, "tester.log")
+    if _LOG not in DEBUG_LOG_PATHS:
+        DEBUG_LOG_PATHS.append(_LOG)
+    _write_log(_LOG, msg)
 
-SING_BOX = "/usr/local/bin/sing-box"
-XRAY = "/usr/local/bin/xray"
+if IS_WINDOWS:
+    SING_BOX = os.path.expandvars("%LOCALAPPDATA%\\sing-box\\sing-box.exe")
+    XRAY = os.path.expandvars("%LOCALAPPDATA%\\xray\\xray.exe")
+elif IS_MACOS:
+    SING_BOX = "/usr/local/bin/sing-box"
+    XRAY = "/usr/local/bin/xray"
+else:
+    SING_BOX = "/usr/local/bin/sing-box"
+    XRAY = "/usr/local/bin/xray"
 TEST_URL = "http://cp.cloudflare.com/generate_204"
 TCP_TIMEOUT = 12
 SB_TIMEOUT = 8
 SB_SEMAPHORE = threading.Semaphore(3)
+
+RKN_BLOCKED_DOMAINS = [
+    ("rutracker.org", "RuTracker"),
+    ("meduza.io", "Медуза"),
+]
+
+RKN_TEST_TIMEOUT = 6
 
 
 def find_free_port() -> int:
@@ -113,6 +126,7 @@ class SingBoxTester:
         config = self._make_config(uri, port)
         if config is None:
             return False, 0, "unsupported protocol"
+        proc = None
         try:
             with tempfile.TemporaryDirectory(prefix="sb_", dir=TMP_DIR) as tmp_dir:
                 config_path = os.path.join(tmp_dir, "config.json")
@@ -129,12 +143,82 @@ class SingBoxTester:
                     try:
                         proxy_url = f"http://127.0.0.1:{port}"
                         ok, latency = test_http_proxy(proxy_url)
-                    finally:
-                        proc.terminate()
-                        proc.wait(2)
+                    except Exception:
+                        ok, latency = False, 0.0
                     return ok, latency, ""
         except Exception as e:
             return False, 0, str(e)
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(1)
+                except Exception:
+                    pass
+
+    def test_rkn_bypass(self, uri: str, port: int, max_domains: int = 2) -> tuple[bool, float, str, list[dict]]:
+        config = self._make_config(uri, port)
+        if config is None:
+            return False, 0, "unsupported protocol", []
+        proc = None
+        results = []
+        try:
+            with tempfile.TemporaryDirectory(prefix="sb_rkn_", dir=TMP_DIR) as tmp_dir:
+                config_path = os.path.join(tmp_dir, "config.json")
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+                with SB_SEMAPHORE:
+                    time.sleep(random.uniform(0.1, 0.3))
+                    proc = subprocess.Popen(
+                        [SING_BOX, "run", "-c", config_path],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        cwd=tmp_dir,
+                    )
+                    time.sleep(0.5)
+                    proxy_url = f"http://127.0.0.1:{port}"
+                    basic_ok, basic_lat = test_http_proxy(proxy_url)
+                    if not basic_ok:
+                        return False, 0, "proxy not working", []
+                    import random as _rnd
+                    test_domains = _rnd.sample(RKN_BLOCKED_DOMAINS, min(max_domains, len(RKN_BLOCKED_DOMAINS)))
+                    success_count = 0
+                    total_lat = 0.0
+                    for domain, name in test_domains:
+                        try:
+                            url = f"https://{domain}/"
+                            start = time.time()
+                            handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
+                            opener = urllib.request.build_opener(handler)
+                            opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
+                            resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
+                            code = resp.getcode()
+                            elapsed = (time.time() - start) * 1000
+                            ok = code in (200, 301, 302, 304)
+                            if ok:
+                                success_count += 1
+                                total_lat += elapsed
+                            results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
+                        except Exception as ex:
+                            err_str = str(ex)[:60]
+                            results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
+                    rkn_ok = success_count >= max(1, len(test_domains) // 2)
+                    avg_lat = total_lat / max(success_count, 1)
+                    return rkn_ok, avg_lat, "", results
+        except Exception as e:
+            return False, 0, str(e), results
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    proc.wait(1)
+                except Exception:
+                    pass
 
     def _make_config(self, uri: str, local_port: int) -> Optional[dict]:
         proto = get_protocol(uri)
@@ -146,7 +230,7 @@ class SingBoxTester:
             "log": {"level": "error", "output": "/dev/null"},
             "inbounds": [{"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": local_port}],
             "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
-            "route": {"rules": [{"rule_set": [], "outbound": "proxy"}], "final": "proxy"},
+            "route": {"rules": [{"protocol": "http", "outbound": "direct"}, {"protocol": "tls", "outbound": "direct"}], "final": "proxy"},
         }
 
     def _parse(self, uri: str) -> Optional[dict]:
@@ -163,6 +247,8 @@ class SingBoxTester:
                 return self._parse_ss(line)
             if proto in ('hy2', 'hysteria2'):
                 return self._parse_hysteria2(line)
+            if proto == 'tuic':
+                return self._parse_tuic(line)
             if proto == 'socks':
                 return self._parse_socks(line)
             if proto == 'http':
@@ -344,6 +430,47 @@ class SingBoxTester:
         insecure = self._qv(q, 'insecure', '0') in ('1', 'true')
         return {"type": "hysteria2", "server": host, "server_port": port, "password": auth,
                 "tls": {"enabled": True, "server_name": sni or host, "insecure": insecure}}
+
+    def _parse_tuic(self, uri: str) -> Optional[dict]:
+        clean = uri.replace('tuic://', '')
+        # strip fragment for query parsing
+        q = self._q(clean.split('#')[0])
+        at = clean.find('@')
+        uuid = password = ""
+        if at != -1:
+            up = clean[:at]
+            colon = up.find(':')
+            if colon != -1:
+                uuid = up[:colon]
+                password = up[colon + 1:]
+            else:
+                uuid = up
+            rest = clean[at + 1:]
+        else:
+            rest = clean
+            uuid = self._qv(q, 'uuid', '')
+            password = self._qv(q, 'password', '')
+        if not uuid or not password:
+            return None
+        qm = rest.find('?')
+        hp = rest[:qm] if qm != -1 else rest
+        hash_pos = hp.find('#')
+        if hash_pos != -1:
+            hp = hp[:hash_pos]
+        colon = hp.rfind(':')
+        host = hp[:colon] if colon != -1 else hp
+        try:
+            port = int(hp[colon + 1:]) if colon != -1 else 443
+        except Exception:
+            port = 443
+        sni = self._qv(q, 'sni', host)
+        cc = self._qv(q, 'congestion_control', 'bbr')
+        out = {"type": "tuic", "server": host, "server_port": port,
+               "uuid": uuid, "password": password,
+               "tls": {"enabled": True, "server_name": sni or host}}
+        if cc:
+            out["congestion_control"] = cc
+        return out
 
     def _parse_socks(self, uri: str) -> Optional[dict]:
         l = uri.strip().lower()

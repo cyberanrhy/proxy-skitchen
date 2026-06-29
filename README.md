@@ -35,6 +35,7 @@ Whether you need a handful of reliable servers for daily use or a large pool for
 - **Any format** — Clash, sing-box, Hiddify, V2RayN, or plain URI list. Import anywhere.
 - **All major protocols** — VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC.
 - **Country flags** — see at a glance where each server is located.
+- **Cross-platform** — works on Linux, Windows, and macOS.
 
 ---
 
@@ -58,7 +59,7 @@ Whether you need a handful of reliable servers for daily use or a large pool for
 | **No hunting** | Scans GitHub repos automatically — finds what others hide in config files, READMEs, even random `.txt` dumps. |
 | **No dead proxies** | Deep test makes real HTTP requests, not just ping. If it passes — it works. |
 | **One-click export** | Clash, sing-box, Hiddify, V2RayN — pick your poison. |
-| **Runs anywhere** | Works on Linux (including old laptops). Weak HW mode for low-RAM machines. |
+| **Cross-platform** | Works on Linux, Windows (7/10/11), and macOS. Weak HW mode for low-RAM machines. |
 | **Privacy first** | No accounts, no telemetry, no cloud. Everything runs locally. |
 
 ---
@@ -79,12 +80,27 @@ Whether you need a handful of reliable servers for daily use or a large pool for
 
 ## Quick start
 
+### Linux / macOS
+
 ```bash
 git clone https://github.com/cyberanrhy/proxy-skitchen.git
 cd proxy-skitchen
 pip install -r requirements.txt
 python3 -m proxy_skitchen
 ```
+
+### Windows
+
+```bash
+git clone https://github.com/cyberanrhy/proxy-skitchen.git
+cd proxy-skitchen
+pip install -r requirements.txt
+python -m proxy_skitchen
+```
+
+### Windows (EXE)
+
+Download the latest release from [Releases](https://github.com/cyberanrhy/proxy-skitchen/releases) and run `proxy-skitchen-windows.exe`.
 
 *Requires Python 3.10+ and curl. sing-box is optional (needed for deep test).*
 
@@ -101,7 +117,30 @@ python3 -m proxy_skitchen pipeline "vless subscription" --deep --output working.
 
 # Quick test
 python3 -m proxy_skitchen test 1.2.3.4 443
+
+# Test all proxies in a file
+python3 -m proxy_skitchen test-file proxies.txt --deep --output working.txt
 ```
+
+---
+
+## Building from source
+
+### Linux
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --name proxy-skitchen --hidden-import PySide6.QtSvg --hidden-import PySide6.QtNetwork --add-data "proxy_skitchen/icon.png:proxy_skitchen" --paths . run_proxy_skitchen.py
+```
+
+### Windows
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --console --name proxy-skitchen --hidden-import PySide6.QtSvg --hidden-import PySide6.QtNetwork --add-data "proxy_skitchen/icon.png;proxy_skitchen" --paths . run_proxy_skitchen.py
+```
+
+The EXE will be in `dist/proxy-skitchen.exe`.
 
 ---
 

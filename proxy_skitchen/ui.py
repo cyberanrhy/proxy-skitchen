@@ -1,19 +1,20 @@
-import os, sys, json, re, threading, time
+import os, sys, json, re, threading, time, base64
 from datetime import datetime
+from .compat import TMP_DIR
 
-_DEBUG_LOG = "/tmp/proxy-fetcher-debug-ui.log"
+_DEBUG_LOG = os.path.join(TMP_DIR, "debug-ui.log")
+
 def _debug(msg: str):
-    try:
-        with open(_DEBUG_LOG, "a") as f:
-            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
-    except Exception:
-        pass
+    if _DEBUG_LOG not in DEBUG_LOG_PATHS:
+        DEBUG_LOG_PATHS.append(_DEBUG_LOG)
+    _write_log(_DEBUG_LOG, msg)
 
 from .compat import *
+from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag
 from .parsers import is_proxy_uri, extract_uris, get_server_port
-from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok
-from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker, GeoWorker
+from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri
+from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
 
 DESKTOP_DIR = next((p for p in [
@@ -145,7 +146,6 @@ class SourcesPage(WizardPage):
         for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
             self.period_combo.addItem(p)
         self.period_combo.setCurrentText(_("period.6h"))
-        self.period_combo.setStyleSheet("QComboBox { border: 1px solid #7aa2f7; background-color: #1f2335; }")
         kw_row.addWidget(self.period_combo)
         gh_body.addLayout(kw_row)
 
@@ -192,11 +192,11 @@ class SourcesPage(WizardPage):
         # Row: Search buttons
         search_layout = QHBoxLayout()
         self.btn_quick_search = QPushButton(_("sources.btn.quick_search"))
-        self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #555; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(255,255,255,0.08); }")
+        self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #4a5168; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(91,141,239,0.08); }")
         self.btn_quick_search.clicked.connect(lambda: self._on_github_search(False, False))
         
         self.btn_deep_search = QPushButton(_("sources.btn.deep_search"))
-        self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #9b59b6; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(155,89,182,0.12); }")
+        self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #7c5cbf; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(124,92,191,0.12); }")
         self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
         
         search_layout.addWidget(self.btn_quick_search)
@@ -215,12 +215,12 @@ class SourcesPage(WizardPage):
         self.gh_progress_bar.setFixedHeight(6)
         pr.addWidget(self.gh_progress_bar)
         self.gh_found_label = QLabel("")
-        self.gh_found_label.setStyleSheet("color: #7aa2f7; font-weight: 700;")
+        self.gh_found_label.setStyleSheet("color: #5b8def; font-weight: 700;")
         pr.addWidget(self.gh_found_label)
         gp.addLayout(pr)
         self.gh_status = QLabel("")
         self.gh_status.setWordWrap(True)
-        self.gh_status.setStyleSheet("color: #9aa5ce; font-size: 11px;")
+        self.gh_status.setStyleSheet("color: #7c89a8; font-size: 11px;")
         gp.addWidget(self.gh_status)
         gh_body.addWidget(self.gh_progress)
 
@@ -261,6 +261,13 @@ class SourcesPage(WizardPage):
         self.btn_fetch.setEnabled(False)
         self.btn_fetch.clicked.connect(self._on_fetch)
         nav.addStretch()
+        self.btn_pipeline = QPushButton(_("sources.btn.pipeline"))
+        self.btn_pipeline.setStyleSheet("QPushButton { background: rgba(124,92,191,0.15); border: 2px solid #7c5cbf; border-radius: 4px; padding: 4px 12px; font-weight: bold; } QPushButton:hover { background: rgba(124,92,191,0.3); }")
+        self.btn_pipeline.clicked.connect(self._on_pipeline)
+        nav.addWidget(self.btn_pipeline)
+        self.chk_github_push = QCheckBox(_("sources.chk.github_push"))
+        self.chk_github_push.setChecked(False)
+        nav.addWidget(self.chk_github_push)
         nav.addWidget(self.btn_fetch)
         layout.addLayout(nav)
 
@@ -278,24 +285,34 @@ class SourcesPage(WizardPage):
             self._refresh_toolbar_buttons()
 
     def _refresh_toolbar_buttons(self):
+        t = THEMES[current_theme()]
+        acc = t['accent']
         lang = current_lang()
         self.btn_lang_ru.setStyleSheet(
-            "QPushButton { font-size: 10px; font-weight: bold; padding: 0px; background: %s; }"
-            % ("#3b82f6; color: white" if lang == "ru" else "transparent")
+            f"QPushButton {{ font-size: 10px; font-weight: bold; padding: 0px; background: {acc}; color: white; border: none; border-radius: 3px; }}"
+            if lang == "ru" else
+            "QPushButton { font-size: 10px; font-weight: bold; padding: 0px; background: transparent; border: none; }"
         )
         self.btn_lang_en.setStyleSheet(
-            "QPushButton { font-size: 10px; font-weight: bold; padding: 0px; background: %s; }"
-            % ("#3b82f6; color: white" if lang == "en" else "transparent")
+            f"QPushButton {{ font-size: 10px; font-weight: bold; padding: 0px; background: {acc}; color: white; border: none; border-radius: 3px; }}"
+            if lang == "en" else
+            "QPushButton { font-size: 10px; font-weight: bold; padding: 0px; background: transparent; border: none; }"
         )
         theme = current_theme()
         self.btn_theme_dark.setStyleSheet(
-            "QPushButton { font-size: 10px; padding: 0px; background: %s; }"
-            % ("#3b82f6; color: white" if theme == "dark" else "transparent")
+            f"QPushButton {{ font-size: 10px; padding: 0px; background: {acc}; color: white; border: none; border-radius: 3px; }}"
+            if theme == "dark" else
+            "QPushButton { font-size: 10px; padding: 0px; background: transparent; border: none; }"
         )
         self.btn_theme_light.setStyleSheet(
-            "QPushButton { font-size: 10px; padding: 0px; background: %s; }"
-            % ("#3b82f6; color: white" if theme == "light" else "transparent")
+            f"QPushButton {{ font-size: 10px; padding: 0px; background: {acc}; color: white; border: none; border-radius: 3px; }}"
+            if theme == "light" else
+            "QPushButton { font-size: 10px; padding: 0px; background: transparent; border: none; }"
         )
+        self.lbl_title.setStyleSheet(f"font-size: 14px; font-weight: bold; padding: 2px 0; color: {t['fg']};")
+        self.gh_found_label.setStyleSheet(f"color: {acc}; font-weight: 700;")
+        self.gh_status.setStyleSheet(f"color: {t['muted_fg']}; font-size: 11px;")
+        self.url_group.setStyleSheet(f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 6px; margin-top: 10px; padding: 12px 8px 8px 8px; font-weight: 600; color: {t['accent']}; }} QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}")
 
     def _on_settings(self):
         dlg = SettingsDialog(self._main)
@@ -347,7 +364,7 @@ class SourcesPage(WizardPage):
         cfg = PERF_PRESETS.get(_settings_data.get("perf_mode", "medium"))
         self._gh_worker = GitHubSearchWorker(
             keywords, set(), explicit_repos=repos,
-            time_filter_days=int(time_days), github_tokens=tokens,
+            time_filter_days=max(1, round(time_days)) if time_days < 1 else int(time_days), github_tokens=tokens,
             max_repos=cfg["max_repos"], max_files=cfg["max_files"],
             owner=owner, weak_hw=weak_hw, deep_search=deep_search
         )
@@ -432,22 +449,25 @@ class SourcesPage(WizardPage):
         self._completed = True
         
         # Bright success indicator
-        self._main._status_search.setStyleSheet("color: #00ff00; font-weight: bold; padding: 1px 4px;")
-        self._main._status_search.setText("🔍 ✅ DONE")
-        QTimer.singleShot(3000, lambda: self._main._status_search.setStyleSheet(""))
+        self._main._tab_btns[0].setStyleSheet("color: #74c7a0; font-weight: bold;")
+        self._main._tab_btns[0].setText("🔍 ✅ DONE")
+        QTimer.singleShot(3000, lambda: (self._main._tab_btns[0].setStyleSheet(""), self._main.update_status_bar()))
+        if self._main._pipeline_mode and self._sources:
+            QTimer.singleShot(500, self._on_fetch)
 
     def _on_gh_error(self, err: str):
         self.gh_progress_bar.setVisible(False)
-        self.btn_gh_search.setEnabled(True)
+        self.btn_quick_search.setEnabled(True)
+        self.btn_deep_search.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.gh_status.setText(f"⚠ {err[:60]}")
         self.gh_found_label.setText("⚠")
         self._cleanup_gh()
         
         # Bright error indicator
-        self._main._status_search.setStyleSheet("color: #ff0000; font-weight: bold; padding: 1px 4px;")
-        self._main._status_search.setText("🔍 ❌ ERROR")
-        QTimer.singleShot(3000, lambda: self._main._status_search.setStyleSheet(""))
+        self._main._tab_btns[0].setStyleSheet("color: #e36262; font-weight: bold;")
+        self._main._tab_btns[0].setText("🔍 ❌ ERROR")
+        QTimer.singleShot(3000, lambda: (self._main._tab_btns[0].setStyleSheet(""), self._main.update_status_bar()))
 
     def _on_add_url(self):
         url = self.url_input.text().strip()
@@ -461,7 +481,7 @@ class SourcesPage(WizardPage):
             m = re.match(r'^(?:github\.com/)?([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+?)(?:\.git)?$', url)
         if m:
             repo = m.group(1).rstrip('/')
-            self.repo_input.setText(repo)
+            self.gh_url_input.setText(repo)
             self.url_input.clear()
             self.gh_status.setText(_("gh.repo_url", repo=repo))
             QTimer.singleShot(100, self._on_github_search)
@@ -515,6 +535,18 @@ class SourcesPage(WizardPage):
         self._main.set_page(1)
         _debug("_on_fetch: set_page done")
 
+    def _on_pipeline(self):
+        kw_text = self.kw_input.text().strip()
+        gh_url = self.gh_url_input.text().strip()
+        if not kw_text and not gh_url and not self._sources:
+            QMessageBox.warning(self, _("msg.warning"), _("msg.no_keywords"))
+            return
+        self._main._pipeline_mode = True
+        if self._sources:
+            self._on_fetch()
+        else:
+            self._on_github_search(True, True)
+
     def retranslate(self):
         self.lbl_title.setText(_("sources.title"))
         self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
@@ -532,6 +564,8 @@ class SourcesPage(WizardPage):
         self.lbl_subscriptions.setText(_("sources.label.subscriptions"))
         self.btn_clear.setText(_("sources.btn.clear"))
         self.btn_fetch.setText(_("sources.btn.fetch"))
+        self.btn_pipeline.setText(_("sources.btn.pipeline"))
+        self.chk_github_push.setText(_("sources.chk.github_push"))
         # period combo — rebuild items
         current = self.period_combo.currentText()
         self.period_combo.blockSignals(True)
@@ -611,14 +645,14 @@ class DownloadPage(WizardPage):
         self.btn_toggle_sources.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle_sources.setStyleSheet("""
             QPushButton {
-                background: transparent; border: 1px dashed #7aa2f7;
-                color: #7aa2f7; font-size: 11px; padding: 2px 10px;
+                background: transparent; border: 1px dashed #5b8def;
+                color: #5b8def; font-size: 11px; padding: 2px 10px;
                 border-radius: 10px; font-weight: 400; text-transform: none;
                 letter-spacing: 0;
             }
             QPushButton:hover {
                 background: rgba(122, 162, 247, 0.12);
-                border: 1px solid #7aa2f7;
+                border: 1px solid #5b8def;
             }
         """)
         self.btn_toggle_sources.clicked.connect(self._toggle_sources)
@@ -627,10 +661,10 @@ class DownloadPage(WizardPage):
         # Stats
         stats_row = QHBoxLayout()
         self.lbl_total = QLabel(_("download.stats.total", count=0))
-        self.lbl_total.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px;")
+        self.lbl_total.setStyleSheet("padding: 4px 8px; background: #1e2338; border: 1px solid #4a5168; border-radius: 4px;")
         stats_row.addWidget(self.lbl_total)
         self.lbl_detail = QLabel("")
-        self.lbl_detail.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px;")
+        self.lbl_detail.setStyleSheet("padding: 4px 8px; background: #1e2338; border: 1px solid #4a5168; border-radius: 4px;")
         self.lbl_detail.hide()
         stats_row.addWidget(self.lbl_detail)
         stats_row.addStretch()
@@ -644,7 +678,7 @@ class DownloadPage(WizardPage):
         self.progress_bar.setVisible(False)
         progress_row.addWidget(self.progress_bar)
         self.lbl_phase = QLabel("")
-        self.lbl_phase.setStyleSheet("font-size: 11px; color: #545457;")
+        self.lbl_phase.setStyleSheet("font-size: 11px; color: #4a5168;")
         progress_row.addWidget(self.lbl_phase)
         layout.addLayout(progress_row)
 
@@ -652,7 +686,7 @@ class DownloadPage(WizardPage):
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
         self.log_out.setMaximumHeight(100)
-        self.log_out.setStyleSheet("background: #000000; color: #545457; font-size: 12px;")
+        self.log_out.setStyleSheet("background: #181c2e; color: #4a5168; font-size: 12px;")
         layout.addWidget(self.log_out)
 
         # Bottom nav
@@ -664,11 +698,44 @@ class DownloadPage(WizardPage):
         nav.addWidget(self.btn_next)
         layout.addLayout(nav)
 
+        self._apply_download_theme()
+
+    def _apply_download_theme(self):
+        t = THEMES[current_theme()]
+        m = t['muted']
+        bd = t['border']
+        fg = t['fg']
+        ibg = t['input_bg']
+
+        self.lbl_title.setStyleSheet(f"font-size: 14px; font-weight: bold; padding: 2px 0; color: {fg};")
+        self.lbl_total.setStyleSheet(f"padding: 4px 8px; background: {ibg}; border: 1px solid {bd}; border-radius: 4px; color: {fg};")
+        self.lbl_detail.setStyleSheet(f"padding: 4px 8px; background: {ibg}; border: 1px solid {bd}; border-radius: 4px; color: {fg};")
+        self.lbl_phase.setStyleSheet(f"font-size: 11px; color: {m};")
+        self.log_out.setStyleSheet(f"background: {ibg}; color: {m}; font-family: monospace; font-size: 11px; border: 1px solid {bd}; border-radius: 4px; padding: 2px 4px;")
+        self.progress_bar.setStyleSheet(f"QProgressBar {{ border: 1px solid {bd}; border-radius: 4px; background: {ibg}; text-align: center; color: {fg}; font-size: 10px; }} QProgressBar::chunk {{ background: {t['accent']}; border-radius: 3px; }}")
+
+        btn_s = f"QPushButton {{ background: {t['button_bg']}; border: 1px solid {bd}; border-radius: 4px; padding: 4px 12px; font-weight: bold; color: {fg}; }} QPushButton:hover {{ background: {t['accent']}; color: white; border-color: {t['accent']}; }}"
+        self.btn_back.setStyleSheet(btn_s)
+        self.btn_next.setStyleSheet(btn_s)
+
+        stop_s = f"QPushButton {{ background: {t['danger_bg']}; border: 1px solid {t['danger_border']}; color: {t['danger']}; padding: 3px 10px; border-radius: 4px; }} QPushButton:hover {{ background: rgba(227,98,98,0.2); }}"
+        self.btn_stop.setStyleSheet(stop_s)
+
+        self.btn_toggle_sources.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px dashed {t['accent']};
+                color: {t['accent']}; font-size: 11px; padding: 2px 10px;
+                border-radius: 10px;
+            }}
+            QPushButton:hover {{ background: rgba(91,141,239,0.12); border: 1px solid {t['accent']}; }}
+        """)
+
     def _set_phase(self, phase: int):
         self._phase = phase
         if phase == self.PHASE_FETCH:
             self.btn_stop.setText(_("download.btn.stop_fetch"))
-            self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
+            t = THEMES[current_theme()]
+            self.btn_stop.setStyleSheet(f"background: {t['danger_bg']}; color: {t['danger']}; border: 1px solid {t['danger_border']}; border-radius: 4px; padding: 3px 10px;")
             self.btn_stop.setEnabled(True)
             self.progress_bar.setVisible(True)
             self.lbl_phase.setText(_("download.phase.fetch"))
@@ -759,7 +826,7 @@ class DownloadPage(WizardPage):
                 for c in range(3):
                     cell = self.src_table.item(row, c)
                     if cell:
-                        cell.setBackground(QColor("#1a1a2e"))
+                        cell.setBackground(QColor("#1e2338"))
                 break
 
     def _add_source_row(self, name: str):
@@ -789,7 +856,7 @@ class DownloadPage(WizardPage):
                 for c in range(3):
                     cell = self.src_table.item(row, c)
                     if cell:
-                        cell.setBackground(QColor("#000000"))
+                        cell.setBackground(QColor("#181c2e"))
                 if ok:
                     self._sources_ok += 1
                 break
@@ -837,6 +904,11 @@ class DownloadPage(WizardPage):
 
         self.btn_next.setEnabled(len(self._entries) > 0)
         self._main.update_status_bar()
+        if self._main._pipeline_mode and self._entries:
+            self._main._pipeline_stage = 1
+            self._main.test_page.load_entries(self._entries)
+            self._main.test_page._on_deep_test()
+            self._main.set_page(2)
 
     def on_enter(self):
         self._main.update_status_bar()
@@ -865,7 +937,6 @@ class DownloadPage(WizardPage):
 class TestPage(WizardPage):
     PHASE_IDLE = 0
     PHASE_TEST = 1
-    PHASE_GEO = 2
 
     def __init__(self, main):
         super().__init__(main)
@@ -883,37 +954,57 @@ class TestPage(WizardPage):
         self._completed = False
         self._test_type: str | None = None
         self._stop_requested = False
-        self._geo_thread = None
-        self._geo_worker = None
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(6, 4, 6, 4)
 
+        # ── Header ──
         top = QHBoxLayout()
         self.lbl_title = QLabel(_("test.title"))
         top.addWidget(self.lbl_title)
         top.addStretch()
-
         self.btn_stop = QPushButton(_("test.btn.stop"))
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         top.addWidget(self.btn_stop)
-
         self.btn_back = QPushButton(_("test.btn.back"))
         self.btn_back.clicked.connect(lambda: self._main.set_page(1))
         top.addWidget(self.btn_back)
         layout.addLayout(top)
 
-        # Stats bar
-        stats_row = QHBoxLayout()
+        # ── Stats cards ──
+        cards = QHBoxLayout()
+        cards.setSpacing(6)
         self.lbl_total = QLabel(_("test.stats.total", count=0))
         self.lbl_valid = QLabel(_("test.stats.valid", count=0))
         self.lbl_dead = QLabel(_("test.stats.dead", count=0))
+        cards.addWidget(self.lbl_total)
+        cards.addWidget(self.lbl_valid)
+        cards.addWidget(self.lbl_dead)
+        cards.addStretch()
         self.lbl_current = QLabel("")
-        self.lbl_current.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px; color: #7aa2f7;")
-        for lbl in (self.lbl_total, self.lbl_valid, self.lbl_dead):
-            lbl.setStyleSheet("padding: 4px 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px;")
-            stats_row.addWidget(lbl)
-        stats_row.addStretch()
+        cards.addWidget(self.lbl_current)
+        layout.addLayout(cards)
+
+        # ── Action bar ──
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
+        self.btn_deep = QPushButton(_("test.btn.deep"))
+        self.btn_deep.clicked.connect(self._on_deep_test)
+        actions.addWidget(self.btn_deep)
+
+        self.btn_rkn = QPushButton(_("test.btn.rkn"))
+        self.btn_rkn.clicked.connect(self._on_rkn_test)
+        actions.addWidget(self.btn_rkn)
+
+        self.btn_continue = QPushButton(_("test.btn.continue"))
+        self.btn_continue.clicked.connect(self._on_continue)
+        self.btn_continue.setVisible(False)
+        actions.addWidget(self.btn_continue)
+
+        actions.addSpacing(10)
+
         self.filter_combo = QComboBox()
         self.filter_combo.addItems([
             _("test.filter.all"), _("test.filter.tuic"),
@@ -921,46 +1012,38 @@ class TestPage(WizardPage):
             _("test.filter.trojan"), _("test.filter.ss"),
             _("test.filter.hy2"),
         ])
-        self.filter_combo.setStyleSheet("QComboBox { font-size: 10px; padding: 2px 4px; min-width: 60px; }")
         self.filter_combo.currentIndexChanged.connect(self._on_filter_change)
-        stats_row.addWidget(self.filter_combo)
-        stats_row.addWidget(self.lbl_current)
+        actions.addWidget(self.filter_combo)
 
-        self.btn_tcp = QPushButton(_("test.btn.tcp"))
-        self.btn_tcp.clicked.connect(self._on_tcp_test)
-        stats_row.addWidget(self.btn_tcp)
+        actions.addStretch()
 
-        self.btn_deep = QPushButton(_("test.btn.deep"))
-        self.btn_deep.clicked.connect(self._on_deep_test)
-        stats_row.addWidget(self.btn_deep)
-
-        self.btn_continue = QPushButton(_("test.btn.continue"))
-        self.btn_continue.clicked.connect(self._on_continue)
-        self.btn_continue.setVisible(False)
-        stats_row.addWidget(self.btn_continue)
-
-        self.btn_geo = QPushButton(_("test.btn.geo"))
-        self.btn_geo.setEnabled(False)
-        self.btn_geo.clicked.connect(self._on_geo)
-        
         self.lbl_threads = QLabel(_("test.threads"))
-        stats_row.addWidget(self.lbl_threads)
+        actions.addWidget(self.lbl_threads)
         self.spin_threads = QSpinBox()
         self.spin_threads.setRange(1, 32)
         self.spin_threads.setValue(4)
         self.spin_threads.setFixedWidth(50)
-        self.spin_threads.setStyleSheet("QSpinBox { font-size: 10px; padding: 2px; }")
-        stats_row.addWidget(self.spin_threads)
-        
-        stats_row.addWidget(self.btn_geo)
+        self.spin_threads.valueChanged.connect(self._on_threads_changed)
+        actions.addWidget(self.spin_threads)
 
         self.btn_delete_dead = QPushButton(_("test.btn.delete_dead"))
         self.btn_delete_dead.clicked.connect(self._on_delete_dead)
         self.btn_delete_dead.setEnabled(False)
-        stats_row.addWidget(self.btn_delete_dead)
-        layout.addLayout(stats_row)
+        actions.addWidget(self.btn_delete_dead)
+        layout.addLayout(actions)
 
-        # Proxy table
+        # ── Progress ──
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(6)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(18)
+        self.progress_bar.setVisible(False)
+        progress_row.addWidget(self.progress_bar, 1)
+        self.lbl_phase = QLabel("")
+        progress_row.addWidget(self.lbl_phase)
+        layout.addLayout(progress_row)
+
+        # ── Table ──
         self.model = ProxyTableModel()
         self.proxy_table = QTableView()
         self.proxy_table.setModel(self.model)
@@ -968,93 +1051,150 @@ class TestPage(WizardPage):
         self.proxy_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.proxy_table.setAlternatingRowColors(True)
         self.proxy_table.horizontalHeader().setStretchLastSection(True)
-        self.proxy_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.proxy_table.setColumnWidth(0, 30)
-        self.proxy_table.setColumnWidth(1, 80)
-        self.proxy_table.setColumnWidth(2, 150)
-        self.proxy_table.setColumnWidth(3, 70)
-        self.proxy_table.setColumnWidth(4, 100)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.proxy_table.setColumnWidth(0, 28)
+        self.proxy_table.setColumnWidth(3, 60)
         self.proxy_table.setColumnWidth(5, 60)
+        self.proxy_table.verticalHeader().setDefaultSectionSize(24)
         self.proxy_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.proxy_table.customContextMenuRequested.connect(self._on_table_context)
-        layout.addWidget(self.proxy_table)
+        layout.addWidget(self.proxy_table, 1)
 
-        # Progress bar
-        progress_row = QHBoxLayout()
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        progress_row.addWidget(self.progress_bar)
-        self.lbl_phase = QLabel("")
-        self.lbl_phase.setStyleSheet("font-size: 11px; color: #545457;")
-        progress_row.addWidget(self.lbl_phase)
-        layout.addLayout(progress_row)
-
-        # Log
+        # ── Log (compact) ──
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
-        self.log_out.setMaximumHeight(100)
-        self.log_out.setStyleSheet("background: #000000; color: #545457; font-size: 12px;")
+        self.log_out.setFixedHeight(70)
         layout.addWidget(self.log_out)
 
-        # Bottom nav
+        # ── Bottom nav ──
         nav = QHBoxLayout()
-        self.btn_export = QPushButton(_("test.btn.export"))
-        self.btn_export.setEnabled(False)
-        self.btn_export.clicked.connect(lambda: self._main.set_page(3))
         nav.addStretch()
+        self.btn_export = QPushButton(_("test.btn.export"))
+        self.btn_export.setEnabled(True)
+        self.btn_export.clicked.connect(lambda: self._main.set_page(3))
         nav.addWidget(self.btn_export)
         layout.addLayout(nav)
 
+        self._apply_test_theme()
+
+    def _apply_test_theme(self):
+        t = THEMES[current_theme()]
+        m = t['muted']
+        mf = t['muted_fg']
+        acc = t['accent']
+        bg = t['bg']
+        ibg = t['input_bg']
+        bd = t['border']
+        fg = t['fg']
+        ok = t['success']
+        ok_bg = t['success_bg']
+        ok_bd = t['success_border']
+        bad = t['danger']
+        bad_bg = t['danger_bg']
+        bad_bd = t['danger_border']
+        warn = t['warning']
+        warn_bg = t['warning_bg']
+        warn_bd = t['warning_border']
+
+        self.lbl_title.setStyleSheet(f"font-size: 14px; font-weight: bold; padding: 2px 0; color: {fg};")
+
+        stop_d = f"QPushButton {{ background: {bad_bg}; border: 1px solid {bad_bd}; color: {bad}; padding: 3px 10px; border-radius: 4px; }} QPushButton:hover {{ background: rgba(227,98,98,0.2); }} QPushButton:disabled {{ color: {m}; border-color: {bd}; background: transparent; }}"
+        self.btn_stop.setStyleSheet(stop_d)
+
+        self._card_total = f"padding: 6px 12px; background: {bg}; border: 1px solid {bd}; border-radius: 6px; font-size: 13px; font-weight: bold; color: {fg}; min-width: 80px;"
+        self._card_valid = f"padding: 6px 12px; background: {ok_bg}; border: 1px solid {ok_bd}; border-radius: 6px; font-size: 13px; font-weight: bold; color: {ok}; min-width: 80px;"
+        self._card_dead = f"padding: 6px 12px; background: {bad_bg}; border: 1px solid {bad_bd}; border-radius: 6px; font-size: 13px; font-weight: bold; color: {bad}; min-width: 80px;"
+        self.lbl_total.setStyleSheet(self._card_total)
+        self.lbl_valid.setStyleSheet(self._card_valid)
+        self.lbl_dead.setStyleSheet(self._card_dead)
+
+        self.lbl_current.setStyleSheet(f"padding: 4px 10px; background: {ibg}; border: 1px solid {bd}; border-radius: 6px; color: {acc}; font-size: 11px;")
+
+        btn_d = f"QPushButton {{ background: {t['button_bg']}; border: 1px solid {bd}; border-radius: 4px; padding: 4px 14px; font-weight: bold; color: {fg}; }} QPushButton:hover {{ background: {acc}; color: white; border-color: {acc}; }} QPushButton:disabled {{ color: {m}; border-color: {bd}; background: transparent; }}"
+        self.btn_deep.setStyleSheet(btn_d)
+        self.btn_back.setStyleSheet(btn_d)
+        self.btn_continue.setStyleSheet(f"QPushButton {{ background: {ok_bg}; border: 1px solid {ok_bd}; color: {ok}; padding: 4px 12px; border-radius: 4px; }} QPushButton:hover {{ background: rgba(116,199,160,0.2); }}")
+
+        rkn_d = f"QPushButton {{ background: {warn_bg}; border: 2px solid {warn}; border-radius: 4px; padding: 4px 14px; font-weight: bold; color: {warn}; }} QPushButton:hover {{ background: rgba(235,203,139,0.25); }} QPushButton:disabled {{ color: {m}; border-color: {bd}; background: transparent; }}"
+        self.btn_rkn.setStyleSheet(rkn_d)
+
+        del_d = f"QPushButton {{ background: {bad_bg}; border: 1px solid {bad_bd}; color: {bad}; padding: 3px 10px; border-radius: 4px; }} QPushButton:hover {{ background: rgba(227,98,98,0.2); }} QPushButton:disabled {{ color: {m}; border-color: {bd}; background: transparent; }}"
+        self.btn_delete_dead.setStyleSheet(del_d)
+
+        self.lbl_threads.setStyleSheet(f"font-size: 11px; color: {mf};")
+        self.spin_threads.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
+        self.filter_combo.setStyleSheet(f"QComboBox {{ font-size: 11px; padding: 3px 8px; min-width: 80px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
+
+        self.progress_bar.setStyleSheet(f"QProgressBar {{ border: 1px solid {bd}; border-radius: 4px; background: {ibg}; text-align: center; color: {fg}; font-size: 10px; }} QProgressBar::chunk {{ background: {acc}; border-radius: 3px; }}")
+        self.lbl_phase.setStyleSheet(f"font-size: 11px; color: {m}; min-width: 60px;")
+
+        sel_alpha = "0.15" if current_theme() == "dark" else "0.1"
+        self.proxy_table.setStyleSheet(f"""
+            QTableView {{ gridline-color: {bd}; font-size: 12px; }}
+            QTableView::item {{ padding: 2px 4px; }}
+            QTableView::item:selected {{ background: rgba({int(acc[1:3],16)},{int(acc[3:5],16)},{int(acc[5:7],16)},{sel_alpha}); }}
+            QHeaderView::section {{ background: {bg}; color: {mf}; border: none; border-bottom: 1px solid {bd}; padding: 4px 6px; font-size: 11px; font-weight: bold; }}
+        """)
+
+        self.log_out.setStyleSheet(f"background: {ibg}; color: {m}; font-family: monospace; font-size: 11px; border: 1px solid {bd}; border-radius: 4px; padding: 2px 4px;")
+
+        exp_d = f"QPushButton {{ background: {ok_bg}; border: 2px solid {ok}; border-radius: 4px; padding: 6px 20px; font-weight: bold; font-size: 12px; color: {ok}; }} QPushButton:hover {{ background: rgba(116,199,160,0.2); }} QPushButton:disabled {{ color: {m}; border-color: {bd}; background: transparent; }}"
+        self.btn_export.setStyleSheet(exp_d)
+
     def load_entries(self, entries: list[ProxyEntry]):
-        self._entries = entries
-        self._filtered_entries = list(entries)
+        seen_uris = set()
+        seen_keys = {}
+        deduped = []
+        for e in entries:
+            if e.uri in seen_uris:
+                continue
+            seen_uris.add(e.uri)
+            k = e.key()
+            if k in seen_keys:
+                continue
+            seen_keys[k] = e
+            deduped.append(e)
+        self._entries = deduped
+        self._filtered_entries = list(deduped)
         self._valid_cnt = 0
         self._dead_cnt = 0
         self.filter_combo.setCurrentIndex(0)
         self.model.clear()
-        self.model.add_proxies(entries)
+        self.model.add_proxies(deduped)
         self._update_stats()
-        has = len(entries) > 0
-        self.btn_tcp.setEnabled(has)
+        has = len(deduped) > 0
         self.btn_deep.setEnabled(has)
+        self.btn_rkn.setEnabled(False)
 
     def _set_phase(self, phase: int):
         self._phase = phase
         if phase == self.PHASE_TEST:
             self.btn_stop.setText(_("test.btn.stop_test"))
-            self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
+            t = THEMES[current_theme()]
+            self.btn_stop.setStyleSheet(f"background: {t['danger_bg']}; color: {t['danger']}; border: 1px solid {t['danger_border']}; border-radius: 4px; padding: 3px 10px;")
             self.btn_stop.setEnabled(True)
-            self.btn_tcp.setEnabled(False)
             self.btn_deep.setEnabled(False)
+            self.btn_rkn.setEnabled(False)
             self.btn_continue.setVisible(False)
-            self.btn_geo.setEnabled(False)
-            self.btn_export.setEnabled(False)
             self.progress_bar.setVisible(True)
             self.lbl_phase.setText(_("test.phase.test"))
-        elif phase == self.PHASE_GEO:
-            self.btn_stop.setText(_("test.btn.stop_test"))
-            self.btn_stop.setStyleSheet("background: rgba(224, 108, 117, 0.12); color: #e06c75; border: 1px solid rgba(224, 108, 117, 0.4);")
-            self.btn_stop.setEnabled(True)
-            self.btn_tcp.setEnabled(False)
-            self.btn_deep.setEnabled(False)
-            self.btn_continue.setVisible(False)
-            self.btn_geo.setEnabled(False)
-            self.btn_export.setEnabled(False)
-            self.progress_bar.setVisible(True)
-            self.lbl_phase.setText(_("test.phase.geo"))
         else:
             self.btn_stop.setText(_("test.btn.stop"))
-            self.btn_stop.setStyleSheet("")
+            self._apply_test_theme()
             self.btn_stop.setEnabled(False)
             self.progress_bar.setVisible(False)
             self.lbl_phase.setText("")
             has_entries = len(self._entries) > 0
-            has_valid = self._valid_cnt > 0
-            self.btn_tcp.setEnabled(has_entries)
             self.btn_deep.setEnabled(has_entries)
-            self.btn_geo.setEnabled(has_valid)
+            has_tcp_ok = any(e.tcp_ok or e.deep_ok for e in self._entries)
+            self.btn_rkn.setEnabled(has_tcp_ok)
             self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
-            self.btn_export.setEnabled(has_valid)
 
     def _log(self, msg: str):
         self.log_out.append(msg)
@@ -1069,100 +1209,38 @@ class TestPage(WizardPage):
     def _on_stop(self):
         _debug("TestPage._on_stop")
         self._stop_requested = True
-        if self._phase == self.PHASE_GEO:
-            self._cleanup_geo()
-            self._log(_("log.geo_stopped"))
-            self._set_phase(self.PHASE_IDLE)
-            self._main.update_status_bar()
-            return
         self._cleanup_test()
         self._log(_("log.test_stopped"))
         self.model.dedup_by_key()
         self._entries = self.model.proxies
-        if self._valid_cnt > 0:
-            self.btn_export.setEnabled(True)
         self._stopped = True
         self._set_phase(self.PHASE_IDLE)
-        # Show continue if there are untested entries
+        if self._valid_cnt > 0:
+            self.btn_export.setEnabled(True)
         if self._test_type and self._count_untested() > 0:
             self.btn_continue.setVisible(True)
         self._main.update_status_bar()
 
     def _count_untested(self) -> int:
+        if self._test_type == "rkn":
+            return sum(1 for e in self._entries if not e.rkn_tested and e.tcp_ok)
         f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
         return sum(1 for e in self._entries if not getattr(e, f))
 
     def _on_continue(self):
         if not self._test_type or not self._entries:
             return
-        f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
-        remaining = [(i, e) for i, e in enumerate(self._entries) if not getattr(e, f)]
+        if self._test_type == "rkn":
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.rkn_tested and e.tcp_ok]
+        else:
+            f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not getattr(e, f)]
         if not remaining:
             self.btn_continue.setVisible(False)
             return
         indices, entries = zip(*remaining) if remaining else ([], [])
         self._log(_("log.test_resumed", count=len(entries)))
-        self._run_test(deep=(self._test_type == "deep"), subset=list(entries), subset_indices=list(indices))
-
-    def _count_geo_remaining(self) -> int:
-        return sum(1 for e in self._entries if (e.tcp_ok or e.deep_ok) and not e.geo_tested)
-
-    def _cleanup_geo(self):
-        _cleanup_thread(getattr(self, '_geo_thread', None), getattr(self, '_geo_worker', None))
-        self._geo_thread = None
-        self._geo_worker = None
-
-    def _on_geo(self):
-        _debug(f"_on_geo: phase={self._phase}")
-        if self._phase != self.PHASE_IDLE:
-            return
-        entry_set = set(id(e) for e in self._filtered_entries)
-        valid = [(i, e) for i, e in enumerate(self._entries) if id(e) in entry_set and (e.tcp_ok or e.deep_ok) and not e.geo_tested]
-        if not valid:
-            self._log(_("log.geo_done", count=0))
-            return
-        indices, entries = zip(*valid)
-        self._log(_("log.geo_start", count=len(entries)))
-        self._set_phase(self.PHASE_GEO)
-        self.progress_bar.setMaximum(len(entries))
-        self.progress_bar.setValue(0)
-
-        self._geo_worker = GeoWorker()
-        self._geo_worker.geo_result_signal.connect(self._on_geo_result)
-        self._geo_worker.log_signal.connect(self._log)
-        self._geo_worker.finished.connect(self._on_geo_finished)
-
-        self._geo_thread = QThread()
-        self._geo_worker.moveToThread(self._geo_thread)
-        self._geo_thread.started.connect(
-            lambda: self._geo_worker.geo_batch(list(entries), list(indices)),
-            Qt.ConnectionType.DirectConnection)
-        self._geo_thread.start()
-
-    def _on_geo_result(self, row: int, code: str, name: str):
-        if 0 <= row < len(self._entries):
-            e = self._entries[row]
-            e.country = f"{country_flag(code)} {name}"
-            e.geo_tested = True
-            idx = self.model.index(row, 4)
-            self.model.dataChanged.emit(idx, idx)
-
-    def _on_geo_finished(self):
-        self._cleanup_geo()
-        total = sum(1 for e in self._entries if e.geo_tested)
-        self._log(_("log.geo_done", count=total))
-        self._set_phase(self.PHASE_IDLE)
-        self._main.update_status_bar()
-
-    def _on_tcp_test(self):
-        if self._phase == self.PHASE_TEST:
-            return
-        if not self._filtered_entries:
-            return
-        self._valid_cnt = 0
-        self._dead_cnt = 0
-        self._test_type = "tcp"
-        self._run_test(deep=False, subset=self._filtered_entries)
+        self._run_test(deep=(self._test_type == "deep"), rkn=(self._test_type == "rkn"), subset=list(entries), subset_indices=list(indices))
 
     def _on_deep_test(self):
         if self._phase == self.PHASE_TEST:
@@ -1173,6 +1251,16 @@ class TestPage(WizardPage):
         self._dead_cnt = 0
         self._test_type = "deep"
         self._run_test(deep=True, subset=self._filtered_entries)
+
+    def _on_rkn_test(self):
+        if self._phase == self.PHASE_TEST:
+            return
+        if not self._filtered_entries:
+            return
+        self._valid_cnt = 0
+        self._dead_cnt = 0
+        self._test_type = "rkn"
+        self._run_test(deep=False, rkn=True, subset=self._filtered_entries)
 
     def _on_delete_dead(self):
         if self._dead_cnt == 0:
@@ -1188,17 +1276,37 @@ class TestPage(WizardPage):
         self._dead_cnt = 0
         self._apply_filter()
         self.btn_delete_dead.setEnabled(False)
-        self.btn_export.setEnabled(self._valid_cnt > 0)
+        has_tcp_ok = any(e.tcp_ok or e.deep_ok for e in self._entries)
+        self.btn_rkn.setEnabled(has_tcp_ok)
         self._log(_("log.deleted_dead", count=removed))
 
-    def _run_test(self, deep: bool = False, subset: list[ProxyEntry] | None = None, subset_indices: list[int] | None = None):
+    def _on_threads_changed(self, value):
+        if self._phase != self.PHASE_TEST or not self._tester or not self._test_type:
+            return
+        if self._test_type == "rkn":
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.rkn_tested and e.tcp_ok]
+        else:
+            f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not getattr(e, f)]
+        if not remaining:
+            return
+        indices, entries = zip(*remaining)
+        self._tester.stop()
+        _cleanup_thread(self._test_thread, self._tester)
+        self._test_thread = None
+        self._tester = None
+        self._log(f"🔄 потоков: {value}, продолжаю {len(entries)}...")
+        self._run_test(deep=(self._test_type == "deep"), rkn=(self._test_type == "rkn"),
+                       subset=list(entries), subset_indices=list(indices))
+
+    def _run_test(self, deep: bool = False, rkn: bool = False, subset: list[ProxyEntry] | None = None, subset_indices: list[int] | None = None):
         target = subset if subset is not None else self._entries
         self._stop_requested = False
         self._set_phase(self.PHASE_TEST)
         self.progress_bar.setMaximum(len(self._entries))
         self.progress_bar.setValue(len(self._entries) - len(target))
 
-        self._tester = TesterWorker(deep=deep, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
+        self._tester = TesterWorker(deep=deep, rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
         self._tester.result_signal.connect(self._on_test_result)
         self._tester.testing_signal.connect(self._on_testing_start)
         self._tester.progress_signal.connect(self._on_test_progress)
@@ -1231,9 +1339,23 @@ class TestPage(WizardPage):
         self.proxy_table.selectRow(row)
         if 0 <= row < len(self._entries):
             e = self._entries[row]
-            kind = "TCP" if ttype == 0 else "DEEP"
-            mark = _("event.ok") if ok else _("event.fail")
-            self.lbl_current.setText(_("event.test_current", n=row+1, mark=mark, kind=kind, proto=e.protocol, host=e.host, port=e.port))
+            if ttype == 2:
+                kind = "RKN"
+                passed = sum(1 for r in e.rkn_results if r.get("ok")) if e.rkn_results else 0
+                total = len(e.rkn_results) if e.rkn_results else 0
+                mark = "🛡" if ok else "✗"
+                detail = f" ({passed}/{total} sites)"
+            else:
+                kind = "TCP" if ttype == 0 else "DEEP"
+                mark = "✓" if ok else "✗"
+                detail = ""
+            t = THEMES[current_theme()]
+            color = t['success'] if ok else t['danger']
+            if ttype == 2:
+                color = t['warning'] if ok else t['danger']
+            ping = f" {latency:.0f}ms" if latency else ""
+            self.lbl_current.setText(f"{mark} [{kind}] {e.protocol} {e.host}:{e.port}{ping}{detail}")
+            self.lbl_current.setStyleSheet(f"padding: 4px 10px; background: {t['input_bg']}; border: 1px solid {t['border']}; border-radius: 6px; color: {color}; font-size: 11px;")
 
     def _on_test_count(self, c: int):
         self.progress_bar.setValue(c)
@@ -1255,9 +1377,106 @@ class TestPage(WizardPage):
         self._completed = True
         self._set_phase(self.PHASE_IDLE)
         self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
-        self.btn_geo.setEnabled(self._valid_cnt > 0)
         self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
         self._main.update_status_bar()
+        if self._main._pipeline_mode:
+            if self._main._pipeline_stage == 1:
+                self._main._pipeline_stage = 2
+                alive = [e for e in self._entries if e.tcp_ok is True or e.deep_ok is True]
+                removed = len(self._entries) - len(alive)
+                if removed:
+                    self._entries = alive
+                    self._valid_cnt = len(alive)
+                    self._dead_cnt = 0
+                    self._apply_filter()
+                    self._log(f"🗑 удалено мёртвых: {removed}")
+                if any(e.tcp_ok or e.deep_ok for e in self._entries):
+                    self._log(_("log.rkn_started"))
+                    self._on_rkn_test()
+                else:
+                    self._main._pipeline_mode = False
+                    self._save_pipeline_result()
+            else:
+                self._main._pipeline_mode = False
+                self._save_pipeline_result()
+
+    def _save_pipeline_result(self):
+        from .exporters import _is_valid_entry, _entry_ok, _clean_uri
+        valid = [e for e in self._entries if _is_valid_entry(e) and _entry_ok(e)]
+        if not valid:
+            QMessageBox.information(self, _("msg.info"), _("msg.no_data_text"))
+            return
+        title = self._main.export_page.sub_title_input.text().strip() or "My Subscription"
+        ts = datetime.now().strftime("%Y.%m.%d_%H%M")
+        path = os.path.join(DESKTOP_DIR, f"hiddify_sub_{ts}.txt")
+        clean = _settings_data.get("clean_uris", True)
+        lines = [
+            f"#profile-title: {title}",
+            "#profile-update-interval: 24",
+            f"#subscription-userinfo: upload=0; download=0; total={len(valid)}; expire=0",
+            "",
+        ]
+        for e in valid:
+            lines.append(_clean_uri(e.uri) if clean else e.uri)
+        content = "\n".join(lines) + "\n"
+        with open(path, "w") as f:
+            f.write(content)
+        self._log(f"✅ Hiddify подпись сохранена: {path}")
+        do_gh = self._main.source_page.chk_github_push.isChecked()
+        if do_gh:
+            self._log("📤 GitHub push...")
+            repo = _settings_data.get("gh_repo", "")
+            file_path = _settings_data.get("gh_file", "")
+            tokens = _auth_data.get("github_tokens", [])
+            if not repo or not file_path:
+                self._log("❌ GitHub: не указан репозиторий или файл")
+            elif not tokens:
+                self._log("❌ GitHub: нет токена")
+            else:
+                ok, err = self._do_github_push(content, repo, file_path, tokens[0])
+                if ok:
+                    self._log(f"✅ GitHub: файл обновлён — {repo}/{file_path}")
+                else:
+                    self._log(f"❌ GitHub: {err}")
+        QMessageBox.information(self, _("msg.done"),
+            f"✅ Готово!\n\n"
+            f"Валидных прокси: {len(valid)}\n"
+            f"Файл: {path}\n\n"
+            f"Импортируй в Hiddify: Меню → Подписки → (+) → Выбери файл")
+
+    def _do_github_push(self, content: str, repo: str, file_path: str, token: str) -> tuple[bool, str]:
+        import urllib.request, urllib.error, base64, json
+        api_base = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "proxy-skitchen",
+        }
+        try:
+            req = urllib.request.Request(api_base, headers=headers)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read())
+            sha = data.get("sha", "")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                sha = ""
+            else:
+                return False, f"API error: {e.code}"
+        except Exception as e:
+            return False, str(e)[:60]
+        body = {
+            "message": f"Update subscription {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+        if sha:
+            body["sha"] = sha
+        try:
+            data_bytes = json.dumps(body).encode("utf-8")
+            req = urllib.request.Request(api_base, data=data_bytes, headers=headers, method="PUT")
+            resp = urllib.request.urlopen(req, timeout=15)
+            return True, ""
+        except Exception as e:
+            return False, str(e)[:60]
 
     def _on_filter_change(self, idx: int):
         proto_map = [None, "TUIC", "VLESS", "VMESS", "Trojan", "SS", "Hy2"]
@@ -1278,36 +1497,47 @@ class TestPage(WizardPage):
         total = len(entries)
         valid = sum(1 for e in entries if e.tcp_ok is True or e.deep_ok is True)
         dead = sum(1 for e in entries if e.tcp_ok is False and e.deep_ok is False and (e.tcp_tested or e.deep_tested))
-        self.lbl_total.setText(_("test.stats.total", count=total))
-        self.lbl_valid.setText(_("test.stats.valid", count=valid))
-        self.lbl_dead.setText(_("test.stats.dead", count=dead))
+        self.lbl_total.setText(f"Всего: {total}")
+        self.lbl_valid.setText(f"Живых: {valid}")
+        self.lbl_dead.setText(f"Мёртвых: {dead}")
+        self.lbl_valid.setStyleSheet(self._card_valid if valid > 0 else self._card_total)
+        self.lbl_dead.setStyleSheet(self._card_dead if dead > 0 else self._card_total)
 
     def _on_table_context(self, pos):
         idx = self.proxy_table.indexAt(pos)
         if not idx.isValid():
             return
-        entry = self._entries[idx.row()]
+        entry = self._filtered_entries[idx.row()]
         menu = QMenu()
         menu.addAction(_("test.context.copy_uri"), lambda: QApplication.clipboard().setText(entry.uri))
-        tcp_mark = _("event.ok") if entry.tcp_ok else _("event.fail")
+        tcp_mark = "✅" if entry.tcp_ok else "❌"
         deep_mark = "⚡" if entry.deep_ok else "—"
+        rkn_mark = "🛡" if entry.rkn_ok else ("—" if not entry.rkn_tested else "❌")
         ping_str = f"{entry.latency_ms:.0f}ms" if entry.latency_ms else "—"
-        details = _("test.context.details_text",
-            proto=entry.protocol, host=entry.host, port=entry.port,
-            sni=entry.sni or "—", country=entry.country or "—",
-            tcp=tcp_mark, deep=deep_mark, ping=ping_str)
+        lines = [
+            f"{entry.display_protocol()} {entry.host}:{entry.port}",
+            f"SNI: {entry.sni or '—'}",
+            f"Страна: {entry.country or '—'}",
+            f"TCP: {tcp_mark}  Deep: {deep_mark}  RKN: {rkn_mark}  Пинг: {ping_str}",
+            f"Источник: {entry.source or '—'}",
+        ]
+        if entry.rkn_results:
+            lines.append("")
+            lines.append("RKN результаты:")
+            for r in entry.rkn_results:
+                status = "✅" if r.get("ok") else "❌"
+                lat = f" {r['latency']:.0f}ms" if r.get("latency") else ""
+                lines.append(f"  {status} {r['name']} ({r['domain']}){lat}")
+        details = "\n".join(lines)
         menu.addAction(_("test.context.details"), lambda: QMessageBox.information(self, _("test.context.details"), details))
         menu.exec_(self.proxy_table.mapToGlobal(pos))
 
     def on_enter(self):
         self._update_stats()
-        self.btn_export.setEnabled(self._valid_cnt > 0)
-        self.btn_geo.setEnabled(self._valid_cnt > 0 and self._count_geo_remaining() > 0)
         self._main.update_status_bar()
 
     def on_leave(self):
         self._cleanup_test()
-        self._cleanup_geo()
 
     def retranslate(self):
         self.lbl_title.setText(_("test.title"))
@@ -1316,10 +1546,9 @@ class TestPage(WizardPage):
         self.lbl_total.setText(_("test.stats.total", count=len(self._entries)))
         self.lbl_valid.setText(_("test.stats.valid", count=self._valid_cnt))
         self.lbl_dead.setText(_("test.stats.dead", count=self._dead_cnt))
-        self.btn_tcp.setText(_("test.btn.tcp"))
         self.btn_deep.setText(_("test.btn.deep"))
+        self.btn_rkn.setText(_("test.btn.rkn"))
         self.btn_continue.setText(_("test.btn.continue"))
-        self.btn_geo.setText(_("test.btn.geo"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))
         self.btn_export.setText(_("test.btn.export"))
         # Rebuild filter combo
@@ -1338,8 +1567,6 @@ class TestPage(WizardPage):
         if self._phase == self.PHASE_TEST:
             self.btn_stop.setText(_("test.btn.stop_test"))
             self.lbl_phase.setText(_("test.phase.test"))
-        elif self._phase == self.PHASE_GEO:
-            self.lbl_phase.setText(_("test.phase.geo"))
         else:
             self.lbl_phase.setText("")
         self._update_stats()
@@ -1353,27 +1580,31 @@ class ExportPage(WizardPage):
         super().__init__(main)
         self._main = main
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(5)
+        root = QVBoxLayout(self)
+        root.setSpacing(4)
+        root.setContentsMargins(6, 4, 6, 4)
 
-        top = QHBoxLayout()
+        # ── Header ──
+        hdr = QHBoxLayout()
         self.lbl_title = QLabel(_("export.title"))
-        top.addWidget(self.lbl_title)
-        top.addStretch()
-
+        hdr.addWidget(self.lbl_title)
+        hdr.addStretch()
         self.btn_back = QPushButton(_("export.btn.back"))
         self.btn_back.clicked.connect(lambda: self._main.set_page(2))
-        top.addWidget(self.btn_back)
-        layout.addLayout(top)
+        hdr.addWidget(self.btn_back)
+        root.addLayout(hdr)
 
-        # Stats
+        # ── Stats ──
         self.stats_lbl = QLabel("")
-        self.stats_lbl.setStyleSheet("padding: 8px; background: #0a0a0a; border: 1px solid #404040; border-radius: 4px;")
-        layout.addWidget(self.stats_lbl)
+        root.addWidget(self.stats_lbl)
 
-        # Format selection
-        self.fmt_group = QGroupBox(_("export.group.format"))
-        fmt_layout = QVBoxLayout(self.fmt_group)
+        # ── Format + Options row ──
+        fmt_opts = QHBoxLayout()
+        fmt_opts.setSpacing(12)
+
+        fmt_l = QHBoxLayout()
+        fmt_l.setSpacing(8)
+        fmt_l.addWidget(QLabel("<b>" + _("export.group.format") + "</b>"))
         self.fmt_raw = QRadioButton(_("export.radio.raw"))
         self.fmt_v2rayn = QRadioButton(_("export.radio.v2rayn"))
         self.fmt_singbox = QRadioButton(_("export.radio.singbox"))
@@ -1381,46 +1612,233 @@ class ExportPage(WizardPage):
         self.fmt_hiddify = QRadioButton(_("export.radio.hiddify"))
         self.fmt_raw.setChecked(True)
         for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify):
-            fmt_layout.addWidget(rb)
-        layout.addWidget(self.fmt_group)
+            fmt_l.addWidget(rb)
+        fmt_opts.addLayout(fmt_l)
 
-        # Options
-        self.opt_group = QGroupBox(_("export.group.options"))
-        opt_layout = QVBoxLayout(self.opt_group)
-        self.chk_failed = QCheckBox(_("export.chk.failed"))
+        fmt_opts.addSpacing(20)
+
+        opt_l = QHBoxLayout()
+        opt_l.setSpacing(8)
+        opt_l.addWidget(QLabel("<b>" + _("export.group.options") + "</b>"))
         self.chk_smart_names = QCheckBox(_("export.chk.smart_names"))
         self.chk_clean_names = QCheckBox(_("export.chk.clean_names"))
+        self.chk_failed = QCheckBox(_("export.chk.failed"))
+        self.chk_clean_uris = QCheckBox(_("export.chk.clean_uris"))
+        self.chk_clean_uris.setChecked(_settings_data.get("clean_uris", True))
+        self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
         self.chk_smart_names.setChecked(True)
-        opt_layout.addWidget(self.chk_failed)
-        opt_layout.addWidget(self.chk_smart_names)
-        opt_layout.addWidget(self.chk_clean_names)
-        layout.addWidget(self.opt_group)
+        for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed, self.chk_clean_uris):
+            opt_l.addWidget(chk)
+        fmt_opts.addLayout(opt_l)
 
-        layout.addStretch()
+        fmt_opts.addStretch()
+        root.addLayout(fmt_opts)
 
-        # Buttons
-        btn_row = QHBoxLayout()
-        self.btn_copy = QPushButton(_("export.btn.copy"))
-        self.btn_copy.clicked.connect(self._on_copy)
-        btn_row.addWidget(self.btn_copy)
+        # ── Preview + Action buttons ──
+        body = QHBoxLayout()
+        body.setSpacing(8)
 
-        self.btn_save = QPushButton(_("export.btn.save"))
-        self.btn_save.clicked.connect(self._on_save)
-        btn_row.addWidget(self.btn_save)
-
-        self.btn_save_desk = QPushButton(_("export.btn.save_desktop"))
-        self.btn_save_desk.clicked.connect(self._on_save_desktop)
-        btn_row.addWidget(self.btn_save_desk)
-        layout.addLayout(btn_row)
-
-        # Preview
+        preview_col = QVBoxLayout()
+        preview_col.setSpacing(4)
+        self.lbl_preview = QLabel(_("export.label.preview"))
+        preview_col.addWidget(self.lbl_preview)
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
-        self.preview.setMaximumHeight(120)
-        self.preview.setStyleSheet("background: #000000; color: #f0f0fa; font-family: monospace; font-size: 11px;")
-        self.lbl_preview = QLabel(_("export.label.preview"))
-        layout.addWidget(self.lbl_preview)
-        layout.addWidget(self.preview)
+        preview_col.addWidget(self.preview, 1)
+
+        body.addLayout(preview_col, 3)
+
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(6)
+
+        self.btn_copy = QPushButton(_("export.btn.copy"))
+        self.btn_copy.clicked.connect(self._on_copy)
+        btn_col.addWidget(self.btn_copy)
+        self.btn_save = QPushButton(_("export.btn.save"))
+        self.btn_save.clicked.connect(self._on_save)
+        btn_col.addWidget(self.btn_save)
+        self.btn_save_desk = QPushButton(_("export.btn.save_desktop"))
+        self.btn_save_desk.clicked.connect(self._on_save_desktop)
+        btn_col.addWidget(self.btn_save_desk)
+
+        btn_col.addStretch()
+        body.addLayout(btn_col, 1)
+        root.addLayout(body, 1)
+
+        # ── GitHub Push ──
+        self.gh_group = QGroupBox(_("export.group.github"))
+        gh_l = QVBoxLayout(self.gh_group)
+        gh_l.setSpacing(3)
+
+        g1 = QHBoxLayout()
+        g1.setSpacing(6)
+        g1.addWidget(QLabel(_("export.label.gh_repo")))
+        self.gh_repo_input = QLineEdit(_settings_data.get("gh_repo", "owner/repo"))
+        self.gh_repo_input.setPlaceholderText("ivanov/my-vpn-subscriptions")
+        self.gh_repo_input.setToolTip("Репозиторий на GitHub, куда сохранять файл.\nФормат: ваш_логин/название_репозитория\nМожно вставить полный URL: raw.githubusercontent.com/...")
+        self.gh_repo_input.textChanged.connect(self._on_gh_repo_changed)
+        g1.addWidget(self.gh_repo_input, 1)
+        g1.addWidget(QLabel(_("export.label.gh_file")))
+        self.gh_file_input = QLineEdit(_settings_data.get("gh_file", "subscription.txt"))
+        self.gh_file_input.setPlaceholderText("vpn/подписка.txt")
+        self.gh_file_input.setToolTip("Путь к файлу внутри репозитория.\nМожно указать папку: vpn/sub.txt\nНапример: proxy/config.txt или просто list.txt")
+        self.gh_file_input.textChanged.connect(lambda t: _settings_data.update({"gh_file": t}) or _save_settings(_settings_data))
+        g1.addWidget(self.gh_file_input, 1)
+        gh_l.addLayout(g1)
+
+        g2 = QHBoxLayout()
+        self.lbl_sub_title = QLabel(_("export.label.sub_title") + ":")
+        g2.addWidget(self.lbl_sub_title)
+        self.sub_title_input = QLineEdit(_settings_data.get("sub_title", "My Subscription"))
+        self.sub_title_input.setPlaceholderText(_("export.label.sub_title_ph"))
+        self.sub_title_input.setToolTip(_("export.label.sub_title_tt"))
+        self.sub_title_input.textChanged.connect(self._on_sub_title_changed)
+        g2.addWidget(self.sub_title_input, 1)
+        gh_l.addLayout(g2)
+
+        g3 = QHBoxLayout()
+        self.gh_status_label = QLabel("")
+        g3.addWidget(self.gh_status_label, 1)
+        self.btn_gh_push = QPushButton(_("export.btn.github_push"))
+        self.btn_gh_push.clicked.connect(self._on_github_push)
+        g3.addWidget(self.btn_gh_push)
+        gh_l.addLayout(g3)
+
+        root.addWidget(self.gh_group)
+
+        # ── File / Text import ──
+        self.import_group = QGroupBox(_("sources.group.import"))
+        imp_l = QVBoxLayout(self.import_group)
+        imp_l.setSpacing(3)
+
+        imp_btns = QHBoxLayout()
+        self.btn_import_file = QPushButton(_("sources.btn.import_file"))
+        self.btn_import_file.clicked.connect(self._on_import_file)
+        imp_btns.addWidget(self.btn_import_file)
+        self.btn_import_paste = QPushButton(_("sources.btn.import_paste"))
+        self.btn_import_paste.clicked.connect(self._on_import_paste)
+        imp_btns.addWidget(self.btn_import_paste)
+        imp_btns.addStretch()
+        self.import_status = QLabel("")
+        imp_btns.addWidget(self.import_status)
+        imp_l.addLayout(imp_btns)
+
+        self.import_text = QPlainTextEdit()
+        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
+        self.import_text.setFixedHeight(44)
+        imp_l.addWidget(self.import_text)
+
+        root.addWidget(self.import_group)
+
+        self._apply_export_theme()
+
+    def _apply_export_theme(self):
+        t = THEMES[current_theme()]
+        c = t['border']
+        fg = t['fg']
+        ibg = t['input_bg']
+        muted = t['muted']
+
+        self.lbl_title.setStyleSheet(f"font-size:14px;font-weight:bold;padding:2px 0;color:{fg};")
+        self.stats_lbl.setStyleSheet(f"padding:5px 10px;background:{ibg};border:1px solid {c};border-radius:5px;color:{fg};font-size:12px;")
+        self.sub_title_input.setStyleSheet(f"QLineEdit{{background:{ibg};color:{fg};border:1px solid {c};border-radius:4px;padding:4px 8px;font-size:12px;}}")
+        self.lbl_preview.setStyleSheet(f"font-size:12px;font-weight:bold;color:{fg};")
+        self.preview.setStyleSheet(f"background:{ibg};color:{fg};font-family:monospace;font-size:11px;border:1px solid {c};border-radius:4px;padding:3px;")
+
+        gen_btn = f"QPushButton{{background:{t['button_bg']};border:1px solid {c};border-radius:4px;padding:5px 14px;font-weight:bold;color:{fg};}}QPushButton:hover{{background:{t['accent']};color:white;border-color:{t['accent']};}}"
+        for b in (self.btn_back, self.btn_copy, self.btn_save, self.btn_save_desk):
+            b.setStyleSheet(gen_btn)
+
+        self.btn_gh_push.setStyleSheet(f"QPushButton{{background:rgba(91,141,239,0.10);border:2px solid #5b8def;border-radius:4px;padding:6px 18px;font-weight:bold;font-size:12px;color:#5b8def;}}QPushButton:hover{{background:rgba(91,141,239,0.25);}}QPushButton:disabled{{color:{muted};border-color:{c};background:transparent;}}")
+
+        self.gh_status_label.setStyleSheet(f"font-size:11px;color:{muted};")
+        self.import_status.setStyleSheet(f"font-size:11px;color:{muted};")
+
+        self.btn_import_file.setStyleSheet(f"QPushButton{{background:rgba(116,199,160,0.06);border:1px solid rgba(116,199,160,0.3);color:#74c7a0;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(116,199,160,0.15);}}")
+        self.btn_import_paste.setStyleSheet(f"QPushButton{{background:rgba(91,141,239,0.06);border:1px solid rgba(91,141,239,0.3);color:#5b8def;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(91,141,239,0.15);}}")
+        self.import_text.setStyleSheet(f"QPlainTextEdit{{font-size:10px;font-family:monospace;background:{ibg};color:{fg};border:1px solid {c};border-radius:3px;padding:2px 4px;}}")
+
+        gbox = f"QGroupBox{{border:1px solid {c};border-radius:6px;margin-top:8px;padding:10px 8px 8px 8px;font-weight:600;color:{fg};}}QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 6px;color:{fg};}}"
+        for g in (self.gh_group, self.import_group):
+            g.setStyleSheet(gbox)
+
+        for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify):
+            rb.setStyleSheet(f"QRadioButton{{color:{fg};spacing:4px;font-size:12px;}}QRadioButton::indicator{{width:14px;height:14px;}}")
+        for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed, self.chk_clean_uris):
+            chk.setStyleSheet(f"QCheckBox{{color:{fg};spacing:4px;font-size:12px;}}QCheckBox::indicator{{width:14px;height:14px;}}")
+
+    def _on_import_file(self):
+        from .parsers import is_proxy_uri
+        paths, _filt = QFileDialog.getOpenFileNames(
+            self, _("sources.import.file_title"), DESKTOP_DIR,
+            "Text files (*.txt *.text);;All files (*.*)")
+        if not paths:
+            return
+        all_uris = []
+        for path in paths:
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#') or line.startswith('//'):
+                        continue
+                    if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
+                        try:
+                            decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
+                            for sl in decoded.splitlines():
+                                sl = sl.strip()
+                                if sl and is_proxy_uri(sl):
+                                    all_uris.append(sl)
+                        except Exception:
+                            if is_proxy_uri(line):
+                                all_uris.append(line)
+                    elif is_proxy_uri(line):
+                        all_uris.append(line)
+            except Exception as ex:
+                QMessageBox.warning(self, _("msg.warning"), f"{path}: {ex}")
+        if all_uris:
+            entries = [ProxyEntry(uri) for uri in all_uris]
+            self._main.test_page.load_entries(entries)
+            self._main.set_page(2)
+            self.import_status.setText(_("sources.import.file_done", count=len(all_uris)))
+        else:
+            self.import_status.setText(_("sources.import.no_uris"))
+
+    def _on_import_paste(self):
+        from .parsers import is_proxy_uri
+        text = self.import_text.toPlainText().strip()
+        if not text:
+            return
+        uris = []
+        seen = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('//'):
+                continue
+            if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
+                try:
+                    decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
+                    for sl in decoded.splitlines():
+                        sl = sl.strip()
+                        if sl and is_proxy_uri(sl) and sl not in seen:
+                            seen.add(sl)
+                            uris.append(sl)
+                except Exception:
+                    if is_proxy_uri(line) and line not in seen:
+                        seen.add(line)
+                        uris.append(line)
+            elif is_proxy_uri(line) and line not in seen:
+                seen.add(line)
+                uris.append(line)
+        if uris:
+            entries = [ProxyEntry(uri) for uri in uris]
+            self._main.test_page.load_entries(entries)
+            self._main.set_page(2)
+            self.import_text.clear()
+            self.import_status.setText(_("sources.import.paste_done", count=len(uris)))
+        else:
+            self.import_status.setText(_("sources.import.no_uris"))
 
     def on_enter(self):
         entries = self._main.test_page.get_entries()
@@ -1429,6 +1847,49 @@ class ExportPage(WizardPage):
         self.stats_lbl.setText(_("export.stats", total=total, tcp=tcp_ok, deep="—"))
         QTimer.singleShot(0, self._update_preview)
         self._main.update_status_bar()
+        tokens = _auth_data.get("github_tokens", [])
+        self.btn_gh_push.setEnabled(len(tokens) > 0)
+        self.gh_status_label.setText("" if tokens else _("export.github.no_token"))
+
+    def _on_sub_title_changed(self, text):
+        _settings_data["sub_title"] = text
+        _save_settings(_settings_data)
+
+    def _on_clean_uris_changed(self, checked: bool):
+        _settings_data["clean_uris"] = checked
+        _save_settings(_settings_data)
+
+    def _on_gh_repo_changed(self, text):
+        text = text.strip()
+        _settings_data["gh_repo"] = text
+        _save_settings(_settings_data)
+        raw_m = re.match(r'https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)', text)
+        if raw_m:
+            repo = f"{raw_m.group(1)}/{raw_m.group(2)}"
+            file_path = raw_m.group(4)
+            _settings_data["gh_repo"] = repo
+            _settings_data["gh_file"] = file_path
+            self.gh_repo_input.blockSignals(True)
+            self.gh_file_input.blockSignals(True)
+            self.gh_repo_input.setText(repo)
+            self.gh_file_input.setText(file_path)
+            self.gh_repo_input.blockSignals(False)
+            self.gh_file_input.blockSignals(False)
+            _save_settings(_settings_data)
+            return
+        gh_m = re.match(r'https?://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.+)', text)
+        if gh_m:
+            repo = f"{gh_m.group(1)}/{gh_m.group(2)}"
+            file_path = gh_m.group(4)
+            _settings_data["gh_repo"] = repo
+            _settings_data["gh_file"] = file_path
+            self.gh_repo_input.blockSignals(True)
+            self.gh_file_input.blockSignals(True)
+            self.gh_repo_input.setText(repo)
+            self.gh_file_input.setText(file_path)
+            self.gh_repo_input.blockSignals(False)
+            self.gh_file_input.blockSignals(False)
+            _save_settings(_settings_data)
 
     def _get_format_func(self):
         if self.fmt_v2rayn.isChecked():
@@ -1445,8 +1906,7 @@ class ExportPage(WizardPage):
         entries = self._main.test_page.get_entries()
         fmt = self._get_format_func()
         clean_names = self.chk_clean_names.isChecked()
-        
-        # Check if we are doing Raw + Smart/Clean names
+        clean = self.chk_clean_uris.isChecked()
         if (self.chk_smart_names.isChecked() or clean_names) and self.fmt_raw.isChecked():
             lines = []
             idx = 0
@@ -1458,13 +1918,16 @@ class ExportPage(WizardPage):
                     continue
                 idx += 1
                 name = smart_name(e, idx, clean_names)
-                lines.append(f"{e.uri}#{name}")
+                uri = _clean_uri(e.uri) if clean else e.uri
+                lines.append(f"{uri}#{name}")
             return "\n".join(lines) + "\n"
-        
-        # Handle other formats
         if self.fmt_clash.isChecked():
             return fmt(entries, include_failed=self.chk_failed.isChecked(), clean_names=clean_names)
-        return fmt(entries, include_failed=self.chk_failed.isChecked())
+        if self.fmt_hiddify.isChecked():
+            title = self.sub_title_input.text().strip() or "My Subscription"
+            return fmt(entries, include_failed=self.chk_failed.isChecked(), title=title, clean=clean)
+        body = fmt(entries, include_failed=self.chk_failed.isChecked(), clean=clean)
+        return body
 
     def _update_preview(self):
         content = self._get_content()
@@ -1477,19 +1940,27 @@ class ExportPage(WizardPage):
     def retranslate(self):
         self.lbl_title.setText(_("export.title"))
         self.btn_back.setText(_("export.btn.back"))
-        self.fmt_group.setTitle(_("export.group.format"))
         self.fmt_raw.setText(_("export.radio.raw"))
         self.fmt_v2rayn.setText(_("export.radio.v2rayn"))
         self.fmt_singbox.setText(_("export.radio.singbox"))
         self.fmt_clash.setText(_("export.radio.clash"))
         self.fmt_hiddify.setText(_("export.radio.hiddify"))
-        self.opt_group.setTitle(_("export.group.options"))
         self.chk_failed.setText(_("export.chk.failed"))
         self.chk_smart_names.setText(_("export.chk.smart_names"))
+        self.chk_clean_names.setText(_("export.chk.clean_names"))
         self.btn_copy.setText(_("export.btn.copy"))
         self.btn_save.setText(_("export.btn.save"))
         self.btn_save_desk.setText(_("export.btn.save_desktop"))
         self.lbl_preview.setText(_("export.label.preview"))
+        self.lbl_sub_title.setText(_("export.label.sub_title") + ":")
+        self.sub_title_input.setPlaceholderText(_("export.label.sub_title_ph"))
+        self.sub_title_input.setToolTip(_("export.label.sub_title_tt"))
+        self.gh_group.setTitle(_("export.group.github"))
+        self.btn_gh_push.setText(_("export.btn.github_push"))
+        self.import_group.setTitle(_("sources.group.import"))
+        self.btn_import_file.setText(_("sources.btn.import_file"))
+        self.btn_import_paste.setText(_("sources.btn.import_paste"))
+        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
 
     def _on_copy(self):
         content = self._get_content()
@@ -1497,6 +1968,10 @@ class ExportPage(WizardPage):
         QMessageBox.information(self, _("msg.done"), _("msg.copied"))
 
     def _on_save(self):
+        content = self._get_content()
+        if not content.strip():
+            QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
+            return
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         default_name = f"sub_ski_{ts}.txt"
         path, _ = QFileDialog.getSaveFileName(self, _("export.btn.save"),
@@ -1504,18 +1979,108 @@ class ExportPage(WizardPage):
                                               "All files (*.*)")
         if not path:
             return
-        content = self._get_content()
         with open(path, "w") as f:
             f.write(content)
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
     def _on_save_desktop(self):
+        content = self._get_content()
+        if not content.strip():
+            QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
+            return
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         path = os.path.join(DESKTOP_DIR, f"sub_ski_{ts}.txt")
-        content = self._get_content()
         with open(path, "w") as f:
             f.write(content)
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
+
+    def _get_content_with_header(self) -> str:
+        title = self.sub_title_input.text().strip() or "My Subscription"
+        repo = self.gh_repo_input.text().strip()
+        fpath = self.gh_file_input.text().strip()
+        link = f"github.com/{repo}/blob/main/{fpath}" if repo and fpath else ""
+        header_lines = [
+            f"#profile-title: {title}",
+            "#profile-update-interval: 1",
+            "#hide-settings: 1",
+        ]
+        if link:
+            header_lines.insert(0, f"# {title} | {link}")
+            header_lines.insert(2, f"#profile-update-interval: 1")
+        content = self._get_content()
+        return "\n".join(header_lines) + "\n" + content
+
+    def _on_github_push(self):
+        repo = self.gh_repo_input.text().strip()
+        file_path = self.gh_file_input.text().strip()
+        if not repo or not file_path:
+            QMessageBox.warning(self, _("msg.warning"), _("export.github.no_settings"))
+            return
+        tokens = _auth_data.get("github_tokens", [])
+        if not tokens:
+            QMessageBox.warning(self, _("msg.warning"), _("export.github.no_token"))
+            return
+        token = tokens[0]
+        content = self._get_content()
+        if not content.strip():
+            QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
+            return
+        if not self.fmt_hiddify.isChecked():
+            title = self.sub_title_input.text().strip() or "My Subscription"
+            content = f"#profile-title: {title}\n#profile-update-interval: 24\n#hide-settings: 1\n\n{content}"
+        self.gh_status_label.setText(_("export.github.pushing"))
+        self.btn_gh_push.setEnabled(False)
+        from concurrent.futures import ThreadPoolExecutor
+        pool = ThreadPoolExecutor(1)
+
+        def _push():
+            import urllib.request, urllib.error, base64, json
+            api_base = f"https://api.github.com/repos/{repo}/contents/{file_path}"
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "proxy-skitchen",
+            }
+            try:
+                req = urllib.request.Request(api_base, headers=headers)
+                resp = urllib.request.urlopen(req, timeout=10)
+                data = json.loads(resp.read())
+                sha = data.get("sha", "")
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    sha = ""
+                else:
+                    return False, f"API error: {e.code}"
+            except Exception as e:
+                return False, str(e)[:60]
+            body = {
+                "message": f"Update subscription {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+            }
+            if sha:
+                body["sha"] = sha
+            try:
+                data_bytes = json.dumps(body).encode("utf-8")
+                req = urllib.request.Request(api_base, data=data_bytes, headers=headers, method="PUT")
+                resp = urllib.request.urlopen(req, timeout=15)
+                return True, ""
+            except Exception as e:
+                return False, str(e)[:60]
+
+        def _on_done(fut):
+            ok, err = fut.result()
+            self.btn_gh_push.setEnabled(True)
+            if ok:
+                self.gh_status_label.setText(f"✅ {_('export.github.done')} — {repo}/{file_path}")
+                _settings_data["gh_repo"] = repo
+                _settings_data["gh_file"] = file_path
+                _settings_data["sub_title"] = self.sub_title_input.text().strip()
+                _save_settings(_settings_data)
+            else:
+                self.gh_status_label.setText(f"❌ {err}")
+
+        fut = pool.submit(_push)
+        fut.add_done_callback(_on_done)
 
 
 class SettingsDialog(QDialog):
@@ -1581,6 +2146,21 @@ class SettingsDialog(QDialog):
 
         self.check_result = QLabel("")
         gh_layout.addWidget(self.check_result)
+
+        gh_layout.addWidget(QLabel(""))
+        gh_layout.addWidget(QLabel(_("settings.label.gh_repo")))
+        self.gh_repo = QLineEdit(_settings_data.get("gh_repo", "owner/repo"))
+        self.gh_repo.setPlaceholderText("owner/repo")
+        gh_layout.addWidget(self.gh_repo)
+        gh_layout.addWidget(QLabel(_("settings.label.gh_file")))
+        self.gh_file = QLineEdit(_settings_data.get("gh_file", "subscription.txt"))
+        self.gh_file.setPlaceholderText("path/to/file.txt")
+        gh_layout.addWidget(self.gh_file)
+        gh_layout.addWidget(QLabel(_("settings.label.gh_branch")))
+        self.gh_branch = QLineEdit(_settings_data.get("gh_branch", "main"))
+        self.gh_branch.setPlaceholderText("main")
+        gh_layout.addWidget(self.gh_branch)
+
         gh_layout.addStretch()
         tabs.addTab(gh, "GitHub")
 
@@ -1644,11 +2224,14 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(icon_path))
         self.setMinimumSize(640, 480)
         self.resize(880, 600)
+        self._pipeline_mode = False
+        self._pipeline_stage = 0
 
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(4, 4, 4, 0)
+        layout.setSpacing(0)
 
         self.source_page = SourcesPage(self)
         self.download_page = DownloadPage(self)
@@ -1673,38 +2256,31 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.export_page)    # 3
         layout.addWidget(self.stack)
 
-        # Clickable step labels (replaces nav bar)
-        status_bar = QHBoxLayout()
-        status_bar.setContentsMargins(2, 1, 2, 2)
-        self._status_search = QLabel("🔍 ⏹")
-        self._status_search.setObjectName("StatusBarLabel")
-        self._status_search.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._status_search.mousePressEvent = lambda e: self.set_page(0)
+        # Bottom tab bar (browser-style tabs)
+        self._tab_bar = QWidget()
+        self._tab_bar.setObjectName("TabBar")
+        tab_layout = QHBoxLayout(self._tab_bar)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
 
-        self._status_fetch = QLabel("📥 ⏹")
-        self._status_fetch.setObjectName("StatusBarLabel")
-        self._status_fetch.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._status_fetch.mousePressEvent = lambda e: self.set_page(1)
+        tab_labels = ["🔍 Sources", "📥 Download", "⚡ Test", "📤 Export"]
 
-        self._status_test = QLabel("⚡ ⏹")
-        self._status_test.setObjectName("StatusBarLabel")
-        self._status_test.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._status_test.mousePressEvent = lambda e: self.set_page(2)
+        self._tab_btns = []
+        for i, label in enumerate(tab_labels):
+            btn = QPushButton(label)
+            btn.setObjectName("TabButton")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            btn.clicked.connect(lambda checked, i=i: self.set_page(i))
+            tab_layout.addWidget(btn)
+            self._tab_btns.append(btn)
 
-        self._status_export = QLabel("📤 ⏹")
-        self._status_export.setObjectName("StatusBarLabel")
-        self._status_export.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._status_export.mousePressEvent = lambda e: self.set_page(3)
-
-        status_bar.addWidget(self._status_search)
-        status_bar.addWidget(self._status_fetch)
-        status_bar.addWidget(self._status_test)
-        status_bar.addWidget(self._status_export)
-        status_bar.addStretch()
-        layout.addLayout(status_bar)
+        layout.addWidget(self._tab_bar)
 
         self._current_page = 0
+        self._tab_btns[0].setProperty("active", True)
         self.apply_theme()
+        self.update_status_bar()
 
     def _on_toggle_proxy(self, enabled: bool):
         _settings_data["proxy_enabled"] = enabled
@@ -1718,30 +2294,30 @@ class MainWindow(QMainWindow):
         ep = self.export_page
 
         src_has_sources = len(sp.get_sources()) > 0
-        self._status_search.setText(f"🔍 {'✅' if src_has_sources else '⏹'}")
+        self._tab_btns[0].setText(f"🔍 Sources {'✅' if src_has_sources else '⏹'}")
 
         dl_entries = dp.get_entries() if hasattr(dp, 'get_entries') else []
         if dp._phase == dp.PHASE_FETCH:
-            self._status_fetch.setText(f"📥 ⏳")
+            self._tab_btns[1].setText(f"📥 Download ⏳")
         elif len(dl_entries) > 0:
-            self._status_fetch.setText(f"📥 ✅")
+            self._tab_btns[1].setText(f"📥 Download ✅")
         else:
-            self._status_fetch.setText(f"📥 ⏹")
+            self._tab_btns[1].setText(f"📥 Download ⏹")
 
         test_entries = tp.get_entries()
         total = len(test_entries)
         valid = sum(1 for e in test_entries if e.tcp_ok is True or e.deep_ok is True)
         if tp._phase == tp.PHASE_TEST:
-            self._status_test.setText(f"⚡ ⏳")
+            self._tab_btns[2].setText(f"⚡ Test ⏳")
         elif valid > 0:
-            self._status_test.setText(f"⚡ ✅")
+            self._tab_btns[2].setText(f"⚡ Test ✅")
         elif total > 0:
-            self._status_test.setText(f"⚡ ❌")
+            self._tab_btns[2].setText(f"⚡ Test ❌")
         else:
-            self._status_test.setText(f"⚡ ⏹")
+            self._tab_btns[2].setText(f"⚡ Test ⏹")
 
         ep_visited = ep._main._current_page >= 2
-        self._status_export.setText(f"📤 {'✅' if ep_visited else '⏹'}")
+        self._tab_btns[3].setText(f"📤 Export {'✅' if ep_visited else '⏹'}")
 
     def set_page(self, idx: int):
         if idx < 0 or idx > 3:
@@ -1752,6 +2328,10 @@ class MainWindow(QMainWindow):
 
         self._current_page = idx
         self.stack.setCurrentIndex(idx)
+        for i, btn in enumerate(self._tab_btns):
+            btn.setProperty("active", i == idx)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
         w = self.stack.currentWidget()
         if hasattr(w, 'on_enter'):
             w.on_enter()
@@ -1762,8 +2342,12 @@ class MainWindow(QMainWindow):
         colors = THEMES[theme]
         QApplication.instance().setStyleSheet(get_style_string(colors))
 
+        for btn in self._tab_btns:
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
         # Theme-aware proxy toggle
-        indicator_bg = colors.get('button_bg', '#1f2335')
+        indicator_bg = colors.get('button_bg', '#282e45')
         indicator_accent = colors['accent']
         fg = colors['fg']
         self.proxy_toggle.setStyleSheet(f"""
@@ -1782,6 +2366,9 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.apply_language()
+        self.test_page._apply_test_theme()
+        self.export_page._apply_export_theme()
+        self.download_page._apply_download_theme()
 
     def apply_language(self):
         self.source_page.retranslate()
@@ -1800,7 +2387,6 @@ class MainWindow(QMainWindow):
         self.source_page._cleanup_gh()
         self.download_page._cleanup_net()
         self.test_page._cleanup_test()
-        self.test_page._cleanup_geo()
         event.accept()
 
 def get_style_string(colors: dict) -> str:
@@ -1815,30 +2401,68 @@ def get_style_string(colors: dict) -> str:
             font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
         }}
         QPushButton:hover {{ background-color: {colors['accent']}; color: white; border-color: {colors['accent']}; }}
-        QPushButton:disabled {{ background-color: transparent; color: #545457; border-color: {colors['border']}; }}
+        QPushButton:disabled {{ background-color: transparent; color: #4a5168; border-color: {colors['border']}; }}
         QLineEdit, QComboBox {{
             background-color: {colors['input_bg']}; color: {colors['fg']};
             border: 1px solid {colors['border']}; border-radius: 3px; padding: 4px 8px;
         }}
         QGroupBox {{
-            border: 1px solid {colors['border']}; border-radius: 4px; margin-top: 10px;
-            padding: 10px 6px 6px 6px; font-weight: 700;
+            border: 1px solid {colors['border']}; border-radius: 6px; margin-top: 10px;
+            padding: 12px 8px 8px 8px; font-weight: 600;
         }}
-        QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; color: {colors['fg']}; }}
+        QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; color: {colors['accent']}; }}
         QProgressBar {{
             background-color: {colors['input_bg']}; border: 1px solid {colors['border']};
-            text-align: center; color: {colors['fg']}; height: 18px;
+            text-align: center; color: {colors['fg']}; height: 6px; border-radius: 3px;
         }}
-        QProgressBar::chunk {{ background-color: {colors['accent']}; }}
+        QProgressBar::chunk {{ background-color: {colors['accent']}; border-radius: 2px; }}
         QListWidget, QTableWidget {{
             background-color: {colors['input_bg']}; border: 1px solid {colors['border']};
         }}
-        #StatusBarLabel {{
-            padding: 1px 4px;
-            background-color: transparent;
+        #TabBar {{
+            background: {colors['input_bg']};
             border: none;
+            border-top: 1px solid {colors['border']};
+            max-height: 28px;
+        }}
+        QPushButton#TabButton {{
+            background: transparent;
+            border: none;
+            border-right: 1px solid rgba(54,61,87,0.4);
+            padding: 4px 12px 3px 12px;
+            color: #6b7089;
             font-family: monospace;
             font-size: 10px;
+            font-weight: 500;
+            min-height: 20px;
+            border-radius: 0;
+            margin: 0;
+            text-transform: none;
+            letter-spacing: 0;
+        }}
+        QPushButton#TabButton:hover {{
+            background: rgba(255,255,255,0.04);
+            color: #9aa0b8;
+        }}
+        QPushButton#TabButton[active="true"] {{
+            background: {colors['bg']};
             color: {colors['accent']};
+            font-weight: 700;
+            font-family: monospace;
+            font-size: 10px;
+            padding: 4px 12px 3px 12px;
+            border: none;
+            border-top: 2px solid {colors['accent']};
+            border-right: 1px solid {colors['border']};
+            min-height: 20px;
+            border-radius: 0;
+            margin: 0;
+            text-transform: none;
+            letter-spacing: 0;
+        }}
+        QPushButton#TabButton[active="true"]:hover {{
+            background: {colors['bg']};
+            color: {colors['accent']};
+            font-weight: 700;
         }}
     """
