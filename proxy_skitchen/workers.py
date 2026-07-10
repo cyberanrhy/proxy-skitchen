@@ -233,6 +233,7 @@ class TesterWorker(QObject):
     log_signal = Signal(str)
     finished = Signal()
     count_signal = Signal(int)
+    geo_signal = Signal(int, str)
 
     def __init__(self, deep: bool = False, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2):
         super().__init__()
@@ -257,29 +258,6 @@ class TesterWorker(QObject):
             self.finished.emit()
             return
         threads = self._deep_threads if self._deep else self._test_threads
-        # Batch geo_lookup for IP hosts without country before testing
-        geo_ips = [(i, e) for i, e in enumerate(entries) if is_ip(e.host) and not e.country]
-        if geo_ips:
-            unique_ips = list({e.host for _, e in geo_ips})
-            self.log_signal.emit(f"geo: {len(geo_ips)} entries, {len(unique_ips)} unique IPs...")
-            done = 0
-            total_unique = len(unique_ips)
-            ip_to_country: dict[str, str] = {}
-            for ip in unique_ips:
-                if self._stop:
-                    break
-                c = geo_lookup(ip)
-                if c:
-                    ip_to_country[ip] = c
-                done += 1
-                if done % 10 == 0 or done == total_unique:
-                    self.log_signal.emit(f"geo: {done}/{total_unique}")
-                if done < total_unique and not self._stop:
-                    time.sleep(1.5)
-            for i, e in geo_ips:
-                if e.host in ip_to_country:
-                    entries[i].country = ip_to_country[e.host]
-            self.log_signal.emit(f"geo: done, resolved {len(ip_to_country)}/{total_unique}")
         pool = ThreadPoolExecutor(max_workers=threads)
         futs = {}
         resolved = {}
@@ -309,6 +287,28 @@ class TesterWorker(QObject):
                 if done:
                     mode = "rkn" if self._rkn else ("deep" if self._deep else "tcp")
                     self.progress_signal.emit(done_count, total, threads, mode)
+            # Geo for live IP hosts only
+            if not self._stop:
+                geo_alive = [(i, e) for i, e in enumerate(entries) if is_ip(e.host) and not e.country and (e.tcp_ok or e.deep_ok)]
+                if geo_alive:
+                    unique_ips = list({e.host for _, e in geo_alive})
+                    self.log_signal.emit(f"geo: {len(geo_alive)} live, {len(unique_ips)} unique IPs...")
+                    ip_to_country: dict[str, str] = {}
+                    for idx, ip in enumerate(unique_ips):
+                        if self._stop:
+                            break
+                        c = geo_lookup(ip)
+                        if c:
+                            ip_to_country[ip] = c
+                        if (idx + 1) % 10 == 0 or idx == len(unique_ips) - 1:
+                            self.log_signal.emit(f"geo: {idx+1}/{len(unique_ips)}")
+                        if idx < len(unique_ips) - 1 and not self._stop:
+                            time.sleep(1.5)
+                    for i, e in geo_alive:
+                        if e.host in ip_to_country:
+                            entries[i].country = ip_to_country[e.host]
+                            self.geo_signal.emit(indices[i] if indices else i, ip_to_country[e.host])
+                    self.log_signal.emit(f"geo: done, resolved {len(ip_to_country)}/{len(unique_ips)}")
         finally:
             _debug(f"test_batch: done {done_count}/{total} stop={self._stop}")
             for fut in futs:
