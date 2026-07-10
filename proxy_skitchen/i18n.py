@@ -232,6 +232,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "msg.no_data": "Нет данных",
         "msg.no_data_text": "Нет прокси для сохранения.",
 
+        # ── Table headers ──
+        "table.header.proto": "Протокол",
+        "table.header.host": "Хост",
+        "table.header.port": "Порт",
+        "table.header.country": "Страна",
+        "table.header.ping": "Пинг",
+
         # ── Event window ──
         "event.title": "⚡ Событие",
         "event.tcp": "TCP",
@@ -459,6 +466,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "msg.all_done": "All steps complete.\nUse Save buttons on Step 3 to export.",
         "msg.no_data": "No data",
         "msg.no_data_text": "No proxies to save.",
+
+        # ── Table headers ──
+        "table.header.proto": "Protocol",
+        "table.header.host": "Host",
+        "table.header.port": "Port",
+        "table.header.country": "Country",
+        "table.header.ping": "Ping",
 
         # ── Event window ──
         "event.title": "⚡ Event",

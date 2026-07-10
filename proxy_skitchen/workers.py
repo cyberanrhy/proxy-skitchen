@@ -10,7 +10,7 @@ except ImportError:
     _HAS_REQUESTS = False
 
 from .compat import *
-from .compat import _write_log, DEBUG_LOG_PATHS
+from .compat import _write_log, DEBUG_LOG_PATHS, CREATE_NO_WINDOW
 from .models import ProxyEntry, _auth_data, _settings_data
 from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
 from .tester import test_tcp, test_tls, resolve_host
@@ -183,7 +183,7 @@ class NetworkWorker(QObject):
                     cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
                 cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
                 _debug(f"_http_get: curl attempt={attempt} proxy={use_proxy} url={url[:80]}")
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
                 with self._procs_lock:
                     self._procs.append(proc)
                 try:
@@ -321,7 +321,7 @@ class GitHubSearchWorker(QObject):
 
     def __init__(self, keywords: list[str], known_sources: set,
                  explicit_repos: Optional[list[str]] = None,
-                 time_filter_days: int = 7, github_tokens: Optional[list[str]] = None,
+                 time_filter_days: float = 7, github_tokens: Optional[list[str]] = None,
                  max_repos: int = 12, max_files: int = 50,
                  owner: Optional[str] = None,
                  weak_hw: bool = False, deep_search: bool = False,
@@ -376,7 +376,7 @@ class GitHubSearchWorker(QObject):
                     cmd.extend(["-H", f"Authorization: token {token}"])
                 cmd.append(url)
                 try:
-                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
                     with self._procs_lock:
                         self._procs.append(proc)
                     try:
@@ -556,8 +556,9 @@ class GitHubSearchWorker(QObject):
                         line = line.strip()
                         if not line or line.startswith('//') or line.startswith('#'):
                             continue
-                        if is_proxy_uri(line):
-                            continue
+                        if is_proxy_uri(line) and line not in self.known_sources and line not in seen:
+                            seen.add(line)
+                            found_uris.append(line)
                         inlines = extract_inline_uris(line)
                         for u in inlines:
                             if u not in self.known_sources and u not in seen:
@@ -715,7 +716,7 @@ class GitHubSearchWorker(QObject):
             if _settings_data.get("proxy_enabled", True):
                 cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
             cmd.extend(["-H", "User-Agent: Mozilla/5.0", raw_url])
-            result = subprocess.run(cmd, capture_output=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
             if result.returncode != 0:
                 return None
             body = result.stdout.decode("utf-8", errors="ignore")

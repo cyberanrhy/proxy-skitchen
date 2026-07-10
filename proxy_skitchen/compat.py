@@ -81,6 +81,11 @@ else:
 APP_NAME = "proxy-skitchen"
 APP_VERSION = "2.2.0"
 
+if IS_WINDOWS:
+    CREATE_NO_WINDOW = 0x08000000
+else:
+    CREATE_NO_WINDOW = 0
+
 _LOG_LIMIT = 1024 * 1024       # 1 MB max
 _LOG_KEEP = 768 * 1024         # keep ~768 KB after truncation
 

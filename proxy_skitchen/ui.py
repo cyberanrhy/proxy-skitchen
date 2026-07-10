@@ -173,8 +173,8 @@ class SourcesPage(WizardPage):
             end = min(start + half, len(self._presets))
             for kw in self._presets[start:end]:
                 btn = QPushButton(kw)
-                btn.setFixedHeight(22)
-                btn.setStyleSheet("QPushButton { font-size: 8px; padding: 0px 4px; }")
+                btn.setFixedHeight(24)
+                btn.setStyleSheet("QPushButton { font-size: 9px; padding: 0px 4px; }")
                 btn.clicked.connect(lambda checked, kw=kw: self._on_preset(kw))
                 row_layout.addWidget(btn)
             pw_vbox.addLayout(row_layout)
@@ -352,8 +352,8 @@ class SourcesPage(WizardPage):
             QMessageBox.warning(self, _("msg.warning"), _("msg.no_keywords"))
             return
         keywords = [kw.strip() for kw in kw_text.replace(',', ' ').split() if kw.strip()]
-        period_map = {_("period.1h"): 1, _("period.2h"): 1, _("period.4h"): 1, _("period.6h"): 1,
-                      _("period.8h"): 1, _("period.12h"): 1, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7}
+        period_map = {_("period.1h"): 0.04, _("period.2h"): 0.08, _("period.4h"): 0.17, _("period.6h"): 0.25,
+                      _("period.8h"): 0.33, _("period.12h"): 0.5, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7}
         time_days = period_map.get(self.period_combo.currentText(), 7)
         tokens = _auth_data.get("github_tokens", [])
         repos = []
@@ -636,10 +636,9 @@ class DownloadPage(WizardPage):
         src_layout.setContentsMargins(4, 4, 4, 4)
         self.src_table = QTableWidget(0, 3)
         self.src_table.setHorizontalHeaderLabels(["", _("download.table.source"), _("download.table.proxies")])
-        self.src_table.horizontalHeader().setStretchLastSection(True)
         self.src_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.src_table.setColumnWidth(0, 24)
-        self.src_table.setColumnWidth(2, 60)
+        self.src_table.setColumnWidth(2, 80)
         self.src_table.verticalHeader().setVisible(False)
         self.src_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.src_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -709,6 +708,7 @@ class DownloadPage(WizardPage):
 
     def _apply_download_theme(self):
         t = THEMES[current_theme()]
+        bg = t['bg']
         m = t['muted']
         bd = t['border']
         fg = t['fg']
@@ -735,6 +735,12 @@ class DownloadPage(WizardPage):
                 border-radius: 10px;
             }}
             QPushButton:hover {{ background: rgba(91,141,239,0.12); border: 1px solid {t['accent']}; }}
+        """)
+
+        self.src_table.setStyleSheet(f"""
+            QTableWidget {{ background: {ibg}; color: {fg}; border: 1px solid {bd}; gridline-color: {bd}; }}
+            QTableWidget::item {{ color: {fg}; padding: 2px 4px; }}
+            QHeaderView::section {{ background: {bg}; color: {fg}; border: none; border-bottom: 1px solid {bd}; padding: 4px 6px; font-weight: bold; }}
         """)
 
     def _set_phase(self, phase: int):
@@ -787,6 +793,7 @@ class DownloadPage(WizardPage):
         self._fetch_start_time = time.time()
         self._sources_ok = 0
         self._sources_total = 0
+        self._sources_done = set()
 
         self.src_table.setRowCount(0)
         for name, _url in sources:
@@ -864,7 +871,8 @@ class DownloadPage(WizardPage):
                     cell = self.src_table.item(row, c)
                     if cell:
                         cell.setBackground(QColor("#181c2e"))
-                if ok:
+                if ok and name not in self._sources_done:
+                    self._sources_done.add(name)
                     self._sources_ok += 1
                 break
 
@@ -1064,10 +1072,9 @@ class TestPage(WizardPage):
         self.proxy_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.proxy_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.proxy_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.proxy_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        self.proxy_table.setColumnWidth(0, 28)
+        self.proxy_table.setColumnWidth(0, 32)
         self.proxy_table.setColumnWidth(3, 60)
-        self.proxy_table.setColumnWidth(5, 60)
+        self.proxy_table.setColumnWidth(5, 75)
         self.proxy_table.verticalHeader().setDefaultSectionSize(24)
         self.proxy_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.proxy_table.customContextMenuRequested.connect(self._on_table_context)
@@ -1310,8 +1317,8 @@ class TestPage(WizardPage):
         target = subset if subset is not None else self._entries
         self._stop_requested = False
         self._set_phase(self.PHASE_TEST)
-        self.progress_bar.setMaximum(len(self._entries))
-        self.progress_bar.setValue(len(self._entries) - len(target))
+        self.progress_bar.setMaximum(len(target))
+        self.progress_bar.setValue(0)
 
         self._tester = TesterWorker(deep=deep, rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
         self._tester.result_signal.connect(self._on_test_result)
@@ -1558,6 +1565,7 @@ class TestPage(WizardPage):
         self.btn_continue.setText(_("test.btn.continue"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))
         self.btn_export.setText(_("test.btn.export"))
+        self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, self.model.columnCount() - 1)
         # Rebuild filter combo
         current = self.filter_combo.currentIndex()
         self.filter_combo.blockSignals(True)
@@ -2191,32 +2199,64 @@ class SettingsDialog(QDialog):
         token = tokens[0]
         self.check_result.setText(_("settings.token.checking"))
         from concurrent.futures import ThreadPoolExecutor
+        proxy_enabled = _settings_data.get("proxy_enabled", True)
+        proxy_type = _settings_data.get("proxy_type", "http").lower()
+        proxy_host = _settings_data.get("proxy_host", "127.0.0.1")
+        proxy_port = _settings_data.get("proxy_port", 12334)
         pool = ThreadPoolExecutor(1)
         def _check():
+            req = urllib.request.Request("https://api.github.com/user",
+                                         headers={"Authorization": f"token {token}", "User-Agent": "proxy-skitchen"})
+            import socket
+            socket.setdefaulttimeout(4)
             try:
-                req = urllib.request.Request("https://api.github.com/user",
-                                             headers={"Authorization": f"token {token}", "User-Agent": "proxy-skitchen"})
-                resp = urllib.request.urlopen(req, timeout=5)
+                resp = urllib.request.urlopen(req, timeout=4)
                 data = json.loads(resp.read())
                 limit = resp.headers.get('X-RateLimit-Remaining', '?')
                 return _("settings.token.ok", login=data.get('login', '?'), limit=limit)
-            except Exception as e:
-                return _("settings.token.error", error=str(e)[:60])
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    return _("settings.token.error", error="Invalid token")
+                return _("settings.token.error", error=f"HTTP {e.code}")
+            except Exception as ex:
+                if not proxy_enabled or proxy_type == "socks5":
+                    return _("settings.token.error", error=f"Connection failed: {str(ex)[:40]}")
+            try:
+                proxy_url = f"http://{proxy_host}:{proxy_port}"
+                handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+                opener = urllib.request.build_opener(handler)
+                resp = opener.open(req, timeout=4)
+                data = json.loads(resp.read())
+                limit = resp.headers.get('X-RateLimit-Remaining', '?')
+                return _("settings.token.ok", login=data.get('login', '?'), limit=limit)
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    return _("settings.token.error", error="Invalid token")
+                return _("settings.token.error", error=f"HTTP {e.code}")
+            except Exception as ex:
+                return _("settings.token.error", error=f"Connection failed: {str(ex)[:40]}")
         def _on_done(fut):
-            result = fut.result()
-            QTimer.singleShot(0, lambda: self.check_result.setText(result))
+            try:
+                result = fut.result()
+                QTimer.singleShot(0, lambda: self.check_result.setText(result))
+            except Exception as ex:
+                QTimer.singleShot(0, lambda: self.check_result.setText(str(ex)[:60]))
         fut = pool.submit(_check)
         fut.add_done_callback(_on_done)
 
     def _on_save(self):
         tokens = [t.strip() for t in self.tokens_edit.toPlainText().strip().splitlines() if t.strip()]
         _auth_data["github_tokens"] = tokens
+        _save_auth(_auth_data)
 
         _settings_data["perf_mode"] = {"low 🐢": "low", "medium ⚡": "medium", "high 🚀": "high"}.get(self.perf_combo.currentText(), "medium")
         _settings_data["proxy_enabled"] = self.cb_proxy.isChecked()
         _settings_data["proxy_type"] = self.proxy_type.currentText().lower()
         _settings_data["proxy_host"] = self.proxy_host.text().strip()
         _settings_data["proxy_port"] = self.proxy_port.value()
+        _settings_data["gh_repo"] = self.gh_repo.text().strip()
+        _settings_data["gh_file"] = self.gh_file.text().strip()
+        _settings_data["gh_branch"] = self.gh_branch.text().strip()
         _save_settings(_settings_data)
         self.accept()
 
@@ -2424,7 +2464,18 @@ def get_style_string(colors: dict) -> str:
         }}
         QProgressBar::chunk {{ background-color: {colors['accent']}; border-radius: 2px; }}
         QListWidget, QTableWidget {{
-            background-color: {colors['input_bg']}; border: 1px solid {colors['border']};
+            background-color: {colors['input_bg']}; color: {colors['fg']}; border: 1px solid {colors['border']};
+        }}
+        QListWidget::item, QTableWidget::item {{
+            color: {colors['fg']}; padding: 2px 4px;
+        }}
+        QListWidget::item:alternate {{
+            background: {colors['button_bg']};
+        }}
+        QHeaderView::section {{
+            background: {colors['bg']}; color: {colors['fg']};
+            border: none; border-bottom: 1px solid {colors['border']};
+            padding: 4px 6px; font-weight: bold;
         }}
         #TabBar {{
             background: {colors['input_bg']};

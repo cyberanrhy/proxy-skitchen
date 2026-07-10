@@ -4,7 +4,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
 
-from .compat import TMP_DIR, HIDDIFY_PROXY, _write_log, DEBUG_LOG_PATHS, IS_WINDOWS, IS_MACOS
+from .compat import TMP_DIR, HIDDIFY_PROXY, _write_log, DEBUG_LOG_PATHS, IS_WINDOWS, IS_MACOS, CREATE_NO_WINDOW
 from .parsers import get_protocol, get_server_port, is_ip
 
 def _debug(msg: str):
@@ -137,7 +137,7 @@ class SingBoxTester:
                     proc = subprocess.Popen(
                         [SING_BOX, "run", "-c", config_path],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        cwd=tmp_dir,
+                        cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
                     time.sleep(0.3)
                     try:
@@ -175,7 +175,7 @@ class SingBoxTester:
                     proc = subprocess.Popen(
                         [SING_BOX, "run", "-c", config_path],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        cwd=tmp_dir,
+                        cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
                     time.sleep(0.5)
                     proxy_url = f"http://127.0.0.1:{port}"

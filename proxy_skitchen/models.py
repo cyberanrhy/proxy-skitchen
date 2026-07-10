@@ -297,7 +297,7 @@ _settings_data.pop("github_tokens", None)
 
 
 class ProxyTableModel(QAbstractTableModel):
-    HEADERS = ["", "Протокол", "Хост", "Порт", "Страна", "Пинг", "Статус"]
+    HEADERS = ["", "Протокол", "Хост", "Порт", "Страна", "Пинг"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -310,8 +310,11 @@ class ProxyTableModel(QAbstractTableModel):
         return len(self.HEADERS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        from .i18n import _
         if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
-            return self.HEADERS[section]
+            _headers = ["", _("table.header.proto"), _("table.header.host"), _("table.header.port"), _("table.header.country"), _("table.header.ping")]
+            if section < len(_headers):
+                return _headers[section]
         return None
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -320,13 +323,12 @@ class ProxyTableModel(QAbstractTableModel):
         p = self.proxies[index.row()]
         col = index.column()
         if role == Qt.ItemDataRole.DisplayRole:
+            if col == 0: return p.status_emoji()
             if col == 1: return p.display_protocol()
             if col == 2: return p.host
             if col == 3: return str(p.port) if p.port else ""
             if col == 4: return p.country
             if col == 5: return f"{p.latency_ms:.0f}ms" if p.latency_ms else ""
-        if role == Qt.ItemDataRole.DecorationRole and col == 0:
-            return None
         if role == Qt.ItemDataRole.ForegroundRole:
             if p.deep_ok: return QColor("#00e676")
             if p.tcp_ok: return QColor("#69f0ae")
