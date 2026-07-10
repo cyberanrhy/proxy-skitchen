@@ -38,6 +38,7 @@ class NetworkWorker(QObject):
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
         self._inner_pool = ThreadPoolExecutor(max_workers=8)
+        self._ip_entries: list[ProxyEntry] = []
 
     def stop(self):
         self._stop = True
@@ -96,13 +97,12 @@ class NetworkWorker(QObject):
                         t0_parse = time.time()
                         count = 0
                         batch = []
-                        geo_ips = {}
                         for uri in proxies:
                             if self._stop:
                                 break
                             entry = ProxyEntry(uri)
                             if _is_ip(entry.host) and not entry.country:
-                                geo_ips[entry.host] = entry
+                                self._ip_entries.append(entry)
                             if not entry.country:
                                 c = guess_country(uri)
                                 if c:
@@ -113,17 +113,6 @@ class NetworkWorker(QObject):
                                 self.proxy_parsed.emit(batch)
                                 batch = []
                         t1_parse = time.time()
-                        if geo_ips:
-                            geo_futs = {self._inner_pool.submit(geo_lookup, ip): ip for ip in geo_ips}
-                            for gf in as_completed(geo_futs):
-                                ip = geo_futs[gf]
-                                try:
-                                    c = gf.result()
-                                    if c:
-                                        geo_ips[ip].country = c
-                                except Exception:
-                                    pass
-                        t1_geo = time.time()
                         if batch:
                             self.proxy_parsed.emit(batch)
                         self.source_status.emit(name, True, count)
@@ -131,12 +120,30 @@ class NetworkWorker(QObject):
                         # Periodic timing debug
                         if time.time() - t_last_debug > 5.0:
                             elapsed = time.time() - start_time
-                            _debug(f"fetch_all: progress {done_count}/{total} elapsed={elapsed:.1f}s parse={t1_parse-t0_parse:.3f}s geo={t1_geo-t0_parse:.3f}s")
+                            _debug(f"fetch_all: progress {done_count}/{total} elapsed={elapsed:.1f}s parse={t1_parse-t0_parse:.3f}s")
                             t_last_debug = time.time()
                     done_count += 1
                 if time.time() - start_time > MAX_WAIT:
                     self.log_signal.emit(f"  ⚠ Timeout {MAX_WAIT}s, aborting")
                     break
+            # Batch geo_lookup for all IP hosts after all curls complete
+            if not self._stop and self._ip_entries:
+                unique_ips = set(e.host for e in self._ip_entries)
+                ip_to_country: dict[str, str] = {}
+                if unique_ips:
+                    geo_futs = {self._inner_pool.submit(geo_lookup, ip): ip for ip in unique_ips}
+                    for gf in as_completed(geo_futs):
+                        ip = geo_futs[gf]
+                        try:
+                            c = gf.result()
+                            if c:
+                                ip_to_country[ip] = c
+                        except Exception:
+                            pass
+                for entry in self._ip_entries:
+                    if entry.host in ip_to_country:
+                        entry.country = ip_to_country[entry.host]
+                self._ip_entries.clear()
         finally:
             elapsed = time.time() - start_time
             _debug(f"fetch_all: done {done_count}/{total} elapsed={elapsed:.1f}s stop={self._stop}")
