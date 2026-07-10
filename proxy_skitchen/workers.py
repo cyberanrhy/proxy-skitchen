@@ -151,7 +151,10 @@ class NetworkWorker(QObject):
                 fut.cancel()
             pool.shutdown(wait=False)
             _debug("fetch_all: emitting finished")
-            self.finished.emit()
+            try:
+                self.finished.emit()
+            except RuntimeError:
+                pass
 
     def _fetch_one(self, name: str, url: str) -> Optional[list[str]]:
         _debug(f"_fetch_one: start {name[:60]}")
