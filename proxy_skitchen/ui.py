@@ -612,6 +612,8 @@ class DownloadPage(WizardPage):
         self._fetch_start_time = 0.0
         self._sources_ok = 0
         self._sources_total = 0
+        self._source_rows: dict[str, int] = {}
+        self._proto_counts: dict[str, int] = {}
 
         layout = QVBoxLayout(self)
 
@@ -794,6 +796,8 @@ class DownloadPage(WizardPage):
         self._sources_ok = 0
         self._sources_total = 0
         self._sources_done = set()
+        self._source_rows.clear()
+        self._proto_counts.clear()
 
         self.src_table.setRowCount(0)
         for name, _url in sources:
@@ -828,6 +832,9 @@ class DownloadPage(WizardPage):
 
     def _on_proxy_parsed(self, entries: list[ProxyEntry]):
         self._entries.extend(entries)
+        for e in entries:
+            p = e.protocol or "?"
+            self._proto_counts[p] = self._proto_counts.get(p, 0) + 1
         self.lbl_total.setText(_("download.stats.total", count=len(self._entries)))
 
     def _on_source_started(self, name: str, idx: int):
@@ -855,26 +862,26 @@ class DownloadPage(WizardPage):
         count_item = QTableWidgetItem("...")
         count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.src_table.setItem(row, 2, count_item)
+        self._source_rows[name[:60]] = row
         self._sources_total += 1
 
     def _update_source_row(self, name: str, ok: bool, count: int):
-        for row in range(self.src_table.rowCount()):
-            item = self.src_table.item(row, 1)
-            if item and item.text() == name[:60]:
-                icon_item = self.src_table.item(row, 0)
-                if icon_item:
-                    icon_item.setText("✅" if ok else "❌")
-                count_item = self.src_table.item(row, 2)
-                if count_item:
-                    count_item.setText(str(count))
-                for c in range(3):
-                    cell = self.src_table.item(row, c)
-                    if cell:
-                        cell.setBackground(QColor("#181c2e"))
-                if ok and name not in self._sources_done:
-                    self._sources_done.add(name)
-                    self._sources_ok += 1
-                break
+        row = self._source_rows.get(name[:60])
+        if row is None:
+            return
+        icon_item = self.src_table.item(row, 0)
+        if icon_item:
+            icon_item.setText("✅" if ok else "❌")
+        count_item = self.src_table.item(row, 2)
+        if count_item:
+            count_item.setText(str(count))
+        for c in range(3):
+            cell = self.src_table.item(row, c)
+            if cell:
+                cell.setBackground(QColor("#181c2e"))
+        if ok and name not in self._sources_done:
+            self._sources_done.add(name)
+            self._sources_ok += 1
 
     def _toggle_sources(self):
         hidden = self.src_group.isHidden()
@@ -893,10 +900,7 @@ class DownloadPage(WizardPage):
 
         # Build detail stats
         dur = time.time() - self._fetch_start_time
-        protos: dict[str, int] = {}
-        for e in self._entries:
-            p = e.protocol or "?"
-            protos[p] = protos.get(p, 0) + 1
+        protos = self._proto_counts
         proto_parts = []
         order = ["VLESS", "VMess", "VMESS", "Trojan", "SS", "Hy2", "hysteria2", "Shadowsocks"]
         seen = set()
