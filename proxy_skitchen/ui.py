@@ -36,9 +36,7 @@ def _cleanup_thread(thread, worker, wait_sec=3.0):
     if thread is not None:
         try:
             thread.quit()
-            if not thread.wait(int(wait_sec * 1000)):
-                thread.terminate()
-                thread.wait(1000)
+            thread.wait(int(wait_sec * 1000))
         except Exception:
             pass
     if worker is not None:
@@ -614,6 +612,11 @@ class DownloadPage(WizardPage):
         self._sources_total = 0
         self._source_rows: dict[str, int] = {}
         self._proto_counts: dict[str, int] = {}
+        self._progress_tick = 0
+        self._progress_last_done = 0
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(600)
+        self._progress_timer.timeout.connect(self._on_progress_tick)
 
         layout = QVBoxLayout(self)
 
@@ -760,6 +763,7 @@ class DownloadPage(WizardPage):
             self.btn_stop.setEnabled(False)
             self.progress_bar.setVisible(False)
             self.lbl_phase.setText("")
+            self._progress_timer.stop()
 
     def _log(self, msg: str):
         self.log_out.append(msg)
@@ -767,7 +771,7 @@ class DownloadPage(WizardPage):
         sb.setValue(sb.maximum())
 
     def _cleanup_net(self):
-        _cleanup_thread(getattr(self, '_net_thread', None), getattr(self, '_net_worker', None))
+        _cleanup_thread(getattr(self, '_net_thread', None), getattr(self, '_net_worker', None), wait_sec=15)
         self._net_thread = None
         self._net_worker = None
 
@@ -812,6 +816,9 @@ class DownloadPage(WizardPage):
         self.btn_next.setEnabled(False)
         self.progress_bar.setMaximum(len(sources))
         self.progress_bar.setValue(0)
+        self._progress_last_done = 0
+        self._progress_tick = 0
+        self._progress_timer.start()
         self.lbl_total.setText(_("download.stats.total", count=0))
 
         self._net_worker = NetworkWorker()
@@ -829,7 +836,20 @@ class DownloadPage(WizardPage):
 
     def _on_fetch_progress(self, done: int, total: int, name: str):
         self.progress_bar.setValue(done)
-        self.lbl_progress.setText(f"{done}/{total}")
+        self._progress_last_done = done
+        elapsed = time.time() - self._fetch_start_time
+        self.lbl_progress.setText(f"{done}/{total} ({elapsed:.0f}s)")
+        self._progress_tick = 0
+        self._progress_timer.start()
+
+    def _on_progress_tick(self):
+        if self._phase != self.PHASE_FETCH:
+            self._progress_timer.stop()
+            return
+        elapsed = time.time() - self._fetch_start_time
+        self._progress_tick += 1
+        dots = "." * ((self._progress_tick % 3) + 1)
+        self.lbl_progress.setText(f"загрузка{dots} ({self._progress_last_done}/{self.progress_bar.maximum()}, {elapsed:.0f}s)")
 
     def _on_proxy_parsed(self, entries: list[ProxyEntry]):
         self._entries.extend(entries)
