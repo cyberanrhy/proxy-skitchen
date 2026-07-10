@@ -9,7 +9,8 @@ from datetime import datetime
 os.environ["QT_API"] = "pyside6"
 
 # Crash safety
-faulthandler.enable()
+if sys.stderr is not None:
+    faulthandler.enable()
 
 from .compat import TMP_DIR
 FAULT_LOG = os.path.join(TMP_DIR, "fault.log")
@@ -34,7 +35,7 @@ def excepthook(etype, value, tb):
 
 sys.excepthook = excepthook
 
-from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6
+from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW
 from .models import ProxyEntry, _auth_data
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
 from .exporters import format_raw, _clean_uri
@@ -82,7 +83,7 @@ class CliRunner:
                 if _settings_data.get("proxy_enabled", True):
                     cmd.insert(1, "--proxy")
                     cmd.insert(2, "socks5://127.0.0.1:12334")
-                result = subprocess.run(cmd, capture_output=True, timeout=25)
+                result = subprocess.run(cmd, capture_output=True, timeout=25, creationflags=CREATE_NO_WINDOW)
                 if result.returncode != 0:
                     raise Exception(result.stderr.decode()[:80])
                 data = result.stdout.decode("utf-8", errors="ignore")
@@ -177,7 +178,7 @@ class CliRunner:
                 if _settings_data.get("proxy_enabled", True):
                     cmd.insert(1, "--proxy")
                     cmd.insert(2, "socks5://127.0.0.1:12334")
-                result = subprocess.run(cmd, capture_output=True, timeout=25)
+                result = subprocess.run(cmd, capture_output=True, timeout=25, creationflags=CREATE_NO_WINDOW)
                 if result.returncode != 0:
                     if args.verbose:
                         print(f"  ✗ curl err: {result.stderr.decode()[:60]}", file=sys.stderr, flush=True)
