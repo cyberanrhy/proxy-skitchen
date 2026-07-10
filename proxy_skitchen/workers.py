@@ -12,7 +12,7 @@ except ImportError:
 from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS, CREATE_NO_WINDOW
 from .models import ProxyEntry, _auth_data, _settings_data, PROTOCOL_PREFIXES
-from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
+from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, guess_country, get_server_port
 from .tester import test_tcp, test_tls, resolve_host
 
 def _debug(msg: str):
@@ -38,7 +38,6 @@ class NetworkWorker(QObject):
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
         self._inner_pool = ThreadPoolExecutor(max_workers=8)
-        self._ip_entries: list[ProxyEntry] = []
 
     def stop(self):
         self._stop = True
@@ -101,8 +100,6 @@ class NetworkWorker(QObject):
                             if self._stop:
                                 break
                             entry = ProxyEntry(uri)
-                            if _is_ip(entry.host) and not entry.country:
-                                self._ip_entries.append(entry)
                             if not entry.country:
                                 c = guess_country(uri)
                                 if c:
@@ -126,24 +123,6 @@ class NetworkWorker(QObject):
                 if time.time() - start_time > MAX_WAIT:
                     self.log_signal.emit(f"  ⚠ Timeout {MAX_WAIT}s, aborting")
                     break
-            # Batch geo_lookup for all IP hosts after all curls complete
-            if not self._stop and self._ip_entries:
-                unique_ips = set(e.host for e in self._ip_entries)
-                ip_to_country: dict[str, str] = {}
-                if unique_ips:
-                    geo_futs = {self._inner_pool.submit(geo_lookup, ip): ip for ip in unique_ips}
-                    for gf in as_completed(geo_futs):
-                        ip = geo_futs[gf]
-                        try:
-                            c = gf.result()
-                            if c:
-                                ip_to_country[ip] = c
-                        except Exception:
-                            pass
-                for entry in self._ip_entries:
-                    if entry.host in ip_to_country:
-                        entry.country = ip_to_country[entry.host]
-                self._ip_entries.clear()
         finally:
             elapsed = time.time() - start_time
             _debug(f"fetch_all: done {done_count}/{total} elapsed={elapsed:.1f}s stop={self._stop}")
