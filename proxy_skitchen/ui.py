@@ -799,9 +799,10 @@ class DownloadPage(WizardPage):
         self._source_rows.clear()
         self._proto_counts.clear()
 
-        self.src_table.setRowCount(0)
-        for name, _url in sources:
-            self._add_source_row(name)
+        n = len(sources)
+        self.src_table.setRowCount(n)
+        for i, (name, _url) in enumerate(sources):
+            self._add_source_row_at(i, name)
 
         self.src_group.show()
         self.btn_toggle_sources.show()
@@ -838,21 +839,18 @@ class DownloadPage(WizardPage):
         self.lbl_total.setText(_("download.stats.total", count=len(self._entries)))
 
     def _on_source_started(self, name: str, idx: int):
-        for row in range(self.src_table.rowCount()):
-            item = self.src_table.item(row, 1)
-            if item and item.text() == name[:60]:
-                icon_item = self.src_table.item(row, 0)
-                if icon_item:
-                    icon_item.setText("⟳")
-                for c in range(3):
-                    cell = self.src_table.item(row, c)
-                    if cell:
-                        cell.setBackground(QColor("#1e2338"))
-                break
+        row = self._source_rows.get(name[:60])
+        if row is None:
+            return
+        icon_item = self.src_table.item(row, 0)
+        if icon_item:
+            icon_item.setText("⟳")
+        for c in range(3):
+            cell = self.src_table.item(row, c)
+            if cell:
+                cell.setBackground(QColor("#1e2338"))
 
-    def _add_source_row(self, name: str):
-        row = self.src_table.rowCount()
-        self.src_table.insertRow(row)
+    def _add_source_row_at(self, row: int, name: str):
         icon_item = QTableWidgetItem("⏳")
         icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.src_table.setItem(row, 0, icon_item)
