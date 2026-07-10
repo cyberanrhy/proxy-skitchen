@@ -37,6 +37,7 @@ class NetworkWorker(QObject):
         self._resolved = {}
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
+        self._inner_pool = ThreadPoolExecutor(max_workers=8)
 
     def stop(self):
         self._stop = True
@@ -47,6 +48,7 @@ class NetworkWorker(QObject):
                 except Exception:
                     pass
             self._procs.clear()
+        self._inner_pool.shutdown(wait=False)
 
     @Slot()
     def fetch_all(self, sources: list[tuple[str, str]]):
@@ -61,7 +63,7 @@ class NetworkWorker(QObject):
         futs = {}
         names = {}
         start_time = time.time()
-        MAX_WAIT = max(30, total * 20)  # at most 20s per source
+        MAX_WAIT = max(30, total * 20)
         try:
             for name, url in sources:
                 if self._stop:
@@ -75,12 +77,14 @@ class NetworkWorker(QObject):
             _debug(f"fetch_all: submitted {len(futs)} tasks")
             pending = set(futs)
             done_count = 0
+            t_last_debug = time.time()
             while pending and not self._stop:
                 done, pending = wait(pending, timeout=1.0)
                 for fut in done:
                     idx = futs[fut]
                     name = names[fut]
                     self.progress_signal.emit(idx + 1, total, name)
+                    t0_proc = time.time()
                     try:
                         proxies = fut.result(timeout=5)
                     except Exception:
@@ -89,6 +93,7 @@ class NetworkWorker(QObject):
                         self.log_signal.emit(f"  ✗ {name}: fetch failed")
                         self.source_status.emit(name, False, 0)
                     else:
+                        t0_parse = time.time()
                         count = 0
                         batch = []
                         geo_ips = {}
@@ -107,29 +112,34 @@ class NetworkWorker(QObject):
                             if len(batch) >= 50:
                                 self.proxy_parsed.emit(batch)
                                 batch = []
-                        # Parallel geo lookup for IP hosts
+                        t1_parse = time.time()
                         if geo_ips:
-                            with ThreadPoolExecutor(max_workers=8) as geo_pool:
-                                geo_futs = {geo_pool.submit(geo_lookup, ip): ip for ip in geo_ips}
-                                for gf in as_completed(geo_futs):
-                                    ip = geo_futs[gf]
-                                    try:
-                                        c = gf.result()
-                                        if c:
-                                            geo_ips[ip].country = c
-                                    except Exception:
-                                        pass
+                            geo_futs = {self._inner_pool.submit(geo_lookup, ip): ip for ip in geo_ips}
+                            for gf in as_completed(geo_futs):
+                                ip = geo_futs[gf]
+                                try:
+                                    c = gf.result()
+                                    if c:
+                                        geo_ips[ip].country = c
+                                except Exception:
+                                    pass
+                        t1_geo = time.time()
                         if batch:
                             self.proxy_parsed.emit(batch)
                         self.source_status.emit(name, True, count)
                         self.log_signal.emit(f"  ✓ {name}: {count} proxies")
+                        # Periodic timing debug
+                        if time.time() - t_last_debug > 5.0:
+                            elapsed = time.time() - start_time
+                            _debug(f"fetch_all: progress {done_count}/{total} elapsed={elapsed:.1f}s parse={t1_parse-t0_parse:.3f}s geo={t1_geo-t0_parse:.3f}s")
+                            t_last_debug = time.time()
                     done_count += 1
-                # Total timeout guard
                 if time.time() - start_time > MAX_WAIT:
                     self.log_signal.emit(f"  ⚠ Timeout {MAX_WAIT}s, aborting")
                     break
         finally:
-            _debug(f"fetch_all: done {done_count}/{total} stop={self._stop}")
+            elapsed = time.time() - start_time
+            _debug(f"fetch_all: done {done_count}/{total} elapsed={elapsed:.1f}s stop={self._stop}")
             for fut in futs:
                 fut.cancel()
             pool.shutdown(wait=False)
@@ -139,24 +149,22 @@ class NetworkWorker(QObject):
     def _fetch_one(self, name: str, url: str) -> Optional[list[str]]:
         _debug(f"_fetch_one: start {name[:60]}")
         proxy_enabled = _settings_data.get("proxy_enabled", True)
-        # Parallel direct + proxy attempts
         from concurrent.futures import Future
         dir_fut: Optional[Future] = None
         prx_fut: Optional[Future] = None
-        with ThreadPoolExecutor(max_workers=2) as par_pool:
-            dir_fut = par_pool.submit(self._http_get, url, False, 10)
-            if proxy_enabled:
-                prx_fut = par_pool.submit(self._http_get, url, True, 20)
-            for f in as_completed([dir_fut] + ([prx_fut] if prx_fut else [])):
-                try:
-                    data = f.result()
-                    if data is not None:
-                        dir_fut.cancel()
-                        if prx_fut:
-                            prx_fut.cancel()
-                        break
-                except Exception:
-                    data = None
+        dir_fut = self._inner_pool.submit(self._http_get, url, False, 10)
+        if proxy_enabled:
+            prx_fut = self._inner_pool.submit(self._http_get, url, True, 20)
+        for f in as_completed([dir_fut] + ([prx_fut] if prx_fut else [])):
+            try:
+                data = f.result()
+                if data is not None:
+                    dir_fut.cancel()
+                    if prx_fut:
+                        prx_fut.cancel()
+                    break
+            except Exception:
+                data = None
         if data is None:
             return None
         proxies = []
