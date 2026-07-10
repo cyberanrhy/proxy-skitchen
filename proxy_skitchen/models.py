@@ -272,6 +272,13 @@ def _load_auth() -> dict:
     return {"github_tokens": []}
 
 
+def _env_tokens() -> list[str]:
+    try:
+        return [v for v in [os.getenv("GH_TOKEN"), os.getenv("GITHUB_TOKEN"), os.getenv("GITHUB")] if v]
+    except Exception:
+        return []
+
+
 def _save_auth(data: dict):
     from .compat import IS_WINDOWS
     os.makedirs(SETTINGS_DIR, exist_ok=True)
@@ -294,6 +301,16 @@ if not _auth_data.get("github_tokens") and _settings_data.get("github_token"):
     del _settings_data["github_token"]
     _save_auth(_auth_data)
 _settings_data.pop("github_tokens", None)
+
+if not _auth_data.get("github_tokens"):
+    _auth_data["github_tokens"] = _env_tokens()
+
+
+def _get_tokens() -> list[str]:
+    tokens = _auth_data.get("github_tokens", [])
+    if not tokens:
+        tokens = _env_tokens()
+    return tokens
 
 
 class ProxyTableModel(QAbstractTableModel):

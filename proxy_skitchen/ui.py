@@ -11,7 +11,7 @@ def _debug(msg: str):
 
 from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS
-from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag
+from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_server_port
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
@@ -355,7 +355,7 @@ class SourcesPage(WizardPage):
         period_map = {_("period.1h"): 0.04, _("period.2h"): 0.08, _("period.4h"): 0.17, _("period.6h"): 0.25,
                       _("period.8h"): 0.33, _("period.12h"): 0.5, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7}
         time_days = period_map.get(self.period_combo.currentText(), 7)
-        tokens = _auth_data.get("github_tokens", [])
+        tokens = _get_tokens()
         repos = []
         owner = None
         if gh_url:
@@ -1149,10 +1149,12 @@ class TestPage(WizardPage):
         self.lbl_phase.setStyleSheet(f"font-size: 11px; color: {m}; min-width: 60px;")
 
         sel_alpha = "0.15" if current_theme() == "dark" else "0.1"
+        alt_bg = "#1a1f33" if current_theme() == "dark" else "#eae7e0"
         self.proxy_table.setStyleSheet(f"""
-            QTableView {{ gridline-color: {bd}; font-size: 12px; }}
-            QTableView::item {{ padding: 2px 4px; }}
+            QTableView {{ background: {ibg}; color: {fg}; gridline-color: {bd}; font-size: 12px; }}
+            QTableView::item {{ color: {fg}; padding: 2px 4px; }}
             QTableView::item:selected {{ background: rgba({int(acc[1:3],16)},{int(acc[3:5],16)},{int(acc[5:7],16)},{sel_alpha}); }}
+            QTableView::item:alternate {{ background: {alt_bg}; }}
             QHeaderView::section {{ background: {bg}; color: {mf}; border: none; border-bottom: 1px solid {bd}; padding: 4px 6px; font-size: 11px; font-weight: bold; }}
         """)
 
@@ -1441,7 +1443,7 @@ class TestPage(WizardPage):
             self._log("📤 GitHub push...")
             repo = _settings_data.get("gh_repo", "")
             file_path = _settings_data.get("gh_file", "")
-            tokens = _auth_data.get("github_tokens", [])
+            tokens = _get_tokens()
             if not repo or not file_path:
                 self._log("❌ GitHub: не указан репозиторий или файл")
             elif not tokens:
@@ -1862,7 +1864,7 @@ class ExportPage(WizardPage):
         self.stats_lbl.setText(_("export.stats", total=total, tcp=tcp_ok, deep="—"))
         QTimer.singleShot(0, self._update_preview)
         self._main.update_status_bar()
-        tokens = _auth_data.get("github_tokens", [])
+        tokens = _get_tokens()
         self.btn_gh_push.setEnabled(len(tokens) > 0)
         self.gh_status_label.setText("" if tokens else _("export.github.no_token"))
 
@@ -2031,7 +2033,7 @@ class ExportPage(WizardPage):
         if not repo or not file_path:
             QMessageBox.warning(self, _("msg.warning"), _("export.github.no_settings"))
             return
-        tokens = _auth_data.get("github_tokens", [])
+        tokens = _get_tokens()
         if not tokens:
             QMessageBox.warning(self, _("msg.warning"), _("export.github.no_token"))
             return
@@ -2150,7 +2152,9 @@ class SettingsDialog(QDialog):
         self.tokens_edit = QPlainTextEdit()
         self.tokens_edit.setPlaceholderText(_("settings.input.tokens.placeholder"))
         self.tokens_edit.setFixedHeight(80)
-        tokens = _auth_data.get("github_tokens", [])
+        tokens = _get_tokens()
+        if not tokens:
+            tokens = _env_tokens()
         self.tokens_edit.setPlainText("\n".join(tokens))
         gh_layout.addWidget(self.tokens_edit)
 
