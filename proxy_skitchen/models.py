@@ -363,6 +363,9 @@ class ProxyTableModel(QAbstractTableModel):
                 if ms < 300: return QColor("#ffd740")
                 if ms < 500: return QColor("#ff6d00")
                 return QColor("#ff5252")
+            if p.deep_ok: return QColor("#00e676")
+            if p.tcp_ok: return QColor("#69f0ae")
+            return QColor("#ff5252")
         if role == Qt.ItemDataRole.ToolTipRole:
             country_display = p.country or "-"
             rkn_str = f"  RKN: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""

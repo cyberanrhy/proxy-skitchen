@@ -1356,6 +1356,7 @@ class TestPage(WizardPage):
         self._tester.progress_signal.connect(self._on_test_progress)
         self._tester.count_signal.connect(self._on_test_count)
         self._tester.log_signal.connect(self._log)
+        self._tester.geo_signal.connect(self._on_geo_result)
         self._tester.finished.connect(self._on_test_finished)
 
         self._test_thread = QThread()
@@ -1411,6 +1412,10 @@ class TestPage(WizardPage):
             self._last_log_time = now
         if not self.lbl_current.text():
             self.lbl_current.setText(_("event.test_progress", mode=mode, done=done, total=total, pct=done*100//max(total,1)))
+
+    def _on_geo_result(self, row: int, country: str):
+        idx = self.model.index(row, 4)
+        self.model.dataChanged.emit(idx, idx)
 
     def _on_test_finished(self):
         self._cleanup_test()
