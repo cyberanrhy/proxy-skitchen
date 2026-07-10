@@ -355,6 +355,8 @@ class GitHubSearchWorker(QObject):
 
     def _api(self, url: str, timeout: int = 10) -> Optional[dict]:
         tokens = list(self.github_tokens)
+        if not tokens:
+            self.progress_signal.emit(f"  ⚠ Поиск без токена, лимит 60 запросов/ч")
         for attempt in range(max(1, len(tokens) + 1)):
             if self._stop:
                 return None

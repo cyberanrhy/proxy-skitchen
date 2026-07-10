@@ -36,7 +36,7 @@ def excepthook(etype, value, tb):
 sys.excepthook = excepthook
 
 from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW
-from .models import ProxyEntry, _auth_data
+from .models import ProxyEntry, _auth_data, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
 from .exporters import format_raw, _clean_uri
 from .tester import test_tcp, test_tls, SingBoxTester
@@ -52,7 +52,7 @@ class CliRunner:
         print(json.dumps(data, ensure_ascii=False))
 
     def cmd_search(self, args):
-        tokens = _auth_data.get("github_tokens", [])
+        tokens = _get_tokens()
         if args.token:
             tokens = [args.token]
         known = set()
@@ -147,7 +147,7 @@ class CliRunner:
     def cmd_pipeline(self, args):
         if args.verbose:
             print("Pipeline: поиск...", file=sys.stderr, flush=True)
-        tokens = _auth_data.get("github_tokens", [])
+        tokens = _get_tokens()
         if args.token:
             tokens = [args.token]
         known = set()
