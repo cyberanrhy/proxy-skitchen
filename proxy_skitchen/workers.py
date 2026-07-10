@@ -163,6 +163,11 @@ class NetworkWorker(QObject):
             else:
                 if is_proxy_uri(line):
                     proxies.append(line)
+                else:
+                    inlines = extract_inline_uris(line)
+                    for u in inlines:
+                        if u not in proxies:
+                            proxies.append(u)
         json_proxies = parse_json_proxies(data)
         for p in json_proxies:
             if p and p not in proxies:
