@@ -1980,12 +1980,12 @@ class ExportPage(WizardPage):
         self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
 
     def _on_copy(self):
-        content = self._get_content()
+        content = self._get_content_with_header()
         QApplication.clipboard().setText(content)
         QMessageBox.information(self, _("msg.done"), _("msg.copied"))
 
     def _on_save(self):
-        content = self._get_content()
+        content = self._get_content_with_header()
         if not content.strip():
             QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
             return
@@ -2001,7 +2001,7 @@ class ExportPage(WizardPage):
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
     def _on_save_desktop(self):
-        content = self._get_content()
+        content = self._get_content_with_header()
         if not content.strip():
             QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
             return
