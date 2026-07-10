@@ -334,6 +334,12 @@ class ProxyTableModel(QAbstractTableModel):
                 return _headers[section]
         return None
 
+    PROTO_COLORS = {
+        "VLESS": "#7c4dff", "VMESS": "#448aff", "TROJAN": "#ff5252",
+        "HYSTERIA2": "#ff6d00", "HY2": "#ff6d00", "TUIC": "#00bfa5",
+        "WIREGUARD": "#76ff03", "WG": "#76ff03", "SS": "#69f0ae",
+    }
+
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
@@ -347,9 +353,16 @@ class ProxyTableModel(QAbstractTableModel):
             if col == 4: return p.country
             if col == 5: return f"{p.latency_ms:.0f}ms" if p.latency_ms else ""
         if role == Qt.ItemDataRole.ForegroundRole:
-            if p.deep_ok: return QColor("#00e676")
-            if p.tcp_ok: return QColor("#69f0ae")
-            return QColor("#ff5252")
+            if col == 1:
+                c = self.PROTO_COLORS.get(p.protocol)
+                if c:
+                    return QColor(c)
+            if col == 5 and p.latency_ms:
+                ms = p.latency_ms
+                if ms < 100: return QColor("#00e676")
+                if ms < 300: return QColor("#ffd740")
+                if ms < 500: return QColor("#ff6d00")
+                return QColor("#ff5252")
         if role == Qt.ItemDataRole.ToolTipRole:
             country_display = p.country or "-"
             rkn_str = f"  RKN: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""
