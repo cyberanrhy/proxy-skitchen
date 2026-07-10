@@ -359,10 +359,16 @@ class SourcesPage(WizardPage):
         if gh_url:
             m_repo = re.match(r'(?:https?://)?github\.com/([^/]+/[^/]+?)/?$', gh_url)
             m_user = re.match(r'(?:https?://)?github\.com/([^/]+)/?$', gh_url)
+            m_pages = re.match(r'(?:https?://)?([^.]+)\.github\.io/([^/]+?)/?$', gh_url)
+            m_pages_user = re.match(r'(?:https?://)?([^.]+)\.github\.io/?$', gh_url)
             if m_repo:
                 repos.append(m_repo.group(1))
             elif m_user:
                 owner = m_user.group(1)
+            elif m_pages:
+                repos.append(f"{m_pages.group(1)}/{m_pages.group(2)}")
+            elif m_pages_user:
+                repos.append(f"{m_pages_user.group(1)}/{m_pages_user.group(1)}.github.io")
         self._cleanup_gh()
         cfg = PERF_PRESETS.get(_settings_data.get("perf_mode", "medium"))
         hidden = self.chk_hidden_configs.isChecked()
@@ -1097,7 +1103,7 @@ class TestPage(WizardPage):
         self.proxy_table.setColumnWidth(0, 32)
         self.proxy_table.setColumnWidth(3, 60)
         self.proxy_table.setColumnWidth(5, 75)
-        self.proxy_table.verticalHeader().setDefaultSectionSize(24)
+        self.proxy_table.verticalHeader().setDefaultSectionSize(22)
         self.proxy_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.proxy_table.customContextMenuRequested.connect(self._on_table_context)
         layout.addWidget(self.proxy_table, 1)

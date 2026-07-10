@@ -12,7 +12,7 @@ except ImportError:
 from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS, CREATE_NO_WINDOW
 from .models import ProxyEntry, _auth_data, _settings_data, PROTOCOL_PREFIXES
-from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, guess_country, get_server_port
+from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, guess_country, get_server_port, geo_lookup, is_ip
 from .tester import test_tcp, test_tls, resolve_host
 
 def _debug(msg: str):
@@ -257,6 +257,29 @@ class TesterWorker(QObject):
             self.finished.emit()
             return
         threads = self._deep_threads if self._deep else self._test_threads
+        # Batch geo_lookup for IP hosts without country before testing
+        geo_ips = [(i, e) for i, e in enumerate(entries) if is_ip(e.host) and not e.country]
+        if geo_ips:
+            unique_ips = list({e.host for _, e in geo_ips})
+            self.log_signal.emit(f"geo: {len(geo_ips)} entries, {len(unique_ips)} unique IPs...")
+            done = 0
+            total_unique = len(unique_ips)
+            ip_to_country: dict[str, str] = {}
+            for ip in unique_ips:
+                if self._stop:
+                    break
+                c = geo_lookup(ip)
+                if c:
+                    ip_to_country[ip] = c
+                done += 1
+                if done % 10 == 0 or done == total_unique:
+                    self.log_signal.emit(f"geo: {done}/{total_unique}")
+                if done < total_unique and not self._stop:
+                    time.sleep(1.5)
+            for i, e in geo_ips:
+                if e.host in ip_to_country:
+                    entries[i].country = ip_to_country[e.host]
+            self.log_signal.emit(f"geo: done, resolved {len(ip_to_country)}/{total_unique}")
         pool = ThreadPoolExecutor(max_workers=threads)
         futs = {}
         resolved = {}
