@@ -11,8 +11,8 @@ except ImportError:
 
 from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS, CREATE_NO_WINDOW
-from .models import ProxyEntry, _auth_data, _settings_data
-from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, wrap_raw_host, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
+from .models import ProxyEntry, _auth_data, _settings_data, PROTOCOL_PREFIXES
+from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, geo_lookup, guess_country, get_server_port, is_ip as _is_ip
 from .tester import test_tcp, test_tls, resolve_host
 
 def _debug(msg: str):
@@ -139,10 +139,24 @@ class NetworkWorker(QObject):
     def _fetch_one(self, name: str, url: str) -> Optional[list[str]]:
         _debug(f"_fetch_one: start {name[:60]}")
         proxy_enabled = _settings_data.get("proxy_enabled", True)
-        # Try direct first, then with proxy
-        data = self._http_get(url, use_proxy=False)
-        if data is None and proxy_enabled:
-            data = self._http_get(url, use_proxy=True)
+        # Parallel direct + proxy attempts
+        from concurrent.futures import Future
+        dir_fut: Optional[Future] = None
+        prx_fut: Optional[Future] = None
+        with ThreadPoolExecutor(max_workers=2) as par_pool:
+            dir_fut = par_pool.submit(self._http_get, url, False, 10)
+            if proxy_enabled:
+                prx_fut = par_pool.submit(self._http_get, url, True, 20)
+            for f in as_completed([dir_fut] + ([prx_fut] if prx_fut else [])):
+                try:
+                    data = f.result()
+                    if data is not None:
+                        dir_fut.cancel()
+                        if prx_fut:
+                            prx_fut.cancel()
+                        break
+                except Exception:
+                    data = None
         if data is None:
             return None
         proxies = []
@@ -172,10 +186,11 @@ class NetworkWorker(QObject):
         for p in json_proxies:
             if p and p not in proxies:
                 proxies.append(p)
-        wrapped = [wrap_raw_host(p) for p in proxies]
-        return wrapped
+        # Keep only protocol-prefixed URIs, skip bare IP:port/host:port
+        proxies = [p for p in proxies if p.lower().startswith(PROTOCOL_PREFIXES)]
+        return proxies
 
-    def _http_get(self, url: str, use_proxy: bool = False) -> Optional[str]:
+    def _http_get(self, url: str, use_proxy: bool = False, timeout: int = 20) -> Optional[str]:
         proxy_enabled = _settings_data.get("proxy_enabled", True)
         if use_proxy and not proxy_enabled:
             return None
@@ -183,7 +198,7 @@ class NetworkWorker(QObject):
             if self._stop:
                 return None
             try:
-                cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "20"]
+                cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", str(timeout)]
                 if use_proxy and proxy_enabled:
                     cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
                 cmd.extend(["-H", "User-Agent: Mozilla/5.0", url])
