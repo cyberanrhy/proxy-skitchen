@@ -392,6 +392,9 @@ class ProxyTableModel(QAbstractTableModel):
                 p.deep_tested = True
                 if ok:
                     p.tcp_ok = True
+                elif latency > 0:
+                    p.tcp_ok = True
+                    p.latency_ms = latency
             elif ttype == 2:
                 p.rkn_ok = ok
                 p.rkn_tested = True
