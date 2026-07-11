@@ -259,6 +259,30 @@ class SourcesPage(WizardPage):
         self.src_list.customContextMenuRequested.connect(self._on_src_context)
         layout.addWidget(self.src_list, 1)
 
+        # ── Import ──
+        self.import_group = QGroupBox(_("sources.group.import"))
+        imp_l = QVBoxLayout(self.import_group)
+        imp_l.setSpacing(3)
+
+        imp_btns = QHBoxLayout()
+        self.btn_import_file = QPushButton(_("sources.btn.import_file"))
+        self.btn_import_file.clicked.connect(self._on_import_file)
+        imp_btns.addWidget(self.btn_import_file)
+        self.btn_import_paste = QPushButton(_("sources.btn.import_paste"))
+        self.btn_import_paste.clicked.connect(self._on_import_paste)
+        imp_btns.addWidget(self.btn_import_paste)
+        imp_btns.addStretch()
+        self.import_status = QLabel("")
+        imp_btns.addWidget(self.import_status)
+        imp_l.addLayout(imp_btns)
+
+        self.import_text = QPlainTextEdit()
+        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
+        self.import_text.setFixedHeight(44)
+        imp_l.addWidget(self.import_text)
+
+        layout.addWidget(self.import_group)
+
         nav = QHBoxLayout()
         self.btn_fetch = QPushButton(_("sources.btn.fetch"))
         self.btn_fetch.setEnabled(False)
@@ -316,6 +340,11 @@ class SourcesPage(WizardPage):
         self.gh_found_label.setStyleSheet(f"color: {acc}; font-weight: 700;")
         self.gh_status.setStyleSheet(f"color: {t['muted_fg']}; font-size: 11px;")
         self.url_group.setStyleSheet(f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 6px; margin-top: 10px; padding: 12px 8px 8px 8px; font-weight: 600; color: {t['accent']}; }} QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}")
+        self.import_group.setStyleSheet(f"QGroupBox{{border:1px solid {t['border']};border-radius:6px;margin-top:8px;padding:10px 8px 8px 8px;font-weight:600;color:{t['fg']};}}QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 6px;color:{t['fg']};}}")
+        self.import_text.setStyleSheet(f"QPlainTextEdit{{font-size:10px;font-family:monospace;background:{t['input_bg']};color:{t['fg']};border:1px solid {t['border']};border-radius:3px;padding:2px 4px;}}")
+        self.import_status.setStyleSheet(f"font-size:11px;color:{t['muted']};")
+        self.btn_import_file.setStyleSheet(f"QPushButton{{background:rgba(116,199,160,0.06);border:1px solid rgba(116,199,160,0.3);color:#74c7a0;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(116,199,160,0.15);}}")
+        self.btn_import_paste.setStyleSheet(f"QPushButton{{background:rgba(91,141,239,0.06);border:1px solid rgba(91,141,239,0.3);color:#5b8def;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(91,141,239,0.15);}}")
 
     def _on_settings(self):
         dlg = SettingsDialog(self._main)
@@ -558,6 +587,79 @@ class SourcesPage(WizardPage):
         else:
             self._on_github_search(True, True)
 
+    def _on_import_file(self):
+        from .parsers import is_proxy_uri
+        paths, _filt = QFileDialog.getOpenFileNames(
+            self, _("sources.import.file_title"), DESKTOP_DIR,
+            "Text files (*.txt *.text);;All files (*.*)")
+        if not paths:
+            return
+        all_uris = []
+        for path in paths:
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#') or line.startswith('//'):
+                        continue
+                    if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
+                        try:
+                            decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
+                            for sl in decoded.splitlines():
+                                sl = sl.strip()
+                                if sl and is_proxy_uri(sl):
+                                    all_uris.append(sl)
+                        except Exception:
+                            if is_proxy_uri(line):
+                                all_uris.append(line)
+                    elif is_proxy_uri(line):
+                        all_uris.append(line)
+            except Exception as ex:
+                QMessageBox.warning(self, _("msg.warning"), f"{path}: {ex}")
+        if all_uris:
+            entries = [ProxyEntry(uri) for uri in all_uris]
+            self._main.test_page.load_entries(entries)
+            self._main.set_page(2)
+            self.import_status.setText(_("sources.import.file_done", count=len(all_uris)))
+        else:
+            self.import_status.setText(_("sources.import.no_uris"))
+
+    def _on_import_paste(self):
+        from .parsers import is_proxy_uri
+        text = self.import_text.toPlainText().strip()
+        if not text:
+            return
+        uris = []
+        seen = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('//'):
+                continue
+            if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
+                try:
+                    decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
+                    for sl in decoded.splitlines():
+                        sl = sl.strip()
+                        if sl and is_proxy_uri(sl) and sl not in seen:
+                            seen.add(sl)
+                            uris.append(sl)
+                except Exception:
+                    if is_proxy_uri(line) and line not in seen:
+                        seen.add(line)
+                        uris.append(line)
+            elif is_proxy_uri(line) and line not in seen:
+                seen.add(line)
+                uris.append(line)
+        if uris:
+            entries = [ProxyEntry(uri) for uri in uris]
+            self._main.test_page.load_entries(entries)
+            self._main.set_page(2)
+            self.import_text.clear()
+            self.import_status.setText(_("sources.import.paste_done", count=len(uris)))
+        else:
+            self.import_status.setText(_("sources.import.no_uris"))
+
     def retranslate(self):
         self.lbl_title.setText(_("sources.title"))
         self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
@@ -577,6 +679,10 @@ class SourcesPage(WizardPage):
         self.btn_fetch.setText(_("sources.btn.fetch"))
         self.btn_pipeline.setText(_("sources.btn.pipeline"))
         self.chk_github_push.setText(_("sources.chk.github_push"))
+        self.import_group.setTitle(_("sources.group.import"))
+        self.btn_import_file.setText(_("sources.btn.import_file"))
+        self.btn_import_paste.setText(_("sources.btn.import_paste"))
+        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
         # period combo — rebuild items
         current = self.period_combo.currentText()
         self.period_combo.blockSignals(True)
@@ -1304,7 +1410,16 @@ class TestPage(WizardPage):
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._test_type = "rkn"
-        self._run_test(deep=False, rkn=True, subset=self._filtered_entries)
+        alive = []
+        indices = []
+        for i, e in enumerate(self._filtered_entries):
+            if not e.tcp_tested or e.tcp_ok:
+                alive.append(e)
+                indices.append(i)
+        if not alive:
+            self._log(_("log.rkn_no_alive"))
+            return
+        self._run_test(deep=False, rkn=True, subset=alive, subset_indices=indices)
 
     def _on_delete_dead(self):
         if self._dead_cnt == 0:
@@ -1450,24 +1565,15 @@ class TestPage(WizardPage):
                 self._save_pipeline_result()
 
     def _save_pipeline_result(self):
-        from .exporters import _is_valid_entry, _entry_ok, _clean_uri
-        valid = [e for e in self._entries if _is_valid_entry(e) and _entry_ok(e)]
-        if not valid:
+        from .exporters import format_hiddify
+        title = self._main.export_page.sub_title_input.text().strip() or "My Subscription"
+        clean = _settings_data.get("clean_uris", True)
+        content = format_hiddify(self._entries, include_failed=False, title=title, clean=clean)
+        if not content.strip():
             QMessageBox.information(self, _("msg.info"), _("msg.no_data_text"))
             return
-        title = self._main.export_page.sub_title_input.text().strip() or "My Subscription"
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         path = os.path.join(DESKTOP_DIR, f"hiddify_sub_{ts}.txt")
-        clean = _settings_data.get("clean_uris", True)
-        lines = [
-            f"#profile-title: {title}",
-            "#profile-update-interval: 24",
-            f"#subscription-userinfo: upload=0; download=0; total={len(valid)}; expire=0",
-            "",
-        ]
-        for e in valid:
-            lines.append(_clean_uri(e.uri) if clean else e.uri)
-        content = "\n".join(lines) + "\n"
         with open(path, "w") as f:
             f.write(content)
         self._log(f"✅ Hiddify подпись сохранена: {path}")
@@ -1489,7 +1595,6 @@ class TestPage(WizardPage):
                     self._log(f"❌ GitHub: {err}")
         QMessageBox.information(self, _("msg.done"),
             f"✅ Готово!\n\n"
-            f"Валидных прокси: {len(valid)}\n"
             f"Файл: {path}\n\n"
             f"Импортируй в Hiddify: Меню → Подписки → (+) → Выбери файл")
 
@@ -1663,6 +1768,7 @@ class ExportPage(WizardPage):
         self.fmt_raw.setChecked(True)
         for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify):
             fmt_l.addWidget(rb)
+            rb.toggled.connect(self._update_preview)
         fmt_opts.addLayout(fmt_l)
 
         fmt_opts.addSpacing(20)
@@ -1677,6 +1783,9 @@ class ExportPage(WizardPage):
         self.chk_clean_uris.setChecked(_settings_data.get("clean_uris", True))
         self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
         self.chk_smart_names.setChecked(True)
+        self.chk_smart_names.toggled.connect(self._update_preview)
+        self.chk_clean_names.toggled.connect(self._update_preview)
+        self.chk_failed.toggled.connect(self._update_preview)
         for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed, self.chk_clean_uris):
             opt_l.addWidget(chk)
         fmt_opts.addLayout(opt_l)
@@ -1756,30 +1865,6 @@ class ExportPage(WizardPage):
 
         root.addWidget(self.gh_group)
 
-        # ── File / Text import ──
-        self.import_group = QGroupBox(_("sources.group.import"))
-        imp_l = QVBoxLayout(self.import_group)
-        imp_l.setSpacing(3)
-
-        imp_btns = QHBoxLayout()
-        self.btn_import_file = QPushButton(_("sources.btn.import_file"))
-        self.btn_import_file.clicked.connect(self._on_import_file)
-        imp_btns.addWidget(self.btn_import_file)
-        self.btn_import_paste = QPushButton(_("sources.btn.import_paste"))
-        self.btn_import_paste.clicked.connect(self._on_import_paste)
-        imp_btns.addWidget(self.btn_import_paste)
-        imp_btns.addStretch()
-        self.import_status = QLabel("")
-        imp_btns.addWidget(self.import_status)
-        imp_l.addLayout(imp_btns)
-
-        self.import_text = QPlainTextEdit()
-        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
-        self.import_text.setFixedHeight(44)
-        imp_l.addWidget(self.import_text)
-
-        root.addWidget(self.import_group)
-
         self._apply_export_theme()
 
     def _apply_export_theme(self):
@@ -1802,14 +1887,9 @@ class ExportPage(WizardPage):
         self.btn_gh_push.setStyleSheet(f"QPushButton{{background:rgba(91,141,239,0.10);border:2px solid #5b8def;border-radius:4px;padding:6px 18px;font-weight:bold;font-size:12px;color:#5b8def;}}QPushButton:hover{{background:rgba(91,141,239,0.25);}}QPushButton:disabled{{color:{muted};border-color:{c};background:transparent;}}")
 
         self.gh_status_label.setStyleSheet(f"font-size:11px;color:{muted};")
-        self.import_status.setStyleSheet(f"font-size:11px;color:{muted};")
-
-        self.btn_import_file.setStyleSheet(f"QPushButton{{background:rgba(116,199,160,0.06);border:1px solid rgba(116,199,160,0.3);color:#74c7a0;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(116,199,160,0.15);}}")
-        self.btn_import_paste.setStyleSheet(f"QPushButton{{background:rgba(91,141,239,0.06);border:1px solid rgba(91,141,239,0.3);color:#5b8def;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(91,141,239,0.15);}}")
-        self.import_text.setStyleSheet(f"QPlainTextEdit{{font-size:10px;font-family:monospace;background:{ibg};color:{fg};border:1px solid {c};border-radius:3px;padding:2px 4px;}}")
 
         gbox = f"QGroupBox{{border:1px solid {c};border-radius:6px;margin-top:8px;padding:10px 8px 8px 8px;font-weight:600;color:{fg};}}QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 6px;color:{fg};}}"
-        for g in (self.gh_group, self.import_group):
+        for g in (self.gh_group,):
             g.setStyleSheet(gbox)
 
         for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify):
@@ -1817,84 +1897,12 @@ class ExportPage(WizardPage):
         for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed, self.chk_clean_uris):
             chk.setStyleSheet(f"QCheckBox{{color:{fg};spacing:4px;font-size:12px;}}QCheckBox::indicator{{width:14px;height:14px;}}")
 
-    def _on_import_file(self):
-        from .parsers import is_proxy_uri
-        paths, _filt = QFileDialog.getOpenFileNames(
-            self, _("sources.import.file_title"), DESKTOP_DIR,
-            "Text files (*.txt *.text);;All files (*.*)")
-        if not paths:
-            return
-        all_uris = []
-        for path in paths:
-            try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                for line in content.splitlines():
-                    line = line.strip()
-                    if not line or line.startswith('#') or line.startswith('//'):
-                        continue
-                    if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
-                        try:
-                            decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
-                            for sl in decoded.splitlines():
-                                sl = sl.strip()
-                                if sl and is_proxy_uri(sl):
-                                    all_uris.append(sl)
-                        except Exception:
-                            if is_proxy_uri(line):
-                                all_uris.append(line)
-                    elif is_proxy_uri(line):
-                        all_uris.append(line)
-            except Exception as ex:
-                QMessageBox.warning(self, _("msg.warning"), f"{path}: {ex}")
-        if all_uris:
-            entries = [ProxyEntry(uri) for uri in all_uris]
-            self._main.test_page.load_entries(entries)
-            self._main.set_page(2)
-            self.import_status.setText(_("sources.import.file_done", count=len(all_uris)))
-        else:
-            self.import_status.setText(_("sources.import.no_uris"))
-
-    def _on_import_paste(self):
-        from .parsers import is_proxy_uri
-        text = self.import_text.toPlainText().strip()
-        if not text:
-            return
-        uris = []
-        seen = set()
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith('#') or line.startswith('//'):
-                continue
-            if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
-                try:
-                    decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
-                    for sl in decoded.splitlines():
-                        sl = sl.strip()
-                        if sl and is_proxy_uri(sl) and sl not in seen:
-                            seen.add(sl)
-                            uris.append(sl)
-                except Exception:
-                    if is_proxy_uri(line) and line not in seen:
-                        seen.add(line)
-                        uris.append(line)
-            elif is_proxy_uri(line) and line not in seen:
-                seen.add(line)
-                uris.append(line)
-        if uris:
-            entries = [ProxyEntry(uri) for uri in uris]
-            self._main.test_page.load_entries(entries)
-            self._main.set_page(2)
-            self.import_text.clear()
-            self.import_status.setText(_("sources.import.paste_done", count=len(uris)))
-        else:
-            self.import_status.setText(_("sources.import.no_uris"))
-
     def on_enter(self):
         entries = self._main.test_page.get_entries()
         total = len(entries)
-        tcp_ok = self._main.test_page._valid_cnt
-        self.stats_lbl.setText(_("export.stats", total=total, tcp=tcp_ok, deep="—"))
+        tcp_cnt = sum(1 for e in entries if e.tcp_ok)
+        deep_cnt = sum(1 for e in entries if e.deep_ok)
+        self.stats_lbl.setText(_("export.stats", total=total, tcp=tcp_cnt, deep=deep_cnt))
         QTimer.singleShot(0, self._update_preview)
         self._main.update_status_bar()
         tokens = _get_tokens()
@@ -1908,6 +1916,7 @@ class ExportPage(WizardPage):
     def _on_clean_uris_changed(self, checked: bool):
         _settings_data["clean_uris"] = checked
         _save_settings(_settings_data)
+        self._update_preview()
 
     def _on_gh_repo_changed(self, text):
         text = text.strip()
@@ -2007,10 +2016,6 @@ class ExportPage(WizardPage):
         self.sub_title_input.setToolTip(_("export.label.sub_title_tt"))
         self.gh_group.setTitle(_("export.group.github"))
         self.btn_gh_push.setText(_("export.btn.github_push"))
-        self.import_group.setTitle(_("sources.group.import"))
-        self.btn_import_file.setText(_("sources.btn.import_file"))
-        self.btn_import_paste.setText(_("sources.btn.import_paste"))
-        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
 
     def _on_copy(self):
         content = self._get_content_with_header()
@@ -2056,7 +2061,6 @@ class ExportPage(WizardPage):
         ]
         if link:
             header_lines.insert(0, f"# {title} | {link}")
-            header_lines.insert(2, f"#profile-update-interval: 1")
         content = self._get_content()
         return "\n".join(header_lines) + "\n" + content
 
