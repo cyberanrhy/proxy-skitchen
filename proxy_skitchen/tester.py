@@ -23,6 +23,7 @@ else:
     SING_BOX = "/usr/local/bin/sing-box"
     XRAY = "/usr/local/bin/xray"
 TEST_URL = "http://cp.cloudflare.com/generate_204"
+TEST_HOST = "cp.cloudflare.com"
 TCP_TIMEOUT = 12
 SB_TIMEOUT = 8
 SB_SEMAPHORE = threading.Semaphore(3)
@@ -121,6 +122,39 @@ def test_http_proxy(proxy_url: str, url: str = TEST_URL, timeout: float = SB_TIM
         return False, (time.time() - start) * 1000
 
 
+def test_port(host: str, port: int, timeout: float = 1) -> bool:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def test_via_socks(host: str, port: int, target_host: str = TEST_HOST, target_port: int = 80,
+                   timeout: float = 4) -> tuple[bool, float]:
+    try:
+        import socks as _socks
+    except ImportError:
+        return False, 0
+    start = time.time()
+    try:
+        s = _socks.socksocket()
+        s.set_proxy(_socks.SOCKS5, host, port)
+        s.settimeout(timeout)
+        s.connect((target_host, target_port))
+        if target_port == 80:
+            s.send(b"GET /generate_204 HTTP/1.1\r\nHost: " + target_host.encode() + b"\r\nConnection: close\r\n\r\n")
+            data = s.recv(1024)
+        s.close()
+        elapsed = (time.time() - start) * 1000
+        return True, elapsed
+    except Exception:
+        return False, (time.time() - start) * 1000
+
+
 class SingBoxTester:
     def test(self, uri: str, port: int) -> tuple[bool, float, str]:
         config = self._make_config(uri, port)
@@ -140,21 +174,24 @@ class SingBoxTester:
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
                     time.sleep(0.3)
+                    if proc.poll() is not None:
+                        return False, 0, "sing-box failed to start"
+                    if not test_port("127.0.0.1", port, timeout=1):
+                        return False, 0, "port not opened"
+                    ok, lat = test_via_socks("127.0.0.1", port, timeout=3)
+                    proc.kill()
                     try:
-                        proxy_url = f"http://127.0.0.1:{port}"
-                        ok, latency = test_http_proxy(proxy_url)
+                        proc.wait(1)
                     except Exception:
-                        ok, latency = False, 0.0
-                    return ok, latency, ""
+                        pass
+                    proc = None
+                return ok, lat, ""
         except Exception as e:
             return False, 0, str(e)
         finally:
             if proc and proc.poll() is None:
                 try:
                     proc.kill()
-                except Exception:
-                    pass
-                try:
                     proc.wait(1)
                 except Exception:
                     pass
@@ -165,6 +202,7 @@ class SingBoxTester:
             return False, 0, "unsupported protocol", []
         proc = None
         results = []
+        result = (False, 0.0, "", results)
         try:
             with tempfile.TemporaryDirectory(prefix="sb_rkn_", dir=TMP_DIR) as tmp_dir:
                 config_path = os.path.join(tmp_dir, "config.json")
@@ -181,41 +219,46 @@ class SingBoxTester:
                     proxy_url = f"http://127.0.0.1:{port}"
                     basic_ok, basic_lat = test_http_proxy(proxy_url)
                     if not basic_ok:
-                        return False, 0, "proxy not working", []
-                    import random as _rnd
-                    test_domains = _rnd.sample(RKN_BLOCKED_DOMAINS, min(max_domains, len(RKN_BLOCKED_DOMAINS)))
-                    success_count = 0
-                    total_lat = 0.0
-                    for domain, name in test_domains:
-                        try:
-                            url = f"https://{domain}/"
-                            start = time.time()
-                            handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
-                            opener = urllib.request.build_opener(handler)
-                            opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
-                            resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
-                            code = resp.getcode()
-                            elapsed = (time.time() - start) * 1000
-                            ok = code in (200, 301, 302, 304)
-                            if ok:
-                                success_count += 1
-                                total_lat += elapsed
-                            results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
-                        except Exception as ex:
-                            err_str = str(ex)[:60]
-                            results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
-                    rkn_ok = success_count >= max(1, len(test_domains) // 2)
-                    avg_lat = total_lat / max(success_count, 1)
-                    return rkn_ok, avg_lat, "", results
+                        result = (False, 0, "proxy not working", results)
+                    else:
+                        import random as _rnd
+                        test_domains = _rnd.sample(RKN_BLOCKED_DOMAINS, min(max_domains, len(RKN_BLOCKED_DOMAINS)))
+                        success_count = 0
+                        total_lat = 0.0
+                        for domain, name in test_domains:
+                            try:
+                                url = f"https://{domain}/"
+                                start = time.time()
+                                handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
+                                opener = urllib.request.build_opener(handler)
+                                opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
+                                resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
+                                code = resp.getcode()
+                                elapsed = (time.time() - start) * 1000
+                                ok = code in (200, 301, 302, 304)
+                                if ok:
+                                    success_count += 1
+                                    total_lat += elapsed
+                                results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
+                            except Exception as ex:
+                                err_str = str(ex)[:60]
+                                results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
+                        rkn_ok = success_count >= max(1, len(test_domains) // 2)
+                        avg_lat = total_lat / max(success_count, 1)
+                        result = (rkn_ok, avg_lat, "", results)
+                    proc.kill()
+                    try:
+                        proc.wait(1)
+                    except Exception:
+                        pass
+                    proc = None
+                return result
         except Exception as e:
             return False, 0, str(e), results
         finally:
             if proc and proc.poll() is None:
                 try:
                     proc.kill()
-                except Exception:
-                    pass
-                try:
                     proc.wait(1)
                 except Exception:
                     pass
@@ -227,10 +270,10 @@ class SingBoxTester:
             return None
         outbound["tag"] = "proxy"
         return {
-            "log": {"level": "error", "output": "/dev/null"},
-            "inbounds": [{"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": local_port}],
+            "log": {"level": "error", "output": "nul" if IS_WINDOWS else "/dev/null"},
+            "inbounds": [{"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": local_port}],
             "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
-            "route": {"rules": [{"protocol": "http", "outbound": "direct"}, {"protocol": "tls", "outbound": "direct"}], "final": "proxy"},
+            "route": {"final": "proxy"},
         }
 
     def _parse(self, uri: str) -> Optional[dict]:
