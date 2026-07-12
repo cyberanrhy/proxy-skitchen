@@ -95,6 +95,7 @@ DEFAULT_SETTINGS = {
     "default_repo": "",
     "proxy_cache": [],
     "clean_uris": True,
+    "sub_title": "My Subscription",
 }
 
 def current_theme() -> str:
@@ -392,8 +393,10 @@ class ProxyTableModel(QAbstractTableModel):
                 p.deep_tested = True
                 if ok:
                     p.tcp_ok = True
+                    p.tcp_tested = True
                 elif latency > 0:
                     p.tcp_ok = True
+                    p.tcp_tested = True
                     p.latency_ms = latency
             elif ttype == 2:
                 p.rkn_ok = ok

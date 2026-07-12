@@ -330,6 +330,9 @@ class TesterWorker(QObject):
             start = time.time()
             ok = test_tcp(host, port)
             latency = (time.time() - start) * 1000
+            if self._rkn:
+                entry.tcp_ok = ok
+                entry.tcp_tested = True
         if not ok:
             return False, 0, "tcp fail", 0
         if self._rkn:
