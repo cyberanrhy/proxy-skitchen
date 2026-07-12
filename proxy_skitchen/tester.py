@@ -24,7 +24,7 @@ else:
     XRAY = "/usr/local/bin/xray"
 TEST_URL = "http://cp.cloudflare.com/generate_204"
 TEST_HOST = "cp.cloudflare.com"
-TCP_TIMEOUT = 12
+TCP_TIMEOUT = 8
 SB_TIMEOUT = 8
 SB_SEMAPHORE = threading.Semaphore(3)
 

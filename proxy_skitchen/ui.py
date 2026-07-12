@@ -245,6 +245,9 @@ class SourcesPage(WizardPage):
         self.btn_import_paste.setToolTip(_("sources.btn.import_paste"))
         self.btn_import_paste.clicked.connect(self._on_import_paste)
         src_header.addWidget(self.btn_import_paste)
+        self.chk_auto_pipeline = QCheckBox(_("sources.chk.auto_pipeline"))
+        self.chk_auto_pipeline.setChecked(False)
+        src_header.addWidget(self.chk_auto_pipeline)
         self.btn_clear = QPushButton("✕")
         self.btn_clear.setEnabled(False)
         self.btn_clear.setFixedSize(24, 24)
@@ -598,7 +601,13 @@ class SourcesPage(WizardPage):
         if all_uris:
             entries = [ProxyEntry(uri) for uri in all_uris]
             self._main.test_page.load_entries(entries)
-            self._main.set_page(2)
+            if self.chk_auto_pipeline.isChecked():
+                self._main._pipeline_mode = True
+                self._main._pipeline_stage = 1
+                self._main.set_page(2)
+                QTimer.singleShot(100, self._main.test_page._on_deep_test)
+            else:
+                self._main.set_page(2)
             self.import_status.setText(_("sources.import.file_done", count=len(all_uris)))
         else:
             self.import_status.setText(_("sources.import.no_uris"))
@@ -633,7 +642,13 @@ class SourcesPage(WizardPage):
         if uris:
             entries = [ProxyEntry(uri) for uri in uris]
             self._main.test_page.load_entries(entries)
-            self._main.set_page(2)
+            if self.chk_auto_pipeline.isChecked():
+                self._main._pipeline_mode = True
+                self._main._pipeline_stage = 1
+                self._main.set_page(2)
+                QTimer.singleShot(100, self._main.test_page._on_deep_test)
+            else:
+                self._main.set_page(2)
             self.import_status.setText(_("sources.import.paste_done", count=len(uris)))
         else:
             self.import_status.setText(_("sources.import.no_uris"))
@@ -657,6 +672,7 @@ class SourcesPage(WizardPage):
         self.btn_fetch.setText(_("sources.btn.fetch"))
         self.btn_pipeline.setText(_("sources.btn.pipeline"))
         self.chk_github_push.setText(_("sources.chk.github_push"))
+        self.chk_auto_pipeline.setText(_("sources.chk.auto_pipeline"))
         self.btn_import_file.setToolTip(_("sources.btn.import_file"))
         self.btn_import_paste.setToolTip(_("sources.btn.import_paste"))
         # period combo — rebuild items
@@ -1482,11 +1498,14 @@ class TestPage(WizardPage):
         self.proxy_table.selectRow(row)
 
     def _on_test_result(self, row: int, ok: bool, latency: float, error: str, ttype: int):
+        filtered = False
         if ok and _settings_data.get("max_latency_enabled") and latency > _settings_data.get("max_latency_ms", 3100):
             ok = False
-            if ttype != 0:
-                latency = 0.0
+            filtered = True
         self.model.update_entry(row, ok, latency, error, ttype)
+        if filtered and ttype in (1, 2) and 0 <= row < len(self._entries):
+            self._entries[row].tcp_ok = False
+            self._entries[row].deep_ok = False
         if ok:
             self._valid_cnt += 1
         else:
