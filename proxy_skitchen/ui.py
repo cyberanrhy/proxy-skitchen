@@ -115,7 +115,7 @@ class SourcesPage(WizardPage):
         top.addWidget(self.btn_theme_light)
 
         self.btn_settings = QPushButton("⚙")
-        self.btn_settings.setFixedWidth(32)
+        self.btn_settings.setFixedSize(32, 22)
         self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
         self.btn_settings.clicked.connect(self._on_settings)
         top.addWidget(self.btn_settings)
@@ -125,29 +125,7 @@ class SourcesPage(WizardPage):
         top.addWidget(self.btn_stop)
         layout.addLayout(top)
 
-        # ── GitHub search ──
-        self.gh_group = QGroupBox(_("sources.group.github"))
-        gh_body = QVBoxLayout(self.gh_group)
-        gh_body.setSpacing(4)
-
-        # Row: keywords + period
-        kw_row = QHBoxLayout()
-        self.lbl_keywords = QLabel(_("sources.label.keywords"))
-        kw_row.addWidget(self.lbl_keywords)
-        self.kw_input = QLineEdit()
-        self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
-        kw_row.addWidget(self.kw_input, 1)
-        kw_row.addSpacing(6)
-        self.lbl_period = QLabel(_("sources.label.period"))
-        kw_row.addWidget(self.lbl_period)
-        self.period_combo = QComboBox()
-        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
-            self.period_combo.addItem(p)
-        self.period_combo.setCurrentText(_("period.6h"))
-        kw_row.addWidget(self.period_combo)
-        gh_body.addLayout(kw_row)
-
-        # Row: preset buttons (2 rows)
+        # ── Preset buttons (standalone, always visible) ──
         self._presets = [
             _("preset.vless"), _("preset.vmess"), _("preset.trojan"),
             _("preset.ss"), _("preset.v2ray_cfg"), _("preset.v2ray_sub"),
@@ -155,30 +133,57 @@ class SourcesPage(WizardPage):
             _("preset.free"), _("preset.xray"), _("preset.hysteria2"),
             _("preset.tuic"),
         ]
-        pw = QWidget()
-        pw.setStyleSheet("QWidget { background: transparent; }")
-        pw_vbox = QVBoxLayout(pw)
-        pw_vbox.setContentsMargins(0, 0, 0, 0)
-        pw_vbox.setSpacing(2)
-        
         half = (len(self._presets) + 1) // 2
         for row_idx in range(2):
             row_layout = QHBoxLayout()
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(2)
-            
             start = row_idx * half
             end = min(start + half, len(self._presets))
             for kw in self._presets[start:end]:
                 btn = QPushButton(kw)
-                btn.setFixedHeight(24)
+                btn.setFixedHeight(22)
                 btn.setStyleSheet("QPushButton { font-size: 9px; padding: 0px 4px; }")
                 btn.clicked.connect(lambda checked, kw=kw: self._on_preset(kw))
                 row_layout.addWidget(btn)
-            pw_vbox.addLayout(row_layout)
-        gh_body.addWidget(pw)
+            layout.addLayout(row_layout)
 
-        # Row: GitHub URL filter (user/org or specific repo)
+        # ── GitHub search ──
+        self.gh_group = QGroupBox(_("sources.group.github"))
+        gh_body = QVBoxLayout(self.gh_group)
+        gh_body.setSpacing(3)
+
+        # Row: keywords + period + search buttons
+        kw_row = QHBoxLayout()
+        self.lbl_keywords = QLabel(_("sources.label.keywords"))
+        kw_row.addWidget(self.lbl_keywords)
+        self.kw_input = QLineEdit()
+        self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
+        kw_row.addWidget(self.kw_input, 1)
+        kw_row.addSpacing(4)
+        self.lbl_period = QLabel(_("sources.label.period"))
+        kw_row.addWidget(self.lbl_period)
+        self.period_combo = QComboBox()
+        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
+            self.period_combo.addItem(p)
+        self.period_combo.setCurrentText(_("period.6h"))
+        kw_row.addWidget(self.period_combo)
+        kw_row.addSpacing(8)
+        self.btn_quick_search = QPushButton(_("sources.btn.quick_search"))
+        self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #4a5168; border-radius: 3px; padding: 2px 8px; font-size: 10px; } QPushButton:hover { background: rgba(91,141,239,0.08); }")
+        self.btn_quick_search.clicked.connect(lambda: self._on_github_search(False, False))
+        kw_row.addWidget(self.btn_quick_search)
+        self.btn_deep_search = QPushButton(_("sources.btn.deep_search"))
+        self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #7c5cbf; border-radius: 3px; padding: 2px 8px; font-size: 10px; } QPushButton:hover { background: rgba(124,92,191,0.12); }")
+        self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
+        kw_row.addWidget(self.btn_deep_search)
+        self.chk_hidden_configs = QCheckBox(_("sources.chk.hidden_configs"))
+        self.chk_hidden_configs.setToolTip(_("sources.chk.hidden_configs.tooltip"))
+        self.chk_hidden_configs.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
+        kw_row.addWidget(self.chk_hidden_configs)
+        gh_body.addLayout(kw_row)
+
+        # Row: GitHub URL filter
         url_row = QHBoxLayout()
         self.lbl_gh_url = QLabel(_("sources.label.gh_url"))
         url_row.addWidget(self.lbl_gh_url)
@@ -186,25 +191,6 @@ class SourcesPage(WizardPage):
         self.gh_url_input.setPlaceholderText(_("sources.input.gh_url.placeholder"))
         url_row.addWidget(self.gh_url_input, 1)
         gh_body.addLayout(url_row)
-
-        # Row: Search buttons
-        search_layout = QHBoxLayout()
-        self.btn_quick_search = QPushButton(_("sources.btn.quick_search"))
-        self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #4a5168; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(91,141,239,0.08); }")
-        self.btn_quick_search.clicked.connect(lambda: self._on_github_search(False, False))
-
-        self.btn_deep_search = QPushButton(_("sources.btn.deep_search"))
-        self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #7c5cbf; border-radius: 3px; padding: 2px 8px; } QPushButton:hover { background: rgba(124,92,191,0.12); }")
-        self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
-
-        self.chk_hidden_configs = QCheckBox(_("sources.chk.hidden_configs"))
-        self.chk_hidden_configs.setToolTip(_("sources.chk.hidden_configs.tooltip"))
-        self.chk_hidden_configs.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
-
-        search_layout.addWidget(self.btn_quick_search)
-        search_layout.addWidget(self.btn_deep_search)
-        search_layout.addWidget(self.chk_hidden_configs)
-        gh_body.addLayout(search_layout)
 
         # Progress + status
         self.gh_progress = QWidget()
@@ -236,6 +222,7 @@ class SourcesPage(WizardPage):
         self.url_input.setPlaceholderText(_("sources.input.url.placeholder"))
         url_row.addWidget(self.url_input)
         self.btn_add_url = QPushButton(_("sources.btn.add_url"))
+        self.btn_add_url.setFixedHeight(24)
         self.btn_add_url.clicked.connect(self._on_add_url)
         url_row.addWidget(self.btn_add_url)
         layout.addWidget(self.url_group)
@@ -244,11 +231,24 @@ class SourcesPage(WizardPage):
         src_header = QHBoxLayout()
         self.lbl_subscriptions = QLabel(_("sources.label.subscriptions"))
         src_header.addWidget(self.lbl_subscriptions)
+        self.import_status = QLabel("")
+        self.import_status.setStyleSheet("color: #7c89a8; font-size: 10px;")
+        src_header.addWidget(self.import_status)
         src_header.addStretch()
-        self.btn_clear = QPushButton(_("sources.btn.clear"))
+        self.btn_import_file = QPushButton("📂")
+        self.btn_import_file.setFixedSize(24, 24)
+        self.btn_import_file.setToolTip(_("sources.btn.import_file"))
+        self.btn_import_file.clicked.connect(self._on_import_file)
+        src_header.addWidget(self.btn_import_file)
+        self.btn_import_paste = QPushButton("📋")
+        self.btn_import_paste.setFixedSize(24, 24)
+        self.btn_import_paste.setToolTip(_("sources.btn.import_paste"))
+        self.btn_import_paste.clicked.connect(self._on_import_paste)
+        src_header.addWidget(self.btn_import_paste)
+        self.btn_clear = QPushButton("✕")
         self.btn_clear.setEnabled(False)
-        self.btn_clear.setFixedHeight(24)
-        self.btn_clear.setStyleSheet("QPushButton { font-size: 10px; padding: 1px 8px; }")
+        self.btn_clear.setFixedSize(24, 24)
+        self.btn_clear.setStyleSheet("QPushButton { font-size: 12px; padding: 0px; }")
         self.btn_clear.clicked.connect(self._on_clear)
         src_header.addWidget(self.btn_clear)
         layout.addLayout(src_header)
@@ -258,30 +258,6 @@ class SourcesPage(WizardPage):
         self.src_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(self._on_src_context)
         layout.addWidget(self.src_list, 1)
-
-        # ── Import ──
-        self.import_group = QGroupBox(_("sources.group.import"))
-        imp_l = QVBoxLayout(self.import_group)
-        imp_l.setSpacing(3)
-
-        imp_btns = QHBoxLayout()
-        self.btn_import_file = QPushButton(_("sources.btn.import_file"))
-        self.btn_import_file.clicked.connect(self._on_import_file)
-        imp_btns.addWidget(self.btn_import_file)
-        self.btn_import_paste = QPushButton(_("sources.btn.import_paste"))
-        self.btn_import_paste.clicked.connect(self._on_import_paste)
-        imp_btns.addWidget(self.btn_import_paste)
-        imp_btns.addStretch()
-        self.import_status = QLabel("")
-        imp_btns.addWidget(self.import_status)
-        imp_l.addLayout(imp_btns)
-
-        self.import_text = QPlainTextEdit()
-        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
-        self.import_text.setFixedHeight(44)
-        imp_l.addWidget(self.import_text)
-
-        layout.addWidget(self.import_group)
 
         nav = QHBoxLayout()
         self.btn_fetch = QPushButton(_("sources.btn.fetch"))
@@ -340,15 +316,17 @@ class SourcesPage(WizardPage):
         self.gh_found_label.setStyleSheet(f"color: {acc}; font-weight: 700;")
         self.gh_status.setStyleSheet(f"color: {t['muted_fg']}; font-size: 11px;")
         self.url_group.setStyleSheet(f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 6px; margin-top: 10px; padding: 12px 8px 8px 8px; font-weight: 600; color: {t['accent']}; }} QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}")
-        self.import_group.setStyleSheet(f"QGroupBox{{border:1px solid {t['border']};border-radius:6px;margin-top:8px;padding:10px 8px 8px 8px;font-weight:600;color:{t['fg']};}}QGroupBox::title{{subcontrol-origin:margin;left:12px;padding:0 6px;color:{t['fg']};}}")
-        self.import_text.setStyleSheet(f"QPlainTextEdit{{font-size:10px;font-family:monospace;background:{t['input_bg']};color:{t['fg']};border:1px solid {t['border']};border-radius:3px;padding:2px 4px;}}")
         self.import_status.setStyleSheet(f"font-size:11px;color:{t['muted']};")
-        self.btn_import_file.setStyleSheet(f"QPushButton{{background:rgba(116,199,160,0.06);border:1px solid rgba(116,199,160,0.3);color:#74c7a0;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(116,199,160,0.15);}}")
-        self.btn_import_paste.setStyleSheet(f"QPushButton{{background:rgba(91,141,239,0.06);border:1px solid rgba(91,141,239,0.3);color:#5b8def;padding:3px 10px;border-radius:4px;}}QPushButton:hover{{background:rgba(91,141,239,0.15);}}")
+        self.btn_import_file.setStyleSheet("QPushButton{font-size:12px;padding:2px;border:1px solid rgba(116,199,160,0.3);border-radius:3px;}QPushButton:hover{background:rgba(116,199,160,0.15);}")
+        self.btn_import_paste.setStyleSheet("QPushButton{font-size:12px;padding:2px;border:1px solid rgba(91,141,239,0.3);border-radius:3px;}QPushButton:hover{background:rgba(91,141,239,0.15);}")
 
     def _on_settings(self):
-        dlg = SettingsDialog(self._main)
-        dlg.exec_()
+        try:
+            dlg = SettingsDialog(self._main)
+            dlg.exec_()
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, _("sources.title"), f"Settings error: {e}\n\n{traceback.format_exc()}")
 
     def _on_preset(self, kw: str):
         current = self.kw_input.text().strip()
@@ -627,8 +605,9 @@ class SourcesPage(WizardPage):
 
     def _on_import_paste(self):
         from .parsers import is_proxy_uri
-        text = self.import_text.toPlainText().strip()
-        if not text:
+        text, ok = QInputDialog.getMultiLineText(self, _("sources.btn.import_paste"),
+            _("sources.import.paste_prompt"), "")
+        if not ok or not text.strip():
             return
         uris = []
         seen = set()
@@ -655,7 +634,6 @@ class SourcesPage(WizardPage):
             entries = [ProxyEntry(uri) for uri in uris]
             self._main.test_page.load_entries(entries)
             self._main.set_page(2)
-            self.import_text.clear()
             self.import_status.setText(_("sources.import.paste_done", count=len(uris)))
         else:
             self.import_status.setText(_("sources.import.no_uris"))
@@ -679,10 +657,8 @@ class SourcesPage(WizardPage):
         self.btn_fetch.setText(_("sources.btn.fetch"))
         self.btn_pipeline.setText(_("sources.btn.pipeline"))
         self.chk_github_push.setText(_("sources.chk.github_push"))
-        self.import_group.setTitle(_("sources.group.import"))
-        self.btn_import_file.setText(_("sources.btn.import_file"))
-        self.btn_import_paste.setText(_("sources.btn.import_paste"))
-        self.import_text.setPlaceholderText(_("sources.input.import.placeholder"))
+        self.btn_import_file.setToolTip(_("sources.btn.import_file"))
+        self.btn_import_paste.setToolTip(_("sources.btn.import_paste"))
         # period combo — rebuild items
         current = self.period_combo.currentText()
         self.period_combo.blockSignals(True)
@@ -1128,9 +1104,11 @@ class TestPage(WizardPage):
         self.lbl_total = QLabel(_("test.stats.total", count=0))
         self.lbl_valid = QLabel(_("test.stats.valid", count=0))
         self.lbl_dead = QLabel(_("test.stats.dead", count=0))
+        self.lbl_rkn = QLabel("")
         cards.addWidget(self.lbl_total)
         cards.addWidget(self.lbl_valid)
         cards.addWidget(self.lbl_dead)
+        cards.addWidget(self.lbl_rkn)
         cards.addStretch()
         self.lbl_current = QLabel("")
         cards.addWidget(self.lbl_current)
@@ -1163,6 +1141,18 @@ class TestPage(WizardPage):
         ])
         self.filter_combo.currentIndexChanged.connect(self._on_filter_change)
         actions.addWidget(self.filter_combo)
+
+        self.chk_max_latency = QCheckBox(_("test.max_latency"))
+        self.chk_max_latency.setChecked(_settings_data.get("max_latency_enabled", False))
+        self.chk_max_latency.toggled.connect(self._on_max_latency_toggled)
+        actions.addWidget(self.chk_max_latency)
+        self.spin_max_latency = QSpinBox()
+        self.spin_max_latency.setRange(100, 30000)
+        self.spin_max_latency.setSuffix(" ms")
+        self.spin_max_latency.setValue(_settings_data.get("max_latency_ms", 3100))
+        self.spin_max_latency.setFixedWidth(80)
+        self.spin_max_latency.valueChanged.connect(self._on_max_latency_changed)
+        actions.addWidget(self.spin_max_latency)
 
         actions.addStretch()
 
@@ -1261,6 +1251,8 @@ class TestPage(WizardPage):
         self.lbl_total.setStyleSheet(self._card_total)
         self.lbl_valid.setStyleSheet(self._card_valid)
         self.lbl_dead.setStyleSheet(self._card_dead)
+        self._card_rkn = f"padding: 4px 10px; background: {ibg}; border: 1px solid {warn}; border-radius: 6px; color: {warn}; font-size: 11px;"
+        self.lbl_rkn.setStyleSheet(self._card_rkn)
 
         self.lbl_current.setStyleSheet(f"padding: 4px 10px; background: {ibg}; border: 1px solid {bd}; border-radius: 6px; color: {acc}; font-size: 11px;")
 
@@ -1277,6 +1269,7 @@ class TestPage(WizardPage):
 
         self.lbl_threads.setStyleSheet(f"font-size: 11px; color: {mf};")
         self.spin_threads.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
+        self.spin_max_latency.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
         self.filter_combo.setStyleSheet(f"QComboBox {{ font-size: 11px; padding: 3px 8px; min-width: 80px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
 
         self.progress_bar.setStyleSheet(f"QProgressBar {{ border: 1px solid {bd}; border-radius: 4px; background: {ibg}; text-align: center; color: {fg}; font-size: 10px; }} QProgressBar::chunk {{ background: {acc}; border-radius: 3px; }}")
@@ -1320,7 +1313,8 @@ class TestPage(WizardPage):
         self._update_stats()
         has = len(deduped) > 0
         self.btn_deep.setEnabled(has)
-        self.btn_rkn.setEnabled(False)
+        can_rkn = any((not e.tcp_tested) or e.tcp_ok for e in deduped)
+        self.btn_rkn.setEnabled(can_rkn)
 
     def _set_phase(self, phase: int):
         self._phase = phase
@@ -1488,6 +1482,8 @@ class TestPage(WizardPage):
         self.proxy_table.selectRow(row)
 
     def _on_test_result(self, row: int, ok: bool, latency: float, error: str, ttype: int):
+        if ok and _settings_data.get("max_latency_enabled") and latency > _settings_data.get("max_latency_ms", 3100):
+            ok = False
         self.model.update_entry(row, ok, latency, error, ttype)
         if ok:
             self._valid_cnt += 1
@@ -1527,6 +1523,14 @@ class TestPage(WizardPage):
             self._last_log_time = now
         if not self.lbl_current.text():
             self.lbl_current.setText(_("event.test_progress", mode=mode, done=done, total=total, pct=done*100//max(total,1)))
+
+    def _on_max_latency_toggled(self, checked: bool):
+        _settings_data["max_latency_enabled"] = checked
+        _save_settings(_settings_data)
+
+    def _on_max_latency_changed(self, value: int):
+        _settings_data["max_latency_ms"] = value
+        _save_settings(_settings_data)
 
     def _on_geo_result(self, row: int, country: str):
         idx = self.model.index(row, 4)
@@ -1651,9 +1655,16 @@ class TestPage(WizardPage):
         total = len(entries)
         valid = sum(1 for e in entries if e.tcp_ok is True or e.deep_ok is True)
         dead = sum(1 for e in entries if e.tcp_ok is False and e.deep_ok is False and (e.tcp_tested or e.deep_tested))
+        rkn_ok = sum(1 for e in entries if e.rkn_tested and e.rkn_ok)
+        rkn_total = sum(1 for e in entries if e.rkn_tested)
         self.lbl_total.setText(f"Всего: {total}")
         self.lbl_valid.setText(f"Живых: {valid}")
         self.lbl_dead.setText(f"Мёртвых: {dead}")
+        if rkn_total:
+            self.lbl_rkn.setText(f"🛡 RKN: {rkn_ok}/{rkn_total}")
+            self.lbl_rkn.setVisible(True)
+        else:
+            self.lbl_rkn.setVisible(False)
         self.lbl_valid.setStyleSheet(self._card_valid if valid > 0 else self._card_total)
         self.lbl_dead.setStyleSheet(self._card_dead if dead > 0 else self._card_total)
 
@@ -1705,6 +1716,7 @@ class TestPage(WizardPage):
         self.btn_continue.setText(_("test.btn.continue"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))
         self.btn_export.setText(_("test.btn.export"))
+        self.chk_max_latency.setText(_("test.max_latency"))
         self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, self.model.columnCount() - 1)
         # Rebuild filter combo
         current = self.filter_combo.currentIndex()
@@ -1903,6 +1915,7 @@ class ExportPage(WizardPage):
         tcp_cnt = sum(1 for e in entries if e.tcp_ok)
         deep_cnt = sum(1 for e in entries if e.deep_ok)
         self.stats_lbl.setText(_("export.stats", total=total, tcp=tcp_cnt, deep=deep_cnt))
+        self.sub_title_input.setText(_settings_data.get("sub_title", "My Subscription"))
         QTimer.singleShot(0, self._update_preview)
         self._main.update_status_bar()
         tokens = _get_tokens()
