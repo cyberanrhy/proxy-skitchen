@@ -1484,6 +1484,8 @@ class TestPage(WizardPage):
     def _on_test_result(self, row: int, ok: bool, latency: float, error: str, ttype: int):
         if ok and _settings_data.get("max_latency_enabled") and latency > _settings_data.get("max_latency_ms", 3100):
             ok = False
+            if ttype != 0:
+                latency = 0.0
         self.model.update_entry(row, ok, latency, error, ttype)
         if ok:
             self._valid_cnt += 1
