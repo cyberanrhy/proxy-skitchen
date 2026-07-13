@@ -315,7 +315,7 @@ def _get_tokens() -> list[str]:
 
 
 class ProxyTableModel(QAbstractTableModel):
-    HEADERS = ["", "Протокол", "Хост", "Порт", "Страна", "Пинг"]
+    HEADERS = ["Статус", "Протокол", "Хост", "Порт", "Страна", "Пинг"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -330,10 +330,28 @@ class ProxyTableModel(QAbstractTableModel):
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         from .i18n import _
         if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
-            _headers = ["", _("table.header.proto"), _("table.header.host"), _("table.header.port"), _("table.header.country"), _("table.header.ping")]
+            _headers = [_("table.header.status"), _("table.header.proto"), _("table.header.host"), _("table.header.port"), _("table.header.country"), _("table.header.ping")]
             if section < len(_headers):
                 return _headers[section]
         return None
+
+    COUNTRY_FLAGS = {
+        "Russia":"🇷🇺","Germany":"🇩🇪","France":"🇫🇷","Netherlands":"🇳🇱","UK":"🇬🇧",
+        "USA":"🇺🇸","Canada":"🇨🇦","Japan":"🇯🇵","Singapore":"🇸🇬","Hong Kong":"🇭🇰",
+        "South Korea":"🇰🇷","Australia":"🇦🇺","Brazil":"🇧🇷","India":"🇮🇳","China":"🇨🇳",
+        "Taiwan":"🇹🇼","Switzerland":"🇨🇭","Sweden":"🇸🇪","Norway":"🇳🇴","Finland":"🇫🇮",
+        "Denmark":"🇩🇰","Italy":"🇮🇹","Spain":"🇪🇸","Poland":"🇵🇱","Czech":"🇨🇿",
+        "Austria":"🇦🇹","Belgium":"🇧🇪","Ireland":"🇮🇪","UAE":"🇦🇪","Turkey":"🇹🇷",
+        "Israel":"🇮🇱","Iran":"🇮🇷","Seychelles":"🇸🇨","Armenia":"🇦🇲","Bulgaria":"🇧🇬",
+        "Romania":"🇷🇴","Hungary":"🇭🇺","Ukraine":"🇺🇦","Vietnam":"🇻🇳",
+        "Thailand":"🇹🇭","Malaysia":"🇲🇾","Indonesia":"🇮🇩","Philippines":"🇵🇭",
+        "Mexico":"🇲🇽","Argentina":"🇦🇷","Chile":"🇨🇱","South Africa":"🇿🇦",
+        "Nigeria":"🇳🇬","Egypt":"🇪🇬","Morocco":"🇲🇦","Kazakhstan":"🇰🇿",
+        "Saudi Arabia":"🇸🇦","Iceland":"🇮🇸","New Zealand":"🇳🇿","Greece":"🇬🇷",
+        "Portugal":"🇵🇹","Croatia":"🇭🇷","Slovakia":"🇸🇰","Lithuania":"🇱🇹",
+        "Latvia":"🇱🇻","Estonia":"🇪🇪","Serbia":"🇷🇸","Albania":"🇦🇱",
+        "Algeria":"🇩🇿","Colombia":"🇨🇴",
+    }
 
     PROTO_COLORS = {
         "VLESS": "#7c4dff", "VMESS": "#448aff", "TROJAN": "#ff5252",
@@ -341,17 +359,31 @@ class ProxyTableModel(QAbstractTableModel):
         "WIREGUARD": "#76ff03", "WG": "#76ff03", "SS": "#69f0ae",
     }
 
+    def _status_text(self, p: ProxyEntry) -> str:
+        parts = []
+        if p.deep_ok:
+            parts.append("⚡")
+        if p.rkn_ok:
+            parts.append("🛡")
+        if not parts and (p.deep_tested or p.rkn_tested):
+            parts.append("❌")
+        if not parts:
+            parts.append("⏳")
+        return "".join(parts)
+
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
         p = self.proxies[index.row()]
         col = index.column()
         if role == Qt.ItemDataRole.DisplayRole:
-            if col == 0: return p.status_emoji()
+            if col == 0: return self._status_text(p)
             if col == 1: return p.display_protocol()
             if col == 2: return p.host
             if col == 3: return str(p.port) if p.port else ""
-            if col == 4: return p.country
+            if col == 4:
+                flag = self.COUNTRY_FLAGS.get(p.country, "")
+                return f"{flag} {p.country}" if flag else (p.country or "")
             if col == 5: return f"{p.latency_ms:.0f}ms" if p.latency_ms else ""
         if role == Qt.ItemDataRole.ForegroundRole:
             if col == 1:
@@ -364,13 +396,22 @@ class ProxyTableModel(QAbstractTableModel):
                 if ms < 300: return QColor("#ffd740")
                 if ms < 500: return QColor("#ff6d00")
                 return QColor("#ff5252")
-            if p.deep_ok: return QColor("#00e676")
-            if p.tcp_ok: return QColor("#69f0ae")
-            return QColor("#ff5252")
+            return None
+        if role == Qt.ItemDataRole.BackgroundRole:
+            if p.deep_ok:
+                return QColor("#1a2e26")
+            if p.deep_tested or p.rkn_tested:
+                return QColor("#2e1a1e")
+            return None
         if role == Qt.ItemDataRole.ToolTipRole:
             country_display = p.country or "-"
             rkn_str = f"  RKN: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""
-            return f"{p.display_protocol()} {p.host}:{p.port}\nSNI: {p.sni or '-'}\nСтрана: {country_display}\nИсточник: {p.source or '-'}\nTCP: {'✅' if p.tcp_ok else '❌'}  Deep: {'⚡' if p.deep_ok else '-'}{rkn_str}  Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}"
+            return (f"{p.display_protocol()} {p.host}:{p.port}\n"
+                    f"SNI: {p.sni or '-'}\n"
+                    f"Страна: {country_display}\n"
+                    f"Источник: {p.source or '-'}\n"
+                    f"Deep: {'⚡' if p.deep_ok else '❌'}{rkn_str}  "
+                    f"Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}")
         return None
 
     def add_proxies(self, entries: list[ProxyEntry]):
@@ -383,20 +424,13 @@ class ProxyTableModel(QAbstractTableModel):
     def update_entry(self, row: int, ok: bool, latency: float, error: str, ttype: int):
         if 0 <= row < len(self.proxies):
             p = self.proxies[row]
-            if ttype == 0:
-                p.tcp_ok = ok
-                p.latency_ms = latency
-                p.tcp_tested = True
-            elif ttype == 1:
+            if ttype == 1:
                 p.deep_ok = ok
                 p.deep_error = error
                 p.deep_tested = True
-                if ok:
-                    p.tcp_ok = True
-                    p.tcp_tested = True
-                elif latency > 0:
-                    p.tcp_ok = True
-                    p.tcp_tested = True
+                p.tcp_ok = ok
+                p.tcp_tested = True
+                if ok and latency:
                     p.latency_ms = latency
             elif ttype == 2:
                 p.rkn_ok = ok
