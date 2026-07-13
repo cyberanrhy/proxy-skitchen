@@ -2272,6 +2272,7 @@ class SettingsDialog(QDialog):
                 self._main.apply_language()
 
     def _on_check_token(self):
+        import urllib.request, urllib.error
         tokens = [t.strip() for t in self.tokens_edit.toPlainText().strip().splitlines() if t.strip()]
         if not tokens:
             self.check_result.setText(_("settings.token.none"))
@@ -2329,7 +2330,7 @@ class SettingsDialog(QDialog):
         _auth_data["github_tokens"] = tokens
         _save_auth(_auth_data)
 
-        _settings_data["perf_mode"] = {"low 🐢": "low", "medium ⚡": "medium", "high 🚀": "high"}.get(self.perf_combo.currentText(), "medium")
+        _settings_data["perf_mode"] = ["low", "medium", "high"][self.perf_combo.currentIndex()]
         _settings_data["proxy_enabled"] = self.cb_proxy.isChecked()
         _settings_data["proxy_type"] = self.proxy_type.currentText().lower()
         _settings_data["proxy_host"] = self.proxy_host.text().strip()

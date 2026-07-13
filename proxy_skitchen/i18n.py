@@ -221,6 +221,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "settings.perf.medium": "medium ⚡",
         "settings.perf.high": "high 🚀",
         "settings.btn.open_json": "📁 Открыть settings.json",
+        "settings.label.gh_repo": "Репозиторий:",
+        "settings.label.gh_file": "Файл:",
+        "settings.label.gh_branch": "Ветка:",
 
         # ── Messages ──
         "msg.warning": "Внимание",
@@ -456,6 +459,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "settings.label.language": "Language:",
         "settings.label.lang_desc": "Interface language",
         "settings.label.gh_url_hint": "Enter URL on the main page → GitHub Search.",
+        "settings.label.gh_repo": "Repository:",
+        "settings.label.gh_file": "File:",
+        "settings.label.gh_branch": "Branch:",
         "settings.perf.low": "low 🐢",
         "settings.perf.medium": "medium ⚡",
         "settings.perf.high": "high 🚀",
