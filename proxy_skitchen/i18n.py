@@ -220,6 +220,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "settings.perf.low": "low 🐢",
         "settings.perf.medium": "medium ⚡",
         "settings.perf.high": "high 🚀",
+        "settings.btn.open_json": "📁 Открыть settings.json",
 
         # ── Messages ──
         "msg.warning": "Внимание",
@@ -235,6 +236,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "msg.no_data_text": "Нет прокси для сохранения.",
 
         # ── Table headers ──
+        "table.header.status": "Статус",
         "table.header.proto": "Протокол",
         "table.header.host": "Хост",
         "table.header.port": "Порт",
@@ -457,6 +459,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "settings.perf.low": "low 🐢",
         "settings.perf.medium": "medium ⚡",
         "settings.perf.high": "high 🚀",
+        "settings.btn.open_json": "📁 Open settings.json",
 
         # ── Messages ──
         "msg.warning": "Warning",
@@ -472,6 +475,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "msg.no_data_text": "No proxies to save.",
 
         # ── Table headers ──
+        "table.header.status": "Status",
         "table.header.proto": "Protocol",
         "table.header.host": "Host",
         "table.header.port": "Port",

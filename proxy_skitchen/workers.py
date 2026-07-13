@@ -13,7 +13,7 @@ from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS, CREATE_NO_WINDOW
 from .models import ProxyEntry, _auth_data, _settings_data, PROTOCOL_PREFIXES
 from .parsers import is_proxy_uri, extract_uris, extract_inline_uris, parse_json_proxies, guess_country, get_server_port, geo_lookup, is_ip
-from .tester import test_tcp, test_tls, resolve_host
+
 
 def _debug(msg: str):
     from .compat import TMP_DIR
@@ -235,9 +235,8 @@ class TesterWorker(QObject):
     count_signal = Signal(int)
     geo_signal = Signal(int, str)
 
-    def __init__(self, deep: bool = False, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2):
+    def __init__(self, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2):
         super().__init__()
-        self._deep = deep
         self._rkn = rkn
         self._test_threads = test_threads
         self._deep_threads = deep_threads
@@ -250,14 +249,14 @@ class TesterWorker(QObject):
 
     @Slot()
     def test_batch(self, entries: list[ProxyEntry], indices: list[int] | None = None):
-        _debug(f"test_batch: start total={len(entries)} deep={self._deep} rkn={self._rkn}")
+        _debug(f"test_batch: start total={len(entries)} rkn={self._rkn}")
         self._stop = False
         total = len(entries)
         if not total:
             _debug("test_batch: no entries, emitting finished")
             self.finished.emit()
             return
-        threads = self._deep_threads if self._deep else self._test_threads
+        threads = self._deep_threads
         pool = ThreadPoolExecutor(max_workers=threads)
         futs = {}
         resolved = {}
@@ -281,15 +280,14 @@ class TesterWorker(QObject):
                         self.result_signal.emit(row, ok, latency, error, ttype)
                     except Exception as ex:
                         _debug(f"test_batch: fut {row} raised {ex}")
-                        self.result_signal.emit(row, False, 0.0, str(ex), 0)
+                        self.result_signal.emit(row, False, 0.0, str(ex), 1)
                     done_count += 1
                     self.count_signal.emit(done_count)
                 if done:
-                    mode = "rkn" if self._rkn else ("deep" if self._deep else "tcp")
-                    self.progress_signal.emit(done_count, total, threads, mode)
+                    self.progress_signal.emit(done_count, total, threads, "rkn" if self._rkn else "deep")
             # Geo for live IP hosts only
             if not self._stop:
-                geo_alive = [(i, e) for i, e in enumerate(entries) if is_ip(e.host) and not e.country and (e.tcp_ok or e.deep_ok)]
+                geo_alive = [(i, e) for i, e in enumerate(entries) if is_ip(e.host) and not e.country and e.deep_ok]
                 if geo_alive:
                     unique_ips = list({e.host for _, e in geo_alive})
                     self.log_signal.emit(f"geo: {len(geo_alive)} live, {len(unique_ips)} unique IPs...")
@@ -317,33 +315,18 @@ class TesterWorker(QObject):
             _debug("test_batch: emitting finished")
             self.finished.emit()
 
-    def _test_one(self, entry: ProxyEntry, resolved: dict) -> tuple[bool, float, str, int]:
+    def _test_one(self, entry: ProxyEntry, _resolved: dict = {}) -> tuple[bool, float, str, int]:
         host = entry.host
         port = entry.port
         if not host or not port:
-            return False, 0, "no host/port", 0
-        latency = 0.0
-        ok = True
-        if self._rkn and entry.tcp_tested:
-            ok = entry.tcp_ok
-        else:
-            start = time.time()
-            ok = test_tcp(host, port)
-            latency = (time.time() - start) * 1000
-            if self._rkn:
-                entry.tcp_ok = ok
-                entry.tcp_tested = True
-        if not ok:
-            return False, 0, "tcp fail", 0
+            return False, 0, "no host/port", 1
         if self._rkn:
             rkn_ok, rkn_lat, rkn_err, rkn_results = self._rkn_test(entry)
             entry.rkn_ok = rkn_ok
             entry.rkn_results = rkn_results
-            return rkn_ok, rkn_lat or latency, rkn_err, 2
-        if self._deep:
-            deep_ok, deep_lat, deep_err = self._deep_test(entry)
-            return deep_ok, deep_lat or latency, deep_err, 1
-        return ok, latency, "", 0
+            return rkn_ok, rkn_lat, rkn_err, 2
+        deep_ok, deep_lat, deep_err = self._deep_test(entry)
+        return deep_ok, deep_lat, deep_err, 1
 
     def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
         if not self._sb_tester:

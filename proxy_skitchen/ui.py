@@ -17,12 +17,18 @@ from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, 
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
 
-DESKTOP_DIR = next((p for p in [
-    os.path.expanduser("~/Desktop"),
-    os.path.expanduser("~/Рабочий стол"),
-    os.path.expanduser("~/Escritorio"),
-    os.path.expanduser("~/桌面"),
-] if os.path.isdir(p)), os.path.expanduser("~"))
+try:
+    import subprocess
+    DESKTOP_DIR = subprocess.check_output(["xdg-user-dir", "DESKTOP"], text=True).strip()
+    if not os.path.isdir(DESKTOP_DIR):
+        raise OSError
+except Exception:
+    DESKTOP_DIR = next((p for p in [
+        os.path.expanduser("~/Рабочий стол"),
+        os.path.expanduser("~/Desktop"),
+        os.path.expanduser("~/Escritorio"),
+        os.path.expanduser("~/桌面"),
+    ] if os.path.isdir(p)), os.path.expanduser("~"))
 
 
 def _cleanup_thread(thread, worker, wait_sec=3.0):
@@ -1200,8 +1206,12 @@ class TestPage(WizardPage):
 
         # ── Table ──
         self.model = ProxyTableModel()
+        self.sort_proxy = QSortFilterProxyModel()
+        self.sort_proxy.setSourceModel(self.model)
+        self.sort_proxy.setDynamicSortFilter(True)
         self.proxy_table = QTableView()
-        self.proxy_table.setModel(self.model)
+        self.proxy_table.setModel(self.sort_proxy)
+        self.proxy_table.setSortingEnabled(True)
         self.proxy_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.proxy_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.proxy_table.setAlternatingRowColors(True)
@@ -1212,7 +1222,7 @@ class TestPage(WizardPage):
         self.proxy_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.proxy_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.proxy_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.proxy_table.setColumnWidth(0, 32)
+        self.proxy_table.setColumnWidth(0, 120)
         self.proxy_table.setColumnWidth(3, 60)
         self.proxy_table.setColumnWidth(5, 75)
         self.proxy_table.verticalHeader().setDefaultSectionSize(22)
@@ -1329,8 +1339,7 @@ class TestPage(WizardPage):
         self._update_stats()
         has = len(deduped) > 0
         self.btn_deep.setEnabled(has)
-        can_rkn = any((not e.tcp_tested) or e.tcp_ok for e in deduped)
-        self.btn_rkn.setEnabled(can_rkn)
+        self.btn_rkn.setEnabled(has)
 
     def _set_phase(self, phase: int):
         self._phase = phase
@@ -1352,8 +1361,7 @@ class TestPage(WizardPage):
             self.lbl_phase.setText("")
             has_entries = len(self._entries) > 0
             self.btn_deep.setEnabled(has_entries)
-            has_tcp_ok = any(e.tcp_ok or e.deep_ok for e in self._entries)
-            self.btn_rkn.setEnabled(has_tcp_ok)
+            self.btn_rkn.setEnabled(has_entries)
             self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
 
     def _log(self, msg: str):
@@ -1383,24 +1391,22 @@ class TestPage(WizardPage):
 
     def _count_untested(self) -> int:
         if self._test_type == "rkn":
-            return sum(1 for e in self._entries if not e.rkn_tested and e.tcp_ok)
-        f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
-        return sum(1 for e in self._entries if not getattr(e, f))
+            return sum(1 for e in self._entries if not e.rkn_tested)
+        return sum(1 for e in self._entries if not e.deep_tested)
 
     def _on_continue(self):
         if not self._test_type or not self._entries:
             return
         if self._test_type == "rkn":
-            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.rkn_tested and e.tcp_ok]
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.rkn_tested]
         else:
-            f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
-            remaining = [(i, e) for i, e in enumerate(self._entries) if not getattr(e, f)]
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.deep_tested]
         if not remaining:
             self.btn_continue.setVisible(False)
             return
         indices, entries = zip(*remaining) if remaining else ([], [])
         self._log(_("log.test_resumed", count=len(entries)))
-        self._run_test(deep=(self._test_type == "deep"), rkn=(self._test_type == "rkn"), subset=list(entries), subset_indices=list(indices))
+        self._run_test(rkn=(self._test_type == "rkn"), subset=list(entries), subset_indices=list(indices))
 
     def _on_deep_test(self):
         if self._phase == self.PHASE_TEST:
@@ -1410,7 +1416,7 @@ class TestPage(WizardPage):
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._test_type = "deep"
-        self._run_test(deep=True, subset=self._filtered_entries)
+        self._run_test(subset=self._filtered_entries)
 
     def _on_rkn_test(self):
         if self._phase == self.PHASE_TEST:
@@ -1420,16 +1426,9 @@ class TestPage(WizardPage):
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._test_type = "rkn"
-        alive = []
-        indices = []
-        for i, e in enumerate(self._filtered_entries):
-            if not e.tcp_tested or e.tcp_ok:
-                alive.append(e)
-                indices.append(i)
-        if not alive:
-            self._log(_("log.rkn_no_alive"))
-            return
-        self._run_test(deep=False, rkn=True, subset=alive, subset_indices=indices)
+        alive = list(self._filtered_entries)
+        indices = list(range(len(alive)))
+        self._run_test(rkn=True, subset=alive, subset_indices=indices)
 
     def _on_delete_dead(self):
         if self._dead_cnt == 0:
@@ -1445,18 +1444,16 @@ class TestPage(WizardPage):
         self._dead_cnt = 0
         self._apply_filter()
         self.btn_delete_dead.setEnabled(False)
-        has_tcp_ok = any(e.tcp_ok or e.deep_ok for e in self._entries)
-        self.btn_rkn.setEnabled(has_tcp_ok)
+        self.btn_rkn.setEnabled(len(self._entries) > 0)
         self._log(_("log.deleted_dead", count=removed))
 
     def _on_threads_changed(self, value):
         if self._phase != self.PHASE_TEST or not self._tester or not self._test_type:
             return
         if self._test_type == "rkn":
-            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.rkn_tested and e.tcp_ok]
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.rkn_tested]
         else:
-            f = "tcp_tested" if self._test_type == "tcp" else "deep_tested"
-            remaining = [(i, e) for i, e in enumerate(self._entries) if not getattr(e, f)]
+            remaining = [(i, e) for i, e in enumerate(self._entries) if not e.deep_tested]
         if not remaining:
             return
         indices, entries = zip(*remaining)
@@ -1465,17 +1462,17 @@ class TestPage(WizardPage):
         self._test_thread = None
         self._tester = None
         self._log(f"🔄 потоков: {value}, продолжаю {len(entries)}...")
-        self._run_test(deep=(self._test_type == "deep"), rkn=(self._test_type == "rkn"),
+        self._run_test(rkn=(self._test_type == "rkn"),
                        subset=list(entries), subset_indices=list(indices))
 
-    def _run_test(self, deep: bool = False, rkn: bool = False, subset: list[ProxyEntry] | None = None, subset_indices: list[int] | None = None):
+    def _run_test(self, rkn: bool = False, subset: list[ProxyEntry] | None = None, subset_indices: list[int] | None = None):
         target = subset if subset is not None else self._entries
         self._stop_requested = False
         self._set_phase(self.PHASE_TEST)
         self.progress_bar.setMaximum(len(target))
         self.progress_bar.setValue(0)
 
-        self._tester = TesterWorker(deep=deep, rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
+        self._tester = TesterWorker(rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
         self._tester.result_signal.connect(self._on_test_result)
         self._tester.testing_signal.connect(self._on_testing_start)
         self._tester.progress_signal.connect(self._on_test_progress)
@@ -1564,6 +1561,7 @@ class TestPage(WizardPage):
             return
         self._stopped = False
         self._completed = True
+        self._apply_filter()
         self._set_phase(self.PHASE_IDLE)
         self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
         self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
@@ -1674,8 +1672,8 @@ class TestPage(WizardPage):
     def _update_stats(self):
         entries = self._filtered_entries
         total = len(entries)
-        valid = sum(1 for e in entries if e.tcp_ok is True or e.deep_ok is True)
-        dead = sum(1 for e in entries if e.tcp_ok is False and e.deep_ok is False and (e.tcp_tested or e.deep_tested))
+        valid = sum(1 for e in entries if e.deep_ok)
+        dead = sum(1 for e in entries if not e.deep_ok and (e.deep_tested or e.rkn_tested))
         rkn_ok = sum(1 for e in entries if e.rkn_tested and e.rkn_ok)
         rkn_total = sum(1 for e in entries if e.rkn_tested)
         self.lbl_total.setText(f"Всего: {total}")
@@ -1693,7 +1691,8 @@ class TestPage(WizardPage):
         idx = self.proxy_table.indexAt(pos)
         if not idx.isValid():
             return
-        entry = self._filtered_entries[idx.row()]
+        src_row = self.sort_proxy.mapToSource(idx).row()
+        entry = self._entries[src_row]
         menu = QMenu()
         menu.addAction(_("test.context.copy_uri"), lambda: QApplication.clipboard().setText(entry.uri))
         tcp_mark = "✅" if entry.tcp_ok else "❌"
@@ -1815,6 +1814,7 @@ class ExportPage(WizardPage):
         self.chk_clean_uris = QCheckBox(_("export.chk.clean_uris"))
         self.chk_clean_uris.setChecked(_settings_data.get("clean_uris", True))
         self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
+        self.chk_clean_uris.toggled.connect(self._update_preview)
         self.chk_smart_names.setChecked(True)
         self.chk_smart_names.toggled.connect(self._update_preview)
         self.chk_clean_names.toggled.connect(self._update_preview)
@@ -1946,6 +1946,7 @@ class ExportPage(WizardPage):
     def _on_sub_title_changed(self, text):
         _settings_data["sub_title"] = text
         _save_settings(_settings_data)
+        self._update_preview()
 
     def _on_clean_uris_changed(self, checked: bool):
         _settings_data["clean_uris"] = checked
@@ -2214,6 +2215,10 @@ class SettingsDialog(QDialog):
         self.proxy_port.setRange(1, 65535)
         self.proxy_port.setValue(_settings_data.get("proxy_port", 12334))
         gen_layout.addRow(_("settings.label.port"), self.proxy_port)
+        gen_layout.addRow("")
+        btn_open_settings = QPushButton(_("settings.btn.open_json"))
+        btn_open_settings.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(SETTINGS_FILE)))
+        gen_layout.addRow(btn_open_settings)
         tabs.addTab(gen, _("settings.tab.general"))
 
         # GitHub tab
