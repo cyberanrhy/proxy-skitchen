@@ -117,7 +117,7 @@ def test_http_proxy(proxy_url: str, url: str = TEST_URL, timeout: float = SB_TIM
         opener = urllib.request.build_opener(handler)
         resp = opener.open(url, timeout=timeout)
         elapsed = (time.time() - start) * 1000
-        return resp.status == 204, elapsed
+        return resp.status < 400, elapsed
     except Exception:
         return False, (time.time() - start) * 1000
 
@@ -154,8 +154,7 @@ def test_via_socks(host: str, port: int, target_host: str = TEST_HOST, target_po
 
 class SingBoxTester:
     def test(self, uri: str, port: int) -> tuple[bool, float, str]:
-        clash_port = port + 10000
-        config = self._make_config(uri, port, clash_port)
+        config = self._make_config(uri, port)
         if config is None:
             return False, 0, "unsupported protocol"
         proc = None
@@ -174,7 +173,7 @@ class SingBoxTester:
                     time.sleep(0.3)
                     if proc.poll() is not None:
                         return False, 0, "sing-box failed to start"
-                    ok, lat = self._urltest(clash_port)
+                    ok, lat = test_http_proxy(f"http://127.0.0.1:{port}", timeout=5)
                     proc.kill()
                     try:
                         proc.wait(1)
@@ -191,24 +190,6 @@ class SingBoxTester:
                     proc.wait(1)
                 except Exception:
                     pass
-
-    def _urltest(self, clash_port: int) -> tuple[bool, float]:
-        url = f"http://127.0.0.1:{clash_port}/proxies/proxy/delay?url={urllib.parse.quote(TEST_URL)}&timeout={SB_TIMEOUT * 1000}"
-        start = time.time()
-        for attempt in range(5):
-            try:
-                resp = urllib.request.urlopen(url, timeout=SB_TIMEOUT)
-                data = json.loads(resp.read().decode())
-                delay = data.get("delay", 0)
-                return delay > 0, delay
-            except urllib.error.HTTPError as e:
-                if e.code == 504 and attempt < 4:
-                    time.sleep(0.3)
-                    continue
-                return False, (time.time() - start) * 1000
-            except Exception:
-                return False, (time.time() - start) * 1000
-        return False, (time.time() - start) * 1000
 
     def test_rkn_bypass(self, uri: str, port: int, max_domains: int = 2) -> tuple[bool, float, str, list[dict]]:
         config = self._make_config(uri, port)
@@ -277,23 +258,18 @@ class SingBoxTester:
                 except Exception:
                     pass
 
-    def _make_config(self, uri: str, local_port: int, clash_port: Optional[int] = None) -> Optional[dict]:
+    def _make_config(self, uri: str, local_port: int) -> Optional[dict]:
         proto = get_protocol(uri)
         outbound = self._parse(uri)
         if outbound is None:
             return None
         outbound["tag"] = "proxy"
-        config = {
+        return {
             "log": {"level": "error", "output": "nul" if IS_WINDOWS else "/dev/null"},
             "inbounds": [{"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": local_port}],
             "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
             "route": {"final": "proxy"},
         }
-        if clash_port:
-            config["experimental"] = {
-                "clash_api": {"external_controller": f"127.0.0.1:{clash_port}", "secret": ""}
-            }
-        return config
 
     def _parse(self, uri: str) -> Optional[dict]:
         try:
@@ -347,22 +323,28 @@ class SingBoxTester:
         security = self._qv(q, 'security', '')
         sni = self._qv(q, 'sni', host)
         fp = self._qv(q, 'fp', 'chrome')
-        out = {"type": "vless", "server": host, "server_port": port, "uuid": uuid}
+        out = {"type": "vless", "server": host, "server_port": port, "uuid": uuid,
+               "packet_encoding": "xudp"}
         if flow:
             out["flow"] = flow
         if security == 'reality':
             pbk = self._qv(q, 'pbk')
             sid = self._qv(q, 'sid', '')
             out["tls"] = {"enabled": True, "server_name": sni or host,
+                          "alpn": "http/1.1",
                           "utls": {"enabled": True, "fingerprint": fp},
                           "reality": {"enabled": True, "public_key": pbk, "short_id": sid}}
-        elif security in ('tls', 'xtls', ''):
-            out["tls"] = {"enabled": True, "server_name": sni or host}
+        elif security in ('tls', 'xtls'):
+            out["tls"] = {"enabled": True, "server_name": sni or host,
+                          "alpn": "http/1.1",
+                          "utls": {"enabled": True, "fingerprint": fp}}
         ttype = self._qv(q, 'type', 'tcp')
         if ttype == 'ws':
             path = self._qv(q, 'path', '/')
             hdr = self._qv(q, 'host', sni or host)
-            out["transport"] = {"type": "ws", "path": path, "headers": {"Host": hdr}}
+            out["transport"] = {"type": "ws", "path": path,
+                                "headers": {"Host": hdr},
+                                "early_data_header_name": "Sec-WebSocket-Protocol"}
         elif ttype == 'grpc':
             out["transport"] = {"type": "grpc", "service_name": self._qv(q, 'serviceName', '')}
         elif ttype == 'xhttp':
@@ -386,14 +368,18 @@ class SingBoxTester:
         sni = self._qv(q, 'sni', host)
         fp = self._qv(q, 'fp', 'chrome')
         out = {"type": "trojan", "server": host, "server_port": port, "password": password,
-               "tls": {"enabled": True, "server_name": sni or host}}
+               "packet_encoding": "xudp",
+               "tls": {"enabled": True, "server_name": sni or host,
+                       "alpn": "http/1.1"}}
         if fp:
             out["tls"]["utls"] = {"enabled": True, "fingerprint": fp}
         ttype = self._qv(q, 'type', 'tcp')
         if ttype == 'ws':
             path = self._qv(q, 'path', '/')
             hdr = self._qv(q, 'host', sni or host)
-            out["transport"] = {"type": "ws", "path": path, "headers": {"Host": hdr}}
+            out["transport"] = {"type": "ws", "path": path,
+                                "headers": {"Host": hdr},
+                                "early_data_header_name": "Sec-WebSocket-Protocol"}
         elif ttype == 'grpc':
             out["transport"] = {"type": "grpc", "service_name": self._qv(q, 'serviceName', '')}
         elif ttype == 'xhttp':
@@ -414,11 +400,16 @@ class SingBoxTester:
         sni = data.get('sni', host)
         path = data.get('path', '/')
         host_hdr = data.get('host', host)
-        out = {"type": "vmess", "server": host, "server_port": port, "uuid": uuid, "alter_id": int(data.get('aid', 0))}
+        out = {"type": "vmess", "server": host, "server_port": port, "uuid": uuid,
+               "alter_id": int(data.get('aid', 0)), "packet_encoding": "xudp"}
         if tls:
-            out["tls"] = {"enabled": True, "server_name": sni or host}
+            out["tls"] = {"enabled": True, "server_name": sni or host,
+                          "alpn": "http/1.1",
+                          "utls": {"enabled": True, "fingerprint": "chrome"}}
         if net == 'ws':
-            out["transport"] = {"type": "ws", "path": path, "headers": {"Host": host_hdr}}
+            out["transport"] = {"type": "ws", "path": path,
+                                "headers": {"Host": host_hdr},
+                                "early_data_header_name": "Sec-WebSocket-Protocol"}
         elif net == 'grpc':
             out["transport"] = {"type": "grpc", "service_name": path.lstrip('/')}
         return out
