@@ -70,6 +70,87 @@ ROS_TUNNEL_WL = [
 ROS_TUNNEL_ALL = ROS_TUNNEL_STD + ROS_TUNNEL_WL
 
 
+try:
+    from PySide6.QtGui import QPainter, QLinearGradient, QRadialGradient
+    from PySide6.QtCore import QRectF
+except ImportError:
+    from PySide2.QtGui import QPainter, QLinearGradient, QRadialGradient
+    from PySide2.QtCore import QRectF
+
+
+class ScanProgressBar(QProgressBar):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scan_pos = 0.0
+        self._scan_dir = 1
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._scanning = False
+
+    def start_scan(self):
+        if not self._scanning:
+            self._scanning = True
+            self._scan_pos = 0.0
+            self._timer.start(30)
+
+    def stop_scan(self):
+        self._scanning = False
+        self._timer.stop()
+        self.update()
+
+    def _tick(self):
+        self._scan_pos += 0.02 * self._scan_dir
+        if self._scan_pos > 1.0:
+            self._scan_pos = 1.0
+            self._scan_dir = -1
+        elif self._scan_pos < 0.0:
+            self._scan_pos = 0.0
+            self._scan_dir = 1
+        self.update()
+
+    def paintEvent(self, event):
+        if not self._scanning:
+            super().paintEvent(event)
+            return
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        r = h // 2
+
+        bar_rect = QRectF(1, 1, w - 2, h - 2)
+
+        p.setPen(Qt.PenStyle.NoPen)
+
+        # light bg
+        p.setBrush(QColor("#1e293b"))
+        p.drawRoundedRect(bar_rect, r, r)
+
+        val = max(0, min(1, self.value() / max(self.maximum(), 1)))
+        if val > 0:
+            fill_w = max(4, (w - 2) * val)
+            fill_rect = QRectF(1, 1, fill_w, h - 2)
+            grad = QLinearGradient(0, 0, w, 0)
+            grad.setColorAt(0.0, QColor("#2563eb"))
+            grad.setColorAt(0.5, QColor("#3b82f6"))
+            grad.setColorAt(1.0, QColor("#60a5fa"))
+            p.setBrush(grad)
+            p.drawRoundedRect(fill_rect, r, r)
+
+            scan_x = 1 + (w - 2) * self._scan_pos
+            if scan_x < fill_w:
+                glow = QRadialGradient(scan_x, h / 2, h * 0.8)
+                glow.setColorAt(0.0, QColor(255, 255, 255, 180))
+                glow.setColorAt(0.4, QColor(255, 255, 255, 60))
+                glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+                p.setBrush(glow)
+                p.drawRoundedRect(fill_rect, r, r)
+
+        p.end()
+
+
 def _cleanup_thread(thread, worker, wait_sec=3.0):
     if thread is None and worker is None:
         return
@@ -1273,7 +1354,7 @@ class TestPage(WizardPage):
         # ── Progress ──
         progress_row = QHBoxLayout()
         progress_row.setSpacing(6)
-        self.progress_bar = QProgressBar()
+        self.progress_bar = ScanProgressBar()
         self.progress_bar.setFixedHeight(18)
         self.progress_bar.setVisible(False)
         progress_row.addWidget(self.progress_bar, 1)
@@ -1432,12 +1513,14 @@ class TestPage(WizardPage):
             self.btn_continue.setVisible(False)
             self.progress_bar.setVisible(True)
             self.lbl_phase.setText(_("test.phase.test"))
+            self.progress_bar.start_scan()
         else:
             self.btn_stop.setText(_("test.btn.stop"))
             self._apply_test_theme()
             self.btn_stop.setEnabled(False)
             self.progress_bar.setVisible(False)
             self.lbl_phase.setText("")
+            self.progress_bar.stop_scan()
             has_entries = len(self._entries) > 0
             self.btn_deep.setEnabled(has_entries)
             self.btn_rkn.setEnabled(has_entries)

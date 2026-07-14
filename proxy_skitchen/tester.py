@@ -323,6 +323,7 @@ class SingBoxTester:
         security = self._qv(q, 'security', '')
         sni = self._qv(q, 'sni', host)
         fp = self._qv(q, 'fp', 'chrome')
+        alpn = self._qv(q, 'alpn', 'http/1.1')
         out = {"type": "vless", "server": host, "server_port": port, "uuid": uuid,
                "packet_encoding": "xudp"}
         if flow:
@@ -331,12 +332,12 @@ class SingBoxTester:
             pbk = self._qv(q, 'pbk')
             sid = self._qv(q, 'sid', '')
             out["tls"] = {"enabled": True, "server_name": sni or host,
-                          "alpn": "http/1.1",
+                          "alpn": alpn,
                           "utls": {"enabled": True, "fingerprint": fp},
                           "reality": {"enabled": True, "public_key": pbk, "short_id": sid}}
         elif security in ('tls', 'xtls'):
             out["tls"] = {"enabled": True, "server_name": sni or host,
-                          "alpn": "http/1.1",
+                          "alpn": alpn,
                           "utls": {"enabled": True, "fingerprint": fp}}
         ttype = self._qv(q, 'type', 'tcp')
         if ttype == 'ws':
@@ -367,10 +368,11 @@ class SingBoxTester:
             port = 443
         sni = self._qv(q, 'sni', host)
         fp = self._qv(q, 'fp', 'chrome')
+        alpn = self._qv(q, 'alpn', 'http/1.1')
         out = {"type": "trojan", "server": host, "server_port": port, "password": password,
                "packet_encoding": "xudp",
                "tls": {"enabled": True, "server_name": sni or host,
-                       "alpn": "http/1.1"}}
+                       "alpn": alpn}}
         if fp:
             out["tls"]["utls"] = {"enabled": True, "fingerprint": fp}
         ttype = self._qv(q, 'type', 'tcp')
@@ -400,11 +402,12 @@ class SingBoxTester:
         sni = data.get('sni', host)
         path = data.get('path', '/')
         host_hdr = data.get('host', host)
+        alpn = data.get('alpn', 'http/1.1')
         out = {"type": "vmess", "server": host, "server_port": port, "uuid": uuid,
                "alter_id": int(data.get('aid', 0)), "packet_encoding": "xudp"}
         if tls:
             out["tls"] = {"enabled": True, "server_name": sni or host,
-                          "alpn": "http/1.1",
+                          "alpn": alpn,
                           "utls": {"enabled": True, "fingerprint": "chrome"}}
         if net == 'ws':
             out["transport"] = {"type": "ws", "path": path,
