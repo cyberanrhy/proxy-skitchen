@@ -2215,7 +2215,7 @@ class SettingsDialog(QDialog):
         self.proxy_port.setRange(1, 65535)
         self.proxy_port.setValue(_settings_data.get("proxy_port", 12334))
         gen_layout.addRow(_("settings.label.port"), self.proxy_port)
-        gen_layout.addRow("")
+        gen_layout.addRow(QLabel(""))
         btn_open_settings = QPushButton(_("settings.btn.open_json"))
         btn_open_settings.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(SETTINGS_FILE)))
         gen_layout.addRow(btn_open_settings)
