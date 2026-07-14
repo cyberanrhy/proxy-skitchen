@@ -62,6 +62,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "preset.xray": "xray конфиг",
         "preset.hysteria2": "hysteria2 подписка",
         "preset.tuic": "tuic",
+        "preset.rostunnel_all": "RosTunnel (32)",
+        "preset.rostunnel_std": "RosTunnel (15)",
+        "preset.rostunnel_wl": "RosTunnel (17)",
 
         # ── period combo (нейтральные) ──
         "period.1h": "1h",
@@ -304,6 +307,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "preset.xray": "xray config",
         "preset.hysteria2": "hysteria2 subscription",
         "preset.tuic": "tuic",
+        "preset.rostunnel_all": "RosTunnel (32)",
+        "preset.rostunnel_std": "RosTunnel (15)",
+        "preset.rostunnel_wl": "RosTunnel (17)",
 
         # ── period combo (нейтральные) ──
         "period.1h": "1h",

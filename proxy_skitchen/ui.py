@@ -31,6 +31,45 @@ except Exception:
     ] if os.path.isdir(p)), os.path.expanduser("~"))
 
 
+ROS_TUNNEL_STD = [
+    "https://raw.githubusercontent.com/sakha1370/OpenRay/refs/heads/main/output/all_valid_proxies.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
+    "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/refs/heads/main/githubmirror/22.txt",
+    "https://github.com/AvenCores/goida-vpn-configs/raw/refs/heads/main/githubmirror/23.txt",
+    "https://github.com/AvenCores/goida-vpn-configs/raw/refs/heads/main/githubmirror/24.txt",
+    "https://github.com/AvenCores/goida-vpn-configs/raw/refs/heads/main/githubmirror/25.txt",
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt",
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_SS+All_RUS.txt",
+    "https://shadowmere.xyz/api/b64sub/",
+    "https://shadowmere.xyz/api/sub/",
+    "https://raw.githubusercontent.com/ShatakVPN/ConfigForge-V2Ray/main/configs/all.txt",
+    "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/STR#MEGA.STR.BYPASS??",
+    "https://raw.githubusercontent.com/Egkaz/Proxy-list-20k-server/refs/heads/main/stable.txt",
+    "https://raw.githubusercontent.com/CidVpn/cid-vpn-config/refs/heads/main/general.txt",
+    "https://raw.githubusercontent.com/EtoNeYaProject/etoneyaproject.github.io/refs/heads/main/other",
+]
+ROS_TUNNEL_WL = [
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
+    "https://raw.githubusercontent.com/whoahaow/rjsxrd/refs/heads/main/githubmirror/bypass-unsecure/bypass-unsecure-all.txt",
+    "https://fsub.flux.2bd.net/githubmirror/bypass/bypass-all.txt",
+    "https://raw.githubusercontent.com/bywarm/whitelists-vpns-etc/refs/heads/main/whitelists1-4pda.txt",
+    "https://raw.githubusercontent.com/STR97/STRUGOV/refs/heads/main/STR.BYPASS",
+    "https://bp.wl.free.nf/confs/selected.txt",
+    "https://bp.wl.free.nf/confs/wl.txt",
+    "https://raw.githubusercontent.com/FLEXIY0/matryoshka-vpn/main/configs/russia_whitelist.txt",
+    "https://raw.githubusercontent.com/gbwltg/gbwl/refs/heads/main/m3EsPqwmlc",
+    "https://gitverse.ru/api/repos/Vsevj/OBS/raw/branch/master/wwh",
+    "https://raw.githubusercontent.com/zieng2/wl/main/vless_universal.txt",
+    "https://raw.githubusercontent.com/EtoNeYaProject/etoneyaproject.github.io/refs/heads/main/whitelist",
+    "https://raw.githubusercontent.com/LowiKLive/BypassWhitelistRu/refs/heads/main/WhiteList-Bypass_Ru.txt",
+    "https://storage.yandexcloud.net/cid-vpn/whitelist.txt",
+    "https://raw.githubusercontent.com/officialdakari/psychic-octo-tribble/refs/heads/main/subwl.txt",
+    "https://raw.githubusercontent.com/LimeHi/LimeVPN/refs/heads/main/LimeVPN.txt",
+    "https://gitverse.ru/api/repos/lolfomka/tg-WLTGFF/raw/branch/master/TG-@WLTGFF",
+]
+ROS_TUNNEL_ALL = ROS_TUNNEL_STD + ROS_TUNNEL_WL
+
+
 def _cleanup_thread(thread, worker, wait_sec=3.0):
     if thread is None and worker is None:
         return
@@ -153,6 +192,30 @@ class SourcesPage(WizardPage):
                 btn.clicked.connect(lambda checked, kw=kw: self._on_preset(kw))
                 row_layout.addWidget(btn)
             layout.addLayout(row_layout)
+
+        # ── RosTunnel preset row ──
+        row_ros = QHBoxLayout()
+        row_ros.setContentsMargins(0, 0, 0, 0)
+        row_ros.setSpacing(2)
+        self._btn_ros_all = QPushButton(_("preset.rostunnel_all"))
+        self._btn_ros_all.setFixedHeight(22)
+        self._btn_ros_all.setToolTip(_("preset.rostunnel_all"))
+        self._btn_ros_all.setStyleSheet("QPushButton { font-size: 9px; padding: 0px 4px; font-weight: bold; }")
+        self._btn_ros_all.clicked.connect(lambda: self._on_rostunnel_preset("all"))
+        row_ros.addWidget(self._btn_ros_all)
+        self._btn_ros_std = QPushButton(_("preset.rostunnel_std"))
+        self._btn_ros_std.setFixedHeight(22)
+        self._btn_ros_std.setToolTip(_("preset.rostunnel_std"))
+        self._btn_ros_std.setStyleSheet("QPushButton { font-size: 9px; padding: 0px 4px; }")
+        self._btn_ros_std.clicked.connect(lambda: self._on_rostunnel_preset("std"))
+        row_ros.addWidget(self._btn_ros_std)
+        self._btn_ros_wl = QPushButton(_("preset.rostunnel_wl"))
+        self._btn_ros_wl.setFixedHeight(22)
+        self._btn_ros_wl.setToolTip(_("preset.rostunnel_wl"))
+        self._btn_ros_wl.setStyleSheet("QPushButton { font-size: 9px; padding: 0px 4px; }")
+        self._btn_ros_wl.clicked.connect(lambda: self._on_rostunnel_preset("wl"))
+        row_ros.addWidget(self._btn_ros_wl)
+        layout.addLayout(row_ros)
 
         # ── GitHub search ──
         self.gh_group = QGroupBox(_("sources.group.github"))
@@ -345,6 +408,11 @@ class SourcesPage(WizardPage):
             self.kw_input.setText(", ".join(sorted(kws)))
         else:
             self.kw_input.setText(kw)
+
+    def _on_rostunnel_preset(self, variant: str):
+        urls = {"all": ROS_TUNNEL_ALL, "std": ROS_TUNNEL_STD, "wl": ROS_TUNNEL_WL}
+        for url in urls.get(variant, []):
+            self._add_source(url, url)
 
     def _on_stop(self):
         self._cleanup_gh()
