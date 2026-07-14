@@ -1159,6 +1159,7 @@ class TestPage(WizardPage):
         self._entries = []
         self._filtered_entries = []
         self._filter_proto: str | None = None
+        self._filter_security: str | None = None
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._last_log_time = 0.0
@@ -1231,6 +1232,14 @@ class TestPage(WizardPage):
         ])
         self.filter_combo.currentIndexChanged.connect(self._on_filter_change)
         actions.addWidget(self.filter_combo)
+
+        self.security_combo = QComboBox()
+        self.security_combo.addItems([
+            _("test.security.all"), _("test.security.tls"),
+            _("test.security.reality"), _("test.security.none"),
+        ])
+        self.security_combo.currentIndexChanged.connect(self._on_security_filter_change)
+        actions.addWidget(self.security_combo)
 
         self.chk_max_latency = QCheckBox(_("test.max_latency"))
         self.chk_max_latency.setChecked(_settings_data.get("max_latency_enabled", False))
@@ -1365,6 +1374,7 @@ class TestPage(WizardPage):
         self.spin_threads.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
         self.spin_max_latency.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
         self.filter_combo.setStyleSheet(f"QComboBox {{ font-size: 11px; padding: 3px 8px; min-width: 80px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
+        self.security_combo.setStyleSheet(f"QComboBox {{ font-size: 11px; padding: 3px 8px; min-width: 80px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
 
         self.progress_bar.setStyleSheet(f"QProgressBar {{ border: 1px solid {bd}; border-radius: 4px; background: {ibg}; text-align: center; color: {fg}; font-size: 10px; }} QProgressBar::chunk {{ background: {acc}; border-radius: 3px; }}")
         self.lbl_phase.setStyleSheet(f"font-size: 11px; color: {m}; min-width: 60px;")
@@ -1402,6 +1412,7 @@ class TestPage(WizardPage):
         self._valid_cnt = 0
         self._dead_cnt = 0
         self.filter_combo.setCurrentIndex(0)
+        self.security_combo.setCurrentIndex(0)
         self.model.clear()
         self.model.add_proxies(deduped)
         self._update_stats()
@@ -1728,11 +1739,18 @@ class TestPage(WizardPage):
         self._filter_proto = proto_map[idx] if 0 < idx < len(proto_map) else None
         self._apply_filter()
 
+    def _on_security_filter_change(self, idx: int):
+        sec_map = [None, "tls", "reality", "none"]
+        self._filter_security = sec_map[idx] if 0 < idx < len(sec_map) else None
+        self._apply_filter()
+
     def _apply_filter(self):
-        if self._filter_proto is None:
-            self._filtered_entries = list(self._entries)
-        else:
-            self._filtered_entries = [e for e in self._entries if e.protocol == self._filter_proto]
+        entries = self._entries
+        if self._filter_proto is not None:
+            entries = [e for e in entries if e.protocol == self._filter_proto]
+        if self._filter_security is not None:
+            entries = [e for e in entries if e.security == self._filter_security]
+        self._filtered_entries = list(entries)
         self.model.clear()
         self.model.add_proxies(self._filtered_entries)
         self._update_stats()
@@ -1806,7 +1824,7 @@ class TestPage(WizardPage):
         self.btn_export.setText(_("test.btn.export"))
         self.chk_max_latency.setText(_("test.max_latency"))
         self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, self.model.columnCount() - 1)
-        # Rebuild filter combo
+        # Rebuild filter combos
         current = self.filter_combo.currentIndex()
         self.filter_combo.blockSignals(True)
         self.filter_combo.clear()
@@ -1818,6 +1836,15 @@ class TestPage(WizardPage):
         ])
         self.filter_combo.setCurrentIndex(min(current, self.filter_combo.count() - 1))
         self.filter_combo.blockSignals(False)
+        sec_current = self.security_combo.currentIndex()
+        self.security_combo.blockSignals(True)
+        self.security_combo.clear()
+        self.security_combo.addItems([
+            _("test.security.all"), _("test.security.tls"),
+            _("test.security.reality"), _("test.security.none"),
+        ])
+        self.security_combo.setCurrentIndex(min(sec_current, self.security_combo.count() - 1))
+        self.security_combo.blockSignals(False)
         self.lbl_threads.setText(_("test.threads"))
         if self._phase == self.PHASE_TEST:
             self.btn_stop.setText(_("test.btn.stop_test"))
