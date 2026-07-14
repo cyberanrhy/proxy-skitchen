@@ -110,7 +110,8 @@ def set_theme(theme: str):
 class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
                  'tcp_ok', 'deep_ok', 'rkn_ok', 'latency_ms', 'deep_error', 'is_embedded',
-                 'tcp_tested', 'deep_tested', 'rkn_tested', 'geo_tested', 'rkn_results')
+                 'tcp_tested', 'deep_tested', 'rkn_tested', 'geo_tested', 'rkn_results',
+                 'security')
 
     def __init__(self, uri: str, source: str = ""):
         self.uri = uri
@@ -131,6 +132,7 @@ class ProxyEntry:
         self.rkn_tested = False
         self.geo_tested = False
         self.rkn_results = []
+        self.security = ""
         self._parse()
 
     def _parse(self):
@@ -148,6 +150,8 @@ class ProxyEntry:
                     self.host = data.get('add', '') or data.get('host', '')
                     self.port = int(data.get('port', 0))
                     self.sni = data.get('sni', '') or data.get('host', '')
+                    tls = data.get('tls', '')
+                    self.security = 'tls' if tls and tls not in ('none', '') else 'none'
                 except Exception:
                     pass
                 return
@@ -182,6 +186,7 @@ class ProxyEntry:
                             self.host = clean
                 except Exception:
                     pass
+                self.security = 'none'
                 return
             if uri_lower.startswith('tuic://'):
                 self.protocol = 'TUIC'
@@ -204,6 +209,7 @@ class ProxyEntry:
                                 self.country = parts[1].strip()
                 except Exception:
                     pass
+                self.security = 'none'
                 return
             u = urllib.parse.urlparse(self.uri)
             self.protocol = u.scheme.rstrip(':').upper()
@@ -215,6 +221,10 @@ class ProxyEntry:
                     if qs.get(k):
                         self.sni = qs[k][0]
                         break
+                if qs.get('security'):
+                    val = qs['security'][0].lower()
+                    if val in ('tls', 'reality', 'xtls', 'none', 'auto'):
+                        self.security = val
             # extract from fragment
             if not self.sni and u.fragment:
                 import html
