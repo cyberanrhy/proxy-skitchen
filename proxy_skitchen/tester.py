@@ -168,16 +168,25 @@ class SingBoxTester:
                 config_path = os.path.join(tmp_dir, "config.json")
                 with open(config_path, "w") as f:
                     json.dump(config, f, indent=2)
+                outbound = config.get("outbounds", [{}])[0]
+                reality = outbound.get("tls", {}).get("reality", {})
+                _debug(f"CONFIG reality: pbk={reality.get('public_key','')!r} sid={reality.get('short_id','')!r}")
                 with SB_SEMAPHORE:
                     time.sleep(random.uniform(0.1, 0.3))
                     proc = subprocess.Popen(
                         [SING_BOX, "run", "-c", config_path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
                     time.sleep(0.3)
                     if proc.poll() is not None:
-                        return False, 0, "sing-box failed to start"
+                        err = ""
+                        try:
+                            _, err_b = proc.communicate(timeout=0.5)
+                            err = err_b.decode("utf-8", errors="replace")[:200]
+                        except Exception:
+                            pass
+                        return False, 0, f"sb failed: {err}" if err else "sb failed to start"
                     ok, lat = test_http_proxy(f"http://127.0.0.1:{port}", timeout=5)
                     proc.kill()
                     try:
@@ -334,8 +343,10 @@ class SingBoxTester:
         if flow:
             out["flow"] = flow
         if security == 'reality':
-            pbk = self._qv(q, 'pbk')
-            sid = self._qv(q, 'sid', '')
+            pbk_raw = self._qv(q, 'pbk')
+            pbk = pbk_raw.split('#')[0].replace(' ', '+').replace('+', '-').replace('/', '_')
+            sid = self._qv(q, 'sid', '').replace(' ', '+')
+            _debug(f"pbk_raw={pbk_raw!r} pbk_fixed={pbk!r} sid={sid!r}")
             out["tls"] = {"enabled": True, "server_name": sni or host,
                           "alpn": alpn,
                           "utls": {"enabled": True, "fingerprint": fp},
@@ -610,3 +621,154 @@ class SingBoxTester:
         if passwd:
             out["password"] = passwd
         return out
+
+
+class XrayTester:
+    XRAY_SEMAPHORE = threading.Semaphore(2)
+
+    def test(self, uri: str, port: int) -> tuple[bool, float, str]:
+        if not os.path.isfile(XRAY):
+            return False, 0, f"xray не найден: {XRAY}"
+        config = self._make_config(uri, port)
+        if config is None:
+            return False, 0, "unsupported protocol"
+        proc = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="xr_", dir=TMP_DIR) as tmp_dir:
+                config_path = os.path.join(tmp_dir, "config.json")
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+                with self.XRAY_SEMAPHORE:
+                    time.sleep(random.uniform(0.1, 0.3))
+                    proc = subprocess.Popen(
+                        [XRAY, "run", "-c", config_path],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
+                    )
+                    time.sleep(0.5)
+                    if proc.poll() is not None:
+                        err = ""
+                        try:
+                            out_b, err_b = proc.communicate(timeout=0.5)
+                            err = (out_b + err_b).decode("utf-8", errors="replace")[:200]
+                        except Exception:
+                            pass
+                        return False, 0, f"xray err: {err}" if err else "xray failed to start"
+                    ok, lat = test_http_proxy(f"http://127.0.0.1:{port}", timeout=5)
+                    proc.kill()
+                    try:
+                        proc.wait(1)
+                    except Exception:
+                        pass
+                    proc = None
+                return ok, lat, ""
+        except Exception as e:
+            return False, 0, str(e)
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(1)
+                except Exception:
+                    pass
+
+    def _make_config(self, uri: str, local_port: int) -> Optional[dict]:
+        proto = get_protocol(uri)
+        if proto != 'vless':
+            return None
+        outbound = self._parse_vless(uri)
+        if outbound is None:
+            return None
+        return {
+            "log": {"loglevel": "warning"},
+            "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "http", "settings": {}}],
+            "outbounds": [outbound],
+        }
+
+    def _parse_vless(self, uri: str) -> Optional[dict]:
+        try:
+            clean = uri.replace('vless://', '')
+            q = self._q(clean)
+            at = clean.find('@')
+            uuid = clean[:at]
+            rest = clean[at + 1:]
+            qm = rest.find('?')
+            hp = rest[:qm] if qm != -1 else rest
+            colon = hp.rfind(':')
+            host = hp[:colon]
+            try:
+                port = int(hp[colon + 1:])
+            except Exception:
+                port = 443
+            flow = self._qv(q, 'flow')
+            security = self._qv(q, 'security', '')
+            sni = self._qv(q, 'sni', host)
+            fp = self._qv(q, 'fp', 'chrome')
+            alpn = self._qv(q, 'alpn', 'http/1.1')
+            ttype = self._qv(q, 'type', 'tcp')
+
+            vnext = {
+                "address": host,
+                "port": port,
+                "users": [{"id": uuid, "encryption": "none"}]
+            }
+            if flow:
+                vnext["users"][0]["flow"] = flow
+
+            outbound = {
+                "protocol": "vless",
+                "settings": {"vnext": [vnext]},
+                "streamSettings": {"network": ttype}
+            }
+
+            if security == 'reality':
+                pbk = self._qv(q, 'pbk').replace(' ', '+').replace('+', '-').replace('/', '_')
+                sid = self._qv(q, 'sid', '').replace(' ', '+')
+                outbound["streamSettings"]["security"] = "reality"
+                outbound["streamSettings"]["realitySettings"] = {
+                    "serverName": sni or host,
+                    "fingerprint": fp,
+                    "publicKey": pbk,
+                    "shortId": sid,
+                }
+            elif security in ('tls', 'xtls'):
+                outbound["streamSettings"]["security"] = "tls"
+                outbound["streamSettings"]["tlsSettings"] = {
+                    "serverName": sni or host,
+                    "fingerprint": fp,
+                    "alpn": [alpn],
+                }
+
+            if ttype == 'ws':
+                path = self._qv(q, 'path', '/')
+                hdr = self._qv(q, 'host', sni or host)
+                outbound["streamSettings"]["wsSettings"] = {
+                    "path": path,
+                    "headers": {"Host": hdr},
+                }
+            elif ttype == 'grpc':
+                outbound["streamSettings"]["grpcSettings"] = {
+                    "serviceName": self._qv(q, 'serviceName', ''),
+                }
+            elif ttype == 'xhttp':
+                host_hdr = self._qv(q, 'host', '')
+                path = self._qv(q, 'path', '/')
+                mode = self._qv(q, 'mode', 'auto')
+                outbound["streamSettings"]["xhttpSettings"] = {
+                    "mode": mode,
+                    "host": host_hdr or host,
+                    "path": path,
+                }
+            return outbound
+        except Exception:
+            return None
+
+    def _q(self, uri: str) -> dict:
+        qm = uri.find('?')
+        if qm == -1:
+            return {}
+        return urllib.parse.parse_qs(uri[qm + 1:])
+
+    def _qv(self, q: dict, key: str, default=""):
+        vals = q.get(key, [])
+        return vals[0] if vals else default
