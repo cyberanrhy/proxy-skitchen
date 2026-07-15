@@ -408,7 +408,7 @@ class ProxyTableModel(QAbstractTableModel):
                 return QColor("#ff5252")
             return None
         if role == Qt.ItemDataRole.BackgroundRole:
-            if p.deep_ok:
+            if p.deep_ok or p.rkn_ok:
                 return QColor("#1a2e26")
             if p.deep_tested or p.rkn_tested:
                 return QColor("#2e1a1e")

@@ -281,7 +281,7 @@ class TesterWorker(QObject):
                         self.result_signal.emit(row, ok, latency, error, ttype)
                     except Exception as ex:
                         _debug(f"test_batch: fut {row} raised {ex}")
-                        self.result_signal.emit(row, False, 0.0, str(ex), 1)
+                        self.result_signal.emit(row, False, 0.0, str(ex), 2 if self._rkn else 1)
                     done_count += 1
                     self.count_signal.emit(done_count)
                 if done:
@@ -354,8 +354,8 @@ class TesterWorker(QObject):
             if not self._xr_tester:
                 from .tester import XrayTester
                 self._xr_tester = XrayTester()
-            ok, lat, err = self._xr_tester.test(entry.uri, port)
-            return ok, lat, err, []
+            ok, lat, err, results = self._xr_tester.test_rkn(entry.uri, port)
+            return ok, lat, err, results
         if not self._sb_tester:
             from .tester import SingBoxTester
             self._sb_tester = SingBoxTester()

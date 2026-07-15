@@ -956,7 +956,7 @@ class DownloadPage(WizardPage):
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
         self.log_out.setMaximumHeight(100)
-        self.log_out.setStyleSheet("background: #181c2e; color: #a0b0cc; font-size: 12px;")
+        self.log_out.setStyleSheet("background: #181c2e; color: #f0f4ff; font-size: 12px;")
         layout.addWidget(self.log_out)
 
         # Bottom nav
@@ -1392,7 +1392,7 @@ class TestPage(WizardPage):
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
         self.log_out.setFixedHeight(100)
-        self.log_out.setStyleSheet("color: #a0b0cc; font-size: 12px;")
+        self.log_out.setStyleSheet("color: #f0f4ff; font-size: 12px;")
         layout.addWidget(self.log_out)
 
         # ── Bottom nav ──
@@ -1842,8 +1842,8 @@ class TestPage(WizardPage):
     def _update_stats(self):
         entries = self._filtered_entries
         total = len(entries)
-        valid = sum(1 for e in entries if e.deep_ok)
-        dead = sum(1 for e in entries if not e.deep_ok and (e.deep_tested or e.rkn_tested))
+        valid = sum(1 for e in entries if e.deep_ok or e.rkn_ok)
+        dead = sum(1 for e in entries if not (e.deep_ok or e.rkn_ok) and (e.deep_tested or e.rkn_tested))
         rkn_ok = sum(1 for e in entries if e.rkn_tested and e.rkn_ok)
         rkn_total = sum(1 for e in entries if e.rkn_tested)
         self.lbl_total.setText(f"Всего: {total}")
