@@ -333,29 +333,34 @@ class TesterWorker(QObject):
 
     def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
         port = 19999 + (hash(entry.uri) % 10000)
-        use_xray = 'type=xhttp' in entry.uri.lower()
+        use_xray = entry.protocol == 'VLESS' and 'reality' in entry.uri.lower()
         _debug(f"_deep_test: {entry.host}:{entry.port} use_xray={use_xray} port={port}")
         if use_xray:
             if not self._xr_tester:
                 from .tester import XrayTester
                 self._xr_tester = XrayTester()
             result = self._xr_tester.test(entry.uri, port)
-        else:
-            if not self._sb_tester:
-                from .tester import SingBoxTester
-                self._sb_tester = SingBoxTester()
-            result = self._sb_tester.test(entry.uri, port)
+            if result[0]:
+                _debug(f"_deep_test: {entry.host}:{entry.port} xray ok={result}")
+                return result
+        if not self._sb_tester:
+            from .tester import SingBoxTester
+            self._sb_tester = SingBoxTester()
+        result = self._sb_tester.test(entry.uri, port)
         _debug(f"_deep_test: {entry.host}:{entry.port} result={result}")
         return result
 
     def _rkn_test(self, entry: ProxyEntry) -> tuple[bool, float, str, list]:
         port = 29999 + (hash(entry.uri) % 10000)
-        if 'type=xhttp' in entry.uri.lower():
+        use_xray = entry.protocol == 'VLESS' and 'reality' in entry.uri.lower()
+        if use_xray:
             if not self._xr_tester:
                 from .tester import XrayTester
                 self._xr_tester = XrayTester()
             ok, lat, err, results = self._xr_tester.test_rkn(entry.uri, port)
-            return ok, lat, err, results
+            if ok:
+                _debug(f"_rkn_test: {entry.host}:{entry.port} xray ok={ok}")
+                return ok, lat, err, results
         if not self._sb_tester:
             from .tester import SingBoxTester
             self._sb_tester = SingBoxTester()
