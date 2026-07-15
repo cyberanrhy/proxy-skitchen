@@ -242,6 +242,7 @@ class TesterWorker(QObject):
         self._deep_threads = deep_threads
         self._stop = False
         self._sb_tester = None
+        self._xr_tester = None
 
     def stop(self):
         _debug(f"TesterWorker.stop() called, was_stop={self._stop}")
@@ -318,7 +319,9 @@ class TesterWorker(QObject):
     def _test_one(self, entry: ProxyEntry, _resolved: dict = {}) -> tuple[bool, float, str, int]:
         host = entry.host
         port = entry.port
+        _debug(f"_test_one: host={host!r} port={port!r} proto={entry.protocol} rkn={self._rkn}")
         if not host or not port:
+            _debug(f"_test_one: no host/port for {entry.uri[:80]}")
             return False, 0, "no host/port", 1
         if self._rkn:
             rkn_ok, rkn_lat, rkn_err, rkn_results = self._rkn_test(entry)
@@ -329,17 +332,33 @@ class TesterWorker(QObject):
         return deep_ok, deep_lat, deep_err, 1
 
     def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
-        if not self._sb_tester:
-            from .tester import SingBoxTester
-            self._sb_tester = SingBoxTester()
         port = 19999 + (hash(entry.uri) % 10000)
-        return self._sb_tester.test(entry.uri, port)
+        use_xray = 'type=xhttp' in entry.uri.lower()
+        _debug(f"_deep_test: {entry.host}:{entry.port} use_xray={use_xray} port={port}")
+        if use_xray:
+            if not self._xr_tester:
+                from .tester import XrayTester
+                self._xr_tester = XrayTester()
+            result = self._xr_tester.test(entry.uri, port)
+        else:
+            if not self._sb_tester:
+                from .tester import SingBoxTester
+                self._sb_tester = SingBoxTester()
+            result = self._sb_tester.test(entry.uri, port)
+        _debug(f"_deep_test: {entry.host}:{entry.port} result={result}")
+        return result
 
     def _rkn_test(self, entry: ProxyEntry) -> tuple[bool, float, str, list]:
+        port = 29999 + (hash(entry.uri) % 10000)
+        if 'type=xhttp' in entry.uri.lower():
+            if not self._xr_tester:
+                from .tester import XrayTester
+                self._xr_tester = XrayTester()
+            ok, lat, err = self._xr_tester.test(entry.uri, port)
+            return ok, lat, err, []
         if not self._sb_tester:
             from .tester import SingBoxTester
             self._sb_tester = SingBoxTester()
-        port = 29999 + (hash(entry.uri) % 10000)
         return self._sb_tester.test_rkn_bypass(entry.uri, port)
 
 

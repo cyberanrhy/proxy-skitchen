@@ -10,6 +10,7 @@ import base64
 import faulthandler
 import json
 import os
+import platform
 import random
 import re
 import socket
@@ -33,6 +34,7 @@ import socks
 from sockshandler import SocksiPyHandler
 
 # ─── QT COMPATIBILITY LAYER ───
+IS_WINDOWS = platform.system() == "Windows"
 os.environ["QT_API"] = "pyside6"
 
 try:
@@ -665,7 +667,7 @@ class ProxyTester:
             return None
         outbounds[0]["tag"] = "proxy"
         return {
-            "log": {"level": "error", "output": "/dev/null"},
+            "log": {"level": "error", "output": "nul" if IS_WINDOWS else "/dev/null"},
             "inbounds": [{
                 "type": "http",
                 "tag": "http-in",

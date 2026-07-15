@@ -956,7 +956,7 @@ class DownloadPage(WizardPage):
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
         self.log_out.setMaximumHeight(100)
-        self.log_out.setStyleSheet("background: #181c2e; color: #4a5168; font-size: 12px;")
+        self.log_out.setStyleSheet("background: #181c2e; color: #a0b0cc; font-size: 12px;")
         layout.addWidget(self.log_out)
 
         # Bottom nav
@@ -1391,7 +1391,8 @@ class TestPage(WizardPage):
         # ── Log (compact) ──
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
-        self.log_out.setFixedHeight(70)
+        self.log_out.setFixedHeight(100)
+        self.log_out.setStyleSheet("color: #a0b0cc; font-size: 12px;")
         layout.addWidget(self.log_out)
 
         # ── Bottom nav ──
