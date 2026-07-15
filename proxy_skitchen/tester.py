@@ -205,7 +205,7 @@ class SingBoxTester:
                 except Exception:
                     pass
 
-    def test_rkn_bypass(self, uri: str, port: int, max_domains: int = 2) -> tuple[bool, float, str, list[dict]]:
+    def test_rkn_bypass(self, uri: str, port: int) -> tuple[bool, float, str, list[dict]]:
         config = self._make_config(uri, port)
         if config is None:
             return False, 0, "unsupported protocol", []
@@ -228,32 +228,28 @@ class SingBoxTester:
                     proxy_url = f"http://127.0.0.1:{port}"
                     basic_ok, basic_lat = test_http_proxy(proxy_url)
                     if not basic_ok:
+                        rkn_ok = False
                         result = (False, 0, "proxy not working", results)
                     else:
-                        import random as _rnd
-                        test_domains = _rnd.sample(RKN_BLOCKED_DOMAINS, min(max_domains, len(RKN_BLOCKED_DOMAINS)))
-                        success_count = 0
-                        total_lat = 0.0
-                        for domain, name in test_domains:
-                            try:
-                                url = f"https://{domain}/"
-                                start = time.time()
-                                handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
-                                opener = urllib.request.build_opener(handler)
-                                opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
-                                resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
-                                code = resp.getcode()
-                                elapsed = (time.time() - start) * 1000
-                                ok = code in (200, 301, 302, 304)
-                                if ok:
-                                    success_count += 1
-                                    total_lat += elapsed
-                                results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
-                            except Exception as ex:
-                                err_str = str(ex)[:60]
-                                results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
-                        rkn_ok = success_count >= max(1, len(test_domains) // 2)
-                        avg_lat = total_lat / max(success_count, 1)
+                        domain, name = ("t.me", "Telegram")
+                        try:
+                            url = f"https://{domain}/"
+                            start = time.time()
+                            handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
+                            opener = urllib.request.build_opener(handler)
+                            opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
+                            resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
+                            code = resp.getcode()
+                            elapsed = (time.time() - start) * 1000
+                            ok = code in (200, 301, 302, 304)
+                            results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
+                        except Exception as ex:
+                            err_str = str(ex)[:60]
+                            results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
+                            ok = False
+                            elapsed = 0
+                        rkn_ok = ok
+                        avg_lat = elapsed if ok else 0
                         result = (rkn_ok, avg_lat, "", results)
                     proc.kill()
                     try:
@@ -261,6 +257,7 @@ class SingBoxTester:
                     except Exception:
                         pass
                     proc = None
+                _debug(f"rkn_bypass: {uri[:60]} basic_ok={basic_ok} rkn_ok={rkn_ok}")
                 return result
         except Exception as e:
             return False, 0, str(e), results
@@ -625,6 +622,72 @@ class SingBoxTester:
 
 class XrayTester:
     XRAY_SEMAPHORE = threading.Semaphore(2)
+
+    def test_rkn(self, uri: str, port: int) -> tuple[bool, float, str, list]:
+        config = self._make_config(uri, port)
+        if config is None:
+            return False, 0, "unsupported protocol", []
+        proc = None
+        results = []
+        try:
+            with tempfile.TemporaryDirectory(prefix="xr_rkn_", dir=TMP_DIR) as tmp_dir:
+                config_path = os.path.join(tmp_dir, "config.json")
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+                with self.XRAY_SEMAPHORE:
+                    time.sleep(random.uniform(0.1, 0.3))
+                    proc = subprocess.Popen(
+                        [XRAY, "run", "-c", config_path],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
+                    )
+                    time.sleep(0.5)
+                    if proc.poll() is not None:
+                        err = ""
+                        try:
+                            out_b, err_b = proc.communicate(timeout=0.5)
+                            err = (out_b + err_b).decode("utf-8", errors="replace")[:200]
+                        except Exception:
+                            pass
+                        return False, 0, f"xray err: {err}" if err else "xray failed to start", []
+                    proxy_url = f"http://127.0.0.1:{port}"
+                    basic_ok, basic_lat = test_http_proxy(proxy_url, timeout=5)
+                    if not basic_ok:
+                        return False, basic_lat, "proxy not working", []
+                    domain, name = ("t.me", "Telegram")
+                    try:
+                        url = f"https://{domain}/"
+                        start = time.time()
+                        handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
+                        opener = urllib.request.build_opener(handler)
+                        opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
+                        resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
+                        code = resp.getcode()
+                        elapsed = (time.time() - start) * 1000
+                        ok = code in (200, 301, 302, 304)
+                        results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
+                    except Exception as ex:
+                        err_str = str(ex)[:60]
+                        results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
+                        ok = False
+                        elapsed = 0
+                    proc.kill()
+                    try:
+                        proc.wait(1)
+                    except Exception:
+                        pass
+                    proc = None
+                _debug(f"xr_rkn: {uri[:60]} basic_ok={basic_ok} ok={ok}")
+                return ok, elapsed if ok else 0, "", results
+        except Exception as e:
+            return False, 0, str(e), results
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(1)
+                except Exception:
+                    pass
 
     def test(self, uri: str, port: int) -> tuple[bool, float, str]:
         if not os.path.isfile(XRAY):
