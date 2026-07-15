@@ -1759,7 +1759,7 @@ class TestPage(WizardPage):
             return
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         path = os.path.join(DESKTOP_DIR, f"hiddify_sub_{ts}.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         self._log(f"✅ Hiddify подпись сохранена: {path}")
         do_gh = self._main.source_page.chk_github_push.isChecked()
@@ -2175,7 +2175,10 @@ class ExportPage(WizardPage):
         return format_raw
 
     def _get_content(self) -> str:
-        entries = self._main.test_page.get_entries()
+        tp = self._main.test_page
+        entries = tp.get_entries()
+        if not entries:
+            entries = tp._entries
         fmt = self._get_format_func()
         clean_names = self.chk_clean_names.isChecked()
         clean = self.chk_clean_uris.isChecked()
@@ -2247,7 +2250,7 @@ class ExportPage(WizardPage):
                                               "All files (*.*)")
         if not path:
             return
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
@@ -2258,11 +2261,13 @@ class ExportPage(WizardPage):
             return
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         path = os.path.join(DESKTOP_DIR, f"sub_ski_{ts}.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
     def _get_content_with_header(self) -> str:
+        if self.fmt_hiddify.isChecked():
+            return self._get_content()
         title = self.sub_title_input.text().strip() or "My Subscription"
         repo = self.gh_repo_input.text().strip()
         fpath = self.gh_file_input.text().strip()

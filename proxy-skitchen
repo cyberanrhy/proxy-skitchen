@@ -766,8 +766,14 @@ class ProxyTester:
             service_name = self._query_get(q, 'serviceName', '')
             out["transport"] = {"type": "grpc", "service_name": service_name}
         elif ttype == 'xhttp':
-            mode = self._query_get(q, 'mode', 'auto')
-            out["transport"] = {"type": "xhttp", "mode": mode}
+            xhttp_mode = self._query_get(q, 'mode', 'auto')
+            xhttp_host = self._query_get(q, 'host', '')
+            xhttp_path = self._query_get(q, 'path', '/')
+            out["transport"] = {"type": "xhttp", "mode": xhttp_mode}
+            if xhttp_host:
+                out["transport"]["host"] = xhttp_host
+            if xhttp_path:
+                out["transport"]["path"] = xhttp_path
         return out
 
     def _parse_trojan(self, uri: str) -> dict:
@@ -799,7 +805,14 @@ class ProxyTester:
             service_name = self._query_get(q, 'serviceName', '')
             out["transport"] = {"type": "grpc", "service_name": service_name}
         elif ttype == 'xhttp':
-            out["transport"] = {"type": "xhttp", "mode": self._query_get(q, 'mode', 'auto')}
+            xhttp_mode = self._query_get(q, 'mode', 'auto')
+            xhttp_host = self._query_get(q, 'host', '')
+            xhttp_path = self._query_get(q, 'path', '/')
+            out["transport"] = {"type": "xhttp", "mode": xhttp_mode}
+            if xhttp_host:
+                out["transport"]["host"] = xhttp_host
+            if xhttp_path:
+                out["transport"]["path"] = xhttp_path
         return out
 
     def _parse_vmess(self, uri: str) -> Optional[dict]:

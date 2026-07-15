@@ -29,8 +29,13 @@ SB_TIMEOUT = 8
 SB_SEMAPHORE = threading.Semaphore(3)
 
 RKN_BLOCKED_DOMAINS = [
-    ("rutracker.org", "RuTracker"),
+    ("www.bbc.com/russian", "BBC Russian"),
     ("meduza.io", "Медуза"),
+    ("kinozal.tv", "Kinozal"),
+    ("rutor.info", "Rutor"),
+    ("lurkmore.to", "Lurkmore"),
+    ("nnmclub.to", "NNM-Club"),
+    ("t.me", "Telegram"),
 ]
 
 RKN_TEST_TIMEOUT = 8
@@ -349,7 +354,14 @@ class SingBoxTester:
         elif ttype == 'grpc':
             out["transport"] = {"type": "grpc", "service_name": self._qv(q, 'serviceName', '')}
         elif ttype == 'xhttp':
-            out["transport"] = {"type": "xhttp", "mode": self._qv(q, 'mode', 'auto')}
+            xhttp_mode = self._qv(q, 'mode', 'auto')
+            xhttp_host = self._qv(q, 'host', '')
+            xhttp_path = self._qv(q, 'path', '/')
+            out["transport"] = {"type": "xhttp", "mode": xhttp_mode}
+            if xhttp_host:
+                out["transport"]["host"] = xhttp_host
+            if xhttp_path:
+                out["transport"]["path"] = xhttp_path
         return out
 
     def _parse_trojan(self, uri: str) -> dict:
@@ -385,7 +397,14 @@ class SingBoxTester:
         elif ttype == 'grpc':
             out["transport"] = {"type": "grpc", "service_name": self._qv(q, 'serviceName', '')}
         elif ttype == 'xhttp':
-            out["transport"] = {"type": "xhttp", "mode": self._qv(q, 'mode', 'auto')}
+            xhttp_mode = self._qv(q, 'mode', 'auto')
+            xhttp_host = self._qv(q, 'host', '')
+            xhttp_path = self._qv(q, 'path', '/')
+            out["transport"] = {"type": "xhttp", "mode": xhttp_mode}
+            if xhttp_host:
+                out["transport"]["host"] = xhttp_host
+            if xhttp_path:
+                out["transport"]["path"] = xhttp_path
         return out
 
     def _parse_vmess(self, uri: str) -> Optional[dict]:
