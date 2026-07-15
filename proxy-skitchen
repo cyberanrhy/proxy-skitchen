@@ -1385,23 +1385,22 @@ class TesterWorker(QObject):
             if not host or not port:
                 return (row, False, 0, "no server:port", 0 if not deep else 1)
 
+            if deep:
+                try:
+                    ok, sb_latency, error, proc = tester.test_via_singbox(p.uri, port=9999 + (row % 1000))
+                    if proc:
+                        self._sb_procs.append(proc)
+                    return (row, ok, sb_latency, error, 1)
+                except Exception as e:
+                    return (row, False, 0, str(e), 1)
+
             start = time.monotonic()
             tcp_ok = tester.test_tcp(host, port)
             if not tcp_ok:
                 return (row, False, 0, "TCP refused", 0)
 
             tcp_latency = (time.monotonic() - start) * 1000
-
-            if not deep:
-                return (row, True, tcp_latency, "", 0)
-
-            try:
-                ok, sb_latency, error, proc = tester.test_via_singbox(p.uri, port=9999 + (row % 1000))
-                if proc:
-                    self._sb_procs.append(proc)
-                return (row, ok, sb_latency, error, 1)
-            except Exception as e:
-                return (row, False, 0, str(e), 1)
+            return (row, True, tcp_latency, "", 0)
 
         pool = ThreadPoolExecutor(max_workers=self._deep_threads if self._deep else self._test_threads)
         try:
