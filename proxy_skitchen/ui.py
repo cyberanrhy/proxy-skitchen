@@ -982,7 +982,7 @@ class DownloadPage(WizardPage):
         self.lbl_total.setStyleSheet(f"padding: 4px 8px; background: {ibg}; border: 1px solid {bd}; border-radius: 4px; color: {fg};")
         self.lbl_detail.setStyleSheet(f"padding: 4px 8px; background: {ibg}; border: 1px solid {bd}; border-radius: 4px; color: {fg};")
         self.lbl_phase.setStyleSheet(f"font-size: 11px; color: {m};")
-        self.log_out.setStyleSheet(f"background: {ibg}; color: {m}; font-family: monospace; font-size: 11px; border: 1px solid {bd}; border-radius: 4px; padding: 2px 4px;")
+        self.log_out.setStyleSheet(f"background: {ibg}; color: {fg}; font-family: monospace; font-size: 11px; border: 1px solid {bd}; border-radius: 4px; padding: 2px 4px;")
         self.progress_bar.setStyleSheet(f"QProgressBar {{ border: 1px solid {bd}; border-radius: 4px; background: {ibg}; text-align: center; color: {fg}; font-size: 10px; }} QProgressBar::chunk {{ background: {t['accent']}; border-radius: 3px; }}")
 
         btn_s = f"QPushButton {{ background: {t['button_bg']}; border: 1px solid {bd}; border-radius: 4px; padding: 4px 12px; font-weight: bold; color: {fg}; }} QPushButton:hover {{ background: {t['accent']}; color: white; border-color: {t['accent']}; }}"
@@ -1471,7 +1471,7 @@ class TestPage(WizardPage):
             QHeaderView::section {{ background: {bg}; color: {mf}; border: none; border-bottom: 1px solid {bd}; padding: 4px 6px; font-size: 11px; font-weight: bold; }}
         """)
 
-        self.log_out.setStyleSheet(f"background: {ibg}; color: {m}; font-family: monospace; font-size: 11px; border: 1px solid {bd}; border-radius: 4px; padding: 2px 4px;")
+        self.log_out.setStyleSheet(f"background: {ibg}; color: {fg}; font-family: monospace; font-size: 11px; border: 1px solid {bd}; border-radius: 4px; padding: 2px 4px;")
 
         exp_d = f"QPushButton {{ background: {ok_bg}; border: 2px solid {ok}; border-radius: 4px; padding: 6px 20px; font-weight: bold; font-size: 12px; color: {ok}; }} QPushButton:hover {{ background: rgba(116,199,160,0.2); }} QPushButton:disabled {{ color: {m}; border-color: {bd}; background: transparent; }}"
         self.btn_export.setStyleSheet(exp_d)
