@@ -8,7 +8,7 @@ IS_MACOS = platform.system() == "Darwin"
 
 try:
     from PySide6.QtCore import (
-        Qt, Signal, QObject, QThread, QTimer, Slot, QUrl, QCoreApplication,
+        Qt, Signal, QObject, QThread, QTimer, Slot, QUrl, QCoreApplication, QEvent,
         QSortFilterProxyModel, QEventLoop, QPropertyAnimation, QEasingCurve,
         QAbstractTableModel, QModelIndex,
     )
@@ -27,7 +27,7 @@ try:
     _QT5 = False
 except ImportError:
     from PySide2.QtCore import (
-        Qt, Signal, QObject, QThread, QTimer, Slot, QUrl, QCoreApplication,
+        Qt, Signal, QObject, QThread, QTimer, Slot, QUrl, QCoreApplication, QEvent,
         QSortFilterProxyModel, QEventLoop, QPropertyAnimation, QEasingCurve,
         QAbstractTableModel, QModelIndex,
     )
