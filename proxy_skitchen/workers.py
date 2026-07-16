@@ -555,7 +555,7 @@ class GitHubSearchWorker(QObject):
         query = urllib.parse.quote(keyword)
         date_filter = ""
         if self.time_filter_days > 0:
-            since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%d")
+            since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             date_filter = f"+pushed:>={since}"
         url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={min(self.max_repos, 30)}"
         data = self._api(url)
@@ -651,7 +651,7 @@ class GitHubSearchWorker(QObject):
         date_filter = ""
         if self.time_filter_days > 0:
             from datetime import datetime, timedelta, timezone
-            since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%d")
+            since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             date_filter = f"+pushed:>={since}"
         url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={min(self.max_repos, 30)}"
         data = self._api(url)
