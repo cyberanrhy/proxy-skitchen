@@ -35,7 +35,7 @@ def excepthook(etype, value, tb):
 
 sys.excepthook = excepthook
 
-from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW
+from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW, IS_WINDOWS
 from .models import ProxyEntry, _auth_data, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
 from .exporters import format_raw, _clean_uri
@@ -315,6 +315,12 @@ def build_parser(runner: CliRunner):
 
 
 def main_gui():
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("proxy-skitchen")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName("Proxy Skitchen")
     from .ui import MainWindow
