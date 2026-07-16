@@ -2710,8 +2710,8 @@ class MainWindow(QMainWindow):
         self.update_status_bar()
 
     def changeEvent(self, event):
-        if event.type() == event.WindowStateChange and self.windowState() & Qt.WindowMinimized:
-            event.accept()
+        ev_type = getattr(QEvent, "WindowStateChange", getattr(QEvent.Type, "WindowStateChange", 105))
+        if event.type() == ev_type and self.windowState() & Qt.WindowMinimized:
             QTimer.singleShot(0, self.hide)
             return
         super().changeEvent(event)
