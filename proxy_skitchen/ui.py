@@ -2532,8 +2532,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(_("main.title"))
         # Window icon for taskbar
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
+        self._app_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
         if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
+            self.setWindowIcon(self._app_icon)
         self.setMinimumSize(640, 480)
         self.resize(880, 600)
         self._pipeline_mode = False
@@ -2591,6 +2592,19 @@ class MainWindow(QMainWindow):
 
         self._current_page = 0
         self._tab_btns[0].setProperty("active", True)
+
+        self._tray = QSystemTrayIcon(self._app_icon, self)
+        self._tray.setToolTip("Proxy Skitchen")
+        tray_menu = QMenu()
+        show_act = tray_menu.addAction("Показать")
+        show_act.triggered.connect(self._show_from_tray)
+        tray_menu.addSeparator()
+        quit_act = tray_menu.addAction("Выход")
+        quit_act.triggered.connect(self._quit_app)
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
         self.apply_theme()
         self.update_status_bar()
 
@@ -2695,11 +2709,41 @@ class MainWindow(QMainWindow):
             self.source_page._refresh_toolbar_buttons()
         self.update_status_bar()
 
+    def changeEvent(self, event):
+        if event.type() == event.WindowStateChange and self.windowState() & Qt.WindowMinimized:
+            event.accept()
+            QTimer.singleShot(0, self.hide)
+            return
+        super().changeEvent(event)
+
     def closeEvent(self, event):
+        if not self._tray or not self._tray.isVisible():
+            event.accept()
+            return
+        event.ignore()
+        self.hide()
+        self._tray.showMessage(
+            "Proxy Skitchen",
+            "Программа свёрнута в трей. Используйте иконку в трее для восстановления.",
+            self._app_icon, 2000,
+        )
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _on_tray_activated(self, reason: int):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self._show_from_tray()
+
+    def _quit_app(self):
+        self._tray.hide()
+        self._tray = None
         self.source_page._cleanup_gh()
         self.download_page._cleanup_net()
         self.test_page._cleanup_test()
-        event.accept()
+        QApplication.instance().quit()
 
 def get_style_string(colors: dict) -> str:
     return f"""
