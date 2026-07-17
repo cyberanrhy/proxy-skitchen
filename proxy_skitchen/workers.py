@@ -1,6 +1,7 @@
 import os, sys, json, re, base64, time, socket, urllib.request, urllib.error, concurrent.futures, html, subprocess, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, TimeoutError as FUTURE_TIMEOUT
 from typing import Optional
+from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -373,6 +374,7 @@ class GitHubSearchWorker(QObject):
     error_signal = Signal(str)
     progress_signal = Signal(str)
     count_signal = Signal(int)
+    log_signal = Signal(str)
 
     def __init__(self, keywords: list[str], known_sources: set,
                  explicit_repos: Optional[list[str]] = None,
@@ -397,6 +399,13 @@ class GitHubSearchWorker(QObject):
         self._token_idx = 0
         self._procs: list[subprocess.Popen] = []
         self._procs_lock = threading.Lock()
+
+    def _log(self, msg: str):
+        _debug(msg)
+        try:
+            self.log_signal.emit(msg)
+        except Exception:
+            pass
 
     def stop(self):
         self._stop = True
@@ -747,7 +756,7 @@ class GitHubSearchWorker(QObject):
             fut_map = {}
             for item in candidates:
                 path = item.get("path", "")
-                raw_url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{path}"
+                raw_url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{quote(path, safe='/')}"
                 size = item.get("size", 0) or 0
                 fut = pool.submit(self._download_file, raw_url, size, full_name, path)
                 fut_map[fut] = path
@@ -767,16 +776,19 @@ class GitHubSearchWorker(QObject):
         if size > 5 * 1024 * 1024:
             return None
         try:
+            use_proxy = _settings_data.get("proxy_enabled", True)
             cmd = ["curl", "-sL", "--connect-timeout", "5", "--max-time", "10"]
             if self.weak_hw:
                 cmd.extend(["--range", "0-51200"])
-            if _settings_data.get("proxy_enabled", True):
+            if use_proxy:
                 cmd.extend(["--proxy", "socks5://127.0.0.1:12334"])
             cmd.extend(["-H", "User-Agent: Mozilla/5.0", raw_url])
             result = subprocess.run(cmd, capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
             if result.returncode != 0:
+                self._log(f"DL FAIL {path}: curl rc={result.returncode}, proxy={use_proxy}, err={result.stderr.decode()[:100]}")
                 return None
             body = result.stdout.decode("utf-8", errors="ignore")
+            self._log(f"DL OK {path}: {len(body)} bytes, proxy={use_proxy}")
             ext = os.path.splitext(path)[1].lower()
             embedded_links = []
             seen = set()
@@ -847,6 +859,7 @@ class GitHubSearchWorker(QObject):
         full_name = m.group(1).rstrip('/')
         if full_name.endswith('.git'):
             full_name = full_name[:-4]
+        self._log(f"WALK explicit start: {full_name}")
         self.progress_signal.emit(f"  📁 explicit: {full_name}")
         branches_to_try = ["main", "master"]
         tree = None
@@ -859,19 +872,23 @@ class GitHubSearchWorker(QObject):
                 if tree:
                     self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries (branch: {branch})")
                     break
-        if tree is None:
+        if not tree:
+            self._log(f"WALK {full_name}: tree empty after trying branches")
             return []
         old_max = self.max_files
         self.max_files = 999999
         candidates = self._filter_tree_items(full_name, tree)
         self.max_files = old_max
         if not candidates:
+            self._log(f"WALK {full_name}: no candidates after filter")
             return []
         _base64_dirs = frozenset(("base64", "sub_base64"))
         candidates.sort(key=lambda it: any(d in _base64_dirs for d in it.get("path", "").lower().split("/")))
         candidates = candidates[:200]
+        self._log(f"WALK {full_name}: {len(candidates)} candidates to download")
         self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
         results = self._download_files(full_name, branch, candidates)
+        self._log(f"WALK {full_name}: {len(results)} results from downloads")
         self.partial_result_signal.emit(list(results))
         self.count_signal.emit(len(results))
         return results
