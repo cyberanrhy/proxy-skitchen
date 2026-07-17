@@ -792,11 +792,30 @@ class GitHubSearchWorker(QObject):
                         if u not in self.known_sources and u not in seen:
                             seen.add(u)
                             embedded_links.append(u)
+                    try:
+                        decoded = base64.b64decode(line, validate=True).decode("utf-8", errors="replace")
+                        for dl in decoded.splitlines():
+                            for u in extract_inline_uris(dl):
+                                if u not in self.known_sources and u not in seen:
+                                    seen.add(u)
+                                    embedded_links.append(u)
+                    except Exception:
+                        pass
                 else:
                     if is_proxy_uri(line):
                         if line not in self.known_sources and line not in seen:
                             seen.add(line)
                             embedded_links.append(line)
+                    else:
+                        try:
+                            decoded = base64.b64decode(line, validate=True).decode("utf-8", errors="replace")
+                            for dl in decoded.splitlines():
+                                dl = dl.strip()
+                                if is_proxy_uri(dl) and dl not in self.known_sources and dl not in seen:
+                                    seen.add(dl)
+                                    embedded_links.append(dl)
+                        except Exception:
+                            pass
             if self.hidden_search:
                 json_uris = parse_json_proxies(body)
                 for u in json_uris:
@@ -839,7 +858,10 @@ class GitHubSearchWorker(QObject):
             return []
         tree = data.get("tree", [])
         self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries")
+        old_max = self.max_files
+        self.max_files = 0  # no limit for explicit repos
         candidates = self._filter_tree_items(full_name, tree)
+        self.max_files = old_max
         if not candidates:
             return []
         self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
