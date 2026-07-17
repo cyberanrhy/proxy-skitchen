@@ -859,11 +859,14 @@ class GitHubSearchWorker(QObject):
         tree = data.get("tree", [])
         self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries")
         old_max = self.max_files
-        self.max_files = 999999  # no limit for explicit repos
+        self.max_files = 999999
         candidates = self._filter_tree_items(full_name, tree)
         self.max_files = old_max
         if not candidates:
             return []
+        _base64_dirs = frozenset(("base64", "sub_base64"))
+        candidates.sort(key=lambda it: any(d in _base64_dirs for d in it.get("path", "").lower().split("/")))
+        candidates = candidates[:200]
         self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
         results = self._download_files(full_name, default_branch, candidates)
         self.partial_result_signal.emit(list(results))
