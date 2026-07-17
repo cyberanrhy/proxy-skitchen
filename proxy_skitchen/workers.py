@@ -859,7 +859,7 @@ class GitHubSearchWorker(QObject):
         tree = data.get("tree", [])
         self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries")
         old_max = self.max_files
-        self.max_files = 0  # no limit for explicit repos
+        self.max_files = 999999  # no limit for explicit repos
         candidates = self._filter_tree_items(full_name, tree)
         self.max_files = old_max
         if not candidates:
