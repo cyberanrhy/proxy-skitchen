@@ -361,6 +361,17 @@ class SourcesPage(WizardPage):
         self.gh_status.setWordWrap(True)
         self.gh_status.setStyleSheet("color: #7c89a8; font-size: 11px;")
         gp.addWidget(self.gh_status)
+        self.gh_log = QPlainTextEdit()
+        self.gh_log.setReadOnly(True)
+        self.gh_log.setMaximumBlockCount(300)
+        self.gh_log.setVisible(False)
+        self.gh_log.setFixedHeight(120)
+        self.gh_log.setStyleSheet(
+            "QPlainTextEdit { background: #1a1d23; color: #7c89a8; "
+            "border: 1px solid #2a2d35; border-radius: 3px; "
+            "font-family: Consolas, monospace; font-size: 10px; padding: 2px; }"
+        )
+        gp.addWidget(self.gh_log)
         gh_body.addWidget(self.gh_progress)
 
         layout.addWidget(self.gh_group)
@@ -400,7 +411,7 @@ class SourcesPage(WizardPage):
         src_header.addWidget(self.chk_auto_pipeline)
         self.btn_clear = QPushButton("✕")
         self.btn_clear.setEnabled(False)
-        self.btn_clear.setFixedSize(24, 24)
+        self.btn_clear.setFixedHeight(24)
         self.btn_clear.setStyleSheet("QPushButton { font-size: 12px; padding: 0px; }")
         self.btn_clear.clicked.connect(self._on_clear)
         src_header.addWidget(self.btn_clear)
@@ -551,7 +562,10 @@ class SourcesPage(WizardPage):
         self._gh_worker.error_signal.connect(self._on_gh_error)
         self._gh_worker.progress_signal.connect(self._on_gh_progress)
         self._gh_worker.count_signal.connect(self._on_gh_count)
+        self._gh_worker.log_signal.connect(self._on_gh_log)
         self._gh_thread.started.connect(self._gh_worker.run, Qt.ConnectionType.DirectConnection)
+        self.gh_log.clear()
+        self.gh_log.setVisible(False)
         self.btn_quick_search.setEnabled(False)
         self.btn_deep_search.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -562,6 +576,13 @@ class SourcesPage(WizardPage):
         self._gh_results = []
         self._gh_count = 0
         self._gh_thread.start()
+
+    def _on_gh_log(self, msg: str):
+        self.gh_log.appendPlainText(msg)
+        if not self.gh_log.isVisible():
+            self.gh_log.setVisible(True)
+        sb = self.gh_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _on_gh_progress(self, msg: str):
         c = getattr(self, '_gh_count', 0)
@@ -2710,14 +2731,10 @@ class MainWindow(QMainWindow):
         self.update_status_bar()
 
     def changeEvent(self, event):
-        ev_type = getattr(QEvent, "WindowStateChange", getattr(QEvent.Type, "WindowStateChange", 105))
-        if event.type() == ev_type and self.windowState() & Qt.WindowMinimized:
-            self.hide()
-            return
         super().changeEvent(event)
 
     def closeEvent(self, event):
-        if not self._tray or not self._tray.isVisible():
+        if self._tray is None:
             event.accept()
             return
         event.ignore()
@@ -2729,8 +2746,7 @@ class MainWindow(QMainWindow):
         )
 
     def _show_from_tray(self):
-        self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
-        self.show()
+        self.showNormal()
         self.activateWindow()
         self.raise_()
 
