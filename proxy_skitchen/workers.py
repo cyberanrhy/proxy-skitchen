@@ -848,18 +848,19 @@ class GitHubSearchWorker(QObject):
         if full_name.endswith('.git'):
             full_name = full_name[:-4]
         self.progress_signal.emit(f"  📁 explicit: {full_name}")
-        repo_info = self._api(f"https://api.github.com/repos/{full_name}")
-        if repo_info is None or not isinstance(repo_info, dict):
-            self.progress_signal.emit(f"  ⚠ {full_name}: repo not found via API")
+        branches_to_try = ["main", "master"]
+        tree = None
+        for branch in branches_to_try:
+            api_url = f"https://api.github.com/repos/{full_name}/git/trees/{branch}?recursive=1"
+            self.progress_signal.emit(f"  🌲 {full_name}/{branch} fetching tree...")
+            data = self._api(api_url)
+            if data is not None and isinstance(data, dict):
+                tree = data.get("tree", [])
+                if tree:
+                    self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries (branch: {branch})")
+                    break
+        if tree is None:
             return []
-        default_branch = repo_info.get("default_branch", "main")
-        api_url = f"https://api.github.com/repos/{full_name}/git/trees/{default_branch}?recursive=1"
-        self.progress_signal.emit(f"  🌲 {full_name}/{default_branch} fetching tree...")
-        data = self._api(api_url)
-        if data is None or not isinstance(data, dict):
-            return []
-        tree = data.get("tree", [])
-        self.progress_signal.emit(f"  🌲 {full_name}: {len(tree)} entries")
         old_max = self.max_files
         self.max_files = 999999
         candidates = self._filter_tree_items(full_name, tree)
@@ -870,7 +871,7 @@ class GitHubSearchWorker(QObject):
         candidates.sort(key=lambda it: any(d in _base64_dirs for d in it.get("path", "").lower().split("/")))
         candidates = candidates[:200]
         self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
-        results = self._download_files(full_name, default_branch, candidates)
+        results = self._download_files(full_name, branch, candidates)
         self.partial_result_signal.emit(list(results))
         self.count_signal.emit(len(results))
         return results
