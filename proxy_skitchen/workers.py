@@ -841,10 +841,12 @@ class GitHubSearchWorker(QObject):
             return None
 
     def _walk_explicit(self, repo_url: str) -> list[dict]:
-        m = re.match(r'(?:https?://github\.com/)?([^/]+/[^/]+?)(?:\.git)?$', repo_url)
+        m = re.match(r'(?:https?://github\.com/)?([^/]+/[^/]+)', repo_url)
         if not m:
             return []
         full_name = m.group(1).rstrip('/')
+        if full_name.endswith('.git'):
+            full_name = full_name[:-4]
         self.progress_signal.emit(f"  📁 explicit: {full_name}")
         repo_info = self._api(f"https://api.github.com/repos/{full_name}")
         if repo_info is None or not isinstance(repo_info, dict):
