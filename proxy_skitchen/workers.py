@@ -827,8 +827,13 @@ class GitHubSearchWorker(QObject):
             return []
         full_name = m.group(1).rstrip('/')
         self.progress_signal.emit(f"  📁 explicit: {full_name}")
-        api_url = f"https://api.github.com/repos/{full_name}/git/trees/main?recursive=1"
-        self.progress_signal.emit(f"  🌲 {full_name} fetching tree...")
+        repo_info = self._api(f"https://api.github.com/repos/{full_name}")
+        if repo_info is None or not isinstance(repo_info, dict):
+            self.progress_signal.emit(f"  ⚠ {full_name}: repo not found via API")
+            return []
+        default_branch = repo_info.get("default_branch", "main")
+        api_url = f"https://api.github.com/repos/{full_name}/git/trees/{default_branch}?recursive=1"
+        self.progress_signal.emit(f"  🌲 {full_name}/{default_branch} fetching tree...")
         data = self._api(api_url)
         if data is None or not isinstance(data, dict):
             return []
@@ -838,7 +843,7 @@ class GitHubSearchWorker(QObject):
         if not candidates:
             return []
         self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
-        results = self._download_files(full_name, "main", candidates)
+        results = self._download_files(full_name, default_branch, candidates)
         self.partial_result_signal.emit(list(results))
         self.count_signal.emit(len(results))
         return results

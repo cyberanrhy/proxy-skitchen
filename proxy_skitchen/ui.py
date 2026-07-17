@@ -2712,7 +2712,7 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event):
         ev_type = getattr(QEvent, "WindowStateChange", getattr(QEvent.Type, "WindowStateChange", 105))
         if event.type() == ev_type and self.windowState() & Qt.WindowMinimized:
-            QTimer.singleShot(0, self.hide)
+            self.hide()
             return
         super().changeEvent(event)
 
@@ -2729,7 +2729,8 @@ class MainWindow(QMainWindow):
         )
 
     def _show_from_tray(self):
-        self.showNormal()
+        self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+        self.show()
         self.activateWindow()
         self.raise_()
 
