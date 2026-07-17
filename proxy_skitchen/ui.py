@@ -522,7 +522,7 @@ class SourcesPage(WizardPage):
         repos = []
         owner = None
         if gh_url:
-            m_repo = re.match(r'(?:https?://)?github\.com/([^/]+/[^/]+?)/?$', gh_url)
+            m_repo = re.match(r'(?:https?://)?github\.com/([^/]+/[^/]+?)(?:/.*)?$', gh_url)
             m_user = re.match(r'(?:https?://)?github\.com/([^/]+)/?$', gh_url)
             m_pages = re.match(r'(?:https?://)?([^.]+)\.github\.io/([^/]+?)/?$', gh_url)
             m_pages_user = re.match(r'(?:https?://)?([^.]+)\.github\.io/?$', gh_url)
