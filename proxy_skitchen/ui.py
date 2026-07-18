@@ -2734,6 +2734,21 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
 
     def closeEvent(self, event):
+        if self.test_page._phase == self.test_page.PHASE_TEST:
+            ret = QMessageBox.question(
+                self, "Proxy Skitchen",
+                "Тест ещё выполняется.\n"
+                "Нажмите «Да» — тест остановится, программа закроется.\n"
+                "Нажмите «Нет» — программа свернётся в трей, тест продолжится.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if ret == QMessageBox.Yes:
+                event.accept()
+                self._quit_app()
+                return
+            event.ignore()
+            self.hide()
+            return
         if self._tray is None:
             event.accept()
             return
