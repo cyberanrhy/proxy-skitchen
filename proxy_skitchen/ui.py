@@ -327,6 +327,14 @@ class SourcesPage(WizardPage):
         self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #7c5cbf; border-radius: 3px; padding: 2px 8px; font-size: 10px; } QPushButton:hover { background: rgba(124,92,191,0.12); }")
         self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
         kw_row.addWidget(self.btn_deep_search)
+        self.btn_wg_search = QPushButton("🔒 WG")
+        self.btn_wg_search.setStyleSheet(
+            "QPushButton { background: transparent; border: 2px solid #2d7c3f; border-radius: 3px; "
+            "padding: 2px 8px; font-size: 10px; color: #4caf50; } "
+            "QPushButton:hover { background: rgba(76,175,80,0.12); }"
+        )
+        self.btn_wg_search.clicked.connect(self._on_wg_search)
+        kw_row.addWidget(self.btn_wg_search)
         self.chk_hidden_configs = QCheckBox(_("sources.chk.hidden_configs"))
         self.chk_hidden_configs.setToolTip(_("sources.chk.hidden_configs.tooltip"))
         self.chk_hidden_configs.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
@@ -534,6 +542,7 @@ class SourcesPage(WizardPage):
         self.btn_stop.setEnabled(False)
         self.btn_quick_search.setEnabled(True)
         self.btn_deep_search.setEnabled(True)
+        self.btn_wg_search.setEnabled(True)
         self.gh_progress_bar.setVisible(False)
         count = len(self._gh_results)
         self.gh_status.setText(_("gh.stopped", count=count))
@@ -594,6 +603,7 @@ class SourcesPage(WizardPage):
         self.btn_copy_wg.setVisible(False)
         self.btn_quick_search.setEnabled(False)
         self.btn_deep_search.setEnabled(False)
+        self.btn_wg_search.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.gh_progress_bar.setVisible(True)
         self.gh_status.setText(_("gh.searching", kw=", ".join(keywords[:3]) + ("..." if len(keywords) > 3 else "")))
@@ -602,6 +612,14 @@ class SourcesPage(WizardPage):
         self._gh_results = []
         self._gh_count = 0
         self._gh_thread.start()
+
+    def _on_wg_search(self):
+        self.chk_wireguard.setChecked(True)
+        kw_text = self.kw_input.text().strip()
+        gh_url = self.gh_url_input.text().strip()
+        if not kw_text and not gh_url:
+            self.kw_input.setText("wireguard")
+        self._on_github_search(True, True)
 
     def _on_wg_uri(self, uri: str):
         if not self.chk_wireguard.isChecked():
@@ -668,6 +686,7 @@ class SourcesPage(WizardPage):
         self.gh_progress_bar.setVisible(False)
         self.btn_quick_search.setEnabled(True)
         self.btn_deep_search.setEnabled(True)
+        self.btn_wg_search.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._gh_results = results
         added = 0
@@ -695,6 +714,7 @@ class SourcesPage(WizardPage):
         self.gh_progress_bar.setVisible(False)
         self.btn_quick_search.setEnabled(True)
         self.btn_deep_search.setEnabled(True)
+        self.btn_wg_search.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.gh_status.setText(f"⚠ {err[:60]}")
         self.gh_found_label.setText("⚠")
