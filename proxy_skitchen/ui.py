@@ -331,6 +331,9 @@ class SourcesPage(WizardPage):
         self.chk_hidden_configs.setToolTip(_("sources.chk.hidden_configs.tooltip"))
         self.chk_hidden_configs.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
         kw_row.addWidget(self.chk_hidden_configs)
+        self.chk_wireguard = QCheckBox("🔒 WireGuard")
+        self.chk_wireguard.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
+        kw_row.addWidget(self.chk_wireguard)
         gh_body.addLayout(kw_row)
 
         # Row: GitHub URL filter
@@ -372,6 +375,25 @@ class SourcesPage(WizardPage):
             "font-family: Consolas, monospace; font-size: 10px; padding: 2px; }"
         )
         gp.addWidget(self.gh_log)
+        self.wg_results = QPlainTextEdit()
+        self.wg_results.setReadOnly(True)
+        self.wg_results.setVisible(False)
+        self.wg_results.setFixedHeight(80)
+        self.wg_results.setPlaceholderText("WireGuard URIs from search appear here")
+        self.wg_results.setStyleSheet(
+            "QPlainTextEdit { background: #1a1d23; color: #7c89a8; "
+            "border: 1px solid #2a2d35; border-radius: 3px; "
+            "font-family: Consolas, monospace; font-size: 10px; padding: 2px; }"
+        )
+        gp.addWidget(self.wg_results)
+        self.btn_copy_wg = QPushButton("📋 Copy all")
+        self.btn_copy_wg.setVisible(False)
+        self.btn_copy_wg.setFixedHeight(20)
+        self.btn_copy_wg.setStyleSheet(
+            "QPushButton { font-size: 10px; padding: 0px 8px; }"
+        )
+        self.btn_copy_wg.clicked.connect(self._on_copy_wg)
+        gp.addWidget(self.btn_copy_wg)
         gh_body.addWidget(self.gh_progress)
 
         layout.addWidget(self.gh_group)
@@ -563,9 +585,13 @@ class SourcesPage(WizardPage):
         self._gh_worker.progress_signal.connect(self._on_gh_progress)
         self._gh_worker.count_signal.connect(self._on_gh_count)
         self._gh_worker.log_signal.connect(self._on_gh_log)
+        self._gh_worker.wg_signal.connect(self._on_wg_uri)
         self._gh_thread.started.connect(self._gh_worker.run, Qt.ConnectionType.DirectConnection)
         self.gh_log.clear()
         self.gh_log.setVisible(False)
+        self.wg_results.clear()
+        self.wg_results.setVisible(False)
+        self.btn_copy_wg.setVisible(False)
         self.btn_quick_search.setEnabled(False)
         self.btn_deep_search.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -576,6 +602,19 @@ class SourcesPage(WizardPage):
         self._gh_results = []
         self._gh_count = 0
         self._gh_thread.start()
+
+    def _on_wg_uri(self, uri: str):
+        if not self.chk_wireguard.isChecked():
+            return
+        self.wg_results.appendPlainText(uri)
+        if not self.wg_results.isVisible():
+            self.wg_results.setVisible(True)
+            self.btn_copy_wg.setVisible(True)
+
+    def _on_copy_wg(self):
+        text = self.wg_results.toPlainText()
+        if text.strip():
+            QApplication.clipboard().setText(text)
 
     def _on_gh_log(self, msg: str):
         self.gh_log.appendPlainText(msg)
