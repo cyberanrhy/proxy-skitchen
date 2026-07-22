@@ -36,6 +36,7 @@ Whether you need a handful of reliable servers for daily use or a large pool for
 - **Hidden configs** — scrapes base64-encoded subs, inline URIs embedded in text files.
 - **Scan GitHub user repos** — paste a user URL (`https://github.com/user`), scans all their repos.
 - **Explicit repo URL** — paste any repo URL including paths with `/blob/` or `/tree/`.
+- **WireGuard search** — dedicated mode to find `wireguard://` configs on GitHub. Paste a repo/user URL or let the app search by keywords. Results appear in a copyable text area for manual import into AmneziaWG or any WireGuard client.
 - **Country flags** — see at a glance where each server is located.
 - **Cross-platform** — works on Linux, Windows, and macOS (PySide2 / PySide6).
 
@@ -47,7 +48,7 @@ Whether you need a handful of reliable servers for daily use or a large pool for
 🔍 Search GitHub  →  ⬇ Download configs  →  ✅ Test  →  📦 Export
 ```
 
-1. **Search** — enter keywords like "vless subscription", paste a GitHub repo URL, or a user profile to scan all repos.
+1. **Search** — enter keywords like "vless subscription", paste a GitHub repo URL, or a user profile to scan all repos. Toggle **WireGuard mode** to find `wireguard://` configs specifically.
 2. **Download** — the app fetches all found configs in one click. Configs can be hidden in base64, inline URIs, or plain text.
 3. **Test** — quick TCP check, then deep HTTP validation via sing-box (or xray-core for VLESS Reality).
 4. **Export** — save the working list in your preferred format.
@@ -62,6 +63,7 @@ Whether you need a handful of reliable servers for daily use or a large pool for
 | **No dead proxies** | Deep test makes real HTTP requests, not just ping. If it passes — it works. VLESS Reality tested via xray-core. |
 | **One-click export** | Clash, sing-box, Hiddify, V2RayN — pick your poison. |
 | **Hidden config mode** | Finds proxies embedded in any text file — base64 encoded, inline in code, JSON, markdown — and parses them. |
+| **WireGuard mode** | Dedicated search for `wireguard://` configs with one-click deep scan. Copies URIs to clipboard for AmneziaWG / WireGuard clients. |
 | **SOCKS5 proxy support** | Built-in toggle to route all downloads through a local SOCKS5 proxy — essential behind censorship firewalls. |
 | **Minimize to tray** | Close button hides to system tray. Restore via double-click. Quit only from tray menu. |
 | **Dark / Light themes** | Built-in themes + auto-performance presets for low-RAM machines. |
