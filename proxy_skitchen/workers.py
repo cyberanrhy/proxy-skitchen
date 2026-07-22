@@ -375,6 +375,7 @@ class GitHubSearchWorker(QObject):
     progress_signal = Signal(str)
     count_signal = Signal(int)
     log_signal = Signal(str)
+    wg_signal = Signal(str)
 
     def __init__(self, keywords: list[str], known_sources: set,
                  explicit_repos: Optional[list[str]] = None,
@@ -834,6 +835,9 @@ class GitHubSearchWorker(QObject):
                     if u not in self.known_sources and u not in seen:
                         seen.add(u)
                         embedded_links.append(u)
+            for u in embedded_links:
+                if u.startswith('wireguard://') or u.startswith('wg://'):
+                    self.wg_signal.emit(u)
             if not embedded_links:
                 return None
             entry = {
