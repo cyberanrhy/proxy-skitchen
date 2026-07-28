@@ -1451,6 +1451,13 @@ class TestPage(WizardPage):
         self._completed = False
         self._test_type: str | None = None
         self._stop_requested = False
+        self._last_scroll_time = 0.0
+        self._stats_dirty = False
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setInterval(400)
+        self._stats_timer.setSingleShot(True)
+        self._stats_timer.timeout.connect(self._flush_stats)
+        self._lbl_style_set = False
 
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
@@ -1739,6 +1746,9 @@ class TestPage(WizardPage):
 
     def _on_stop(self):
         _debug("TestPage._on_stop")
+        self.sort_proxy.setDynamicSortFilter(True)
+        self._flush_stats()
+        self._stats_timer.stop()
         self._stop_requested = True
         self._cleanup_test()
         self._log(_("log.test_stopped"))
@@ -1834,6 +1844,10 @@ class TestPage(WizardPage):
         self._set_phase(self.PHASE_TEST)
         self.progress_bar.setMaximum(len(target))
         self.progress_bar.setValue(0)
+        self.sort_proxy.setDynamicSortFilter(False)
+        self._last_scroll_time = 0.0
+        self._stats_dirty = False
+        self._lbl_style_set = False
 
         self._tester = TesterWorker(rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
         self._tester.result_signal.connect(self._on_test_result)
@@ -1853,9 +1867,13 @@ class TestPage(WizardPage):
         self._test_thread.start()
 
     def _on_testing_start(self, row: int, info: str):
-        idx = self.model.index(row, 0)
-        self.proxy_table.scrollTo(idx)
-        self.proxy_table.selectRow(row)
+        now = time.time()
+        if now - self._last_scroll_time >= 0.2:
+            proxy_idx = self.sort_proxy.mapFromSource(self.model.index(row, 0))
+            if self.proxy_table.visualRect(proxy_idx).isValid():
+                self.proxy_table.scrollTo(proxy_idx)
+            self.proxy_table.selectRow(row)
+            self._last_scroll_time = now
 
     def _on_test_result(self, row: int, ok: bool, latency: float, error: str, ttype: int):
         filtered = False
@@ -1870,10 +1888,15 @@ class TestPage(WizardPage):
             self._valid_cnt += 1
         else:
             self._dead_cnt += 1
-        self._update_stats()
-        idx = self.model.index(row, 0)
-        self.proxy_table.scrollTo(idx)
-        self.proxy_table.selectRow(row)
+        self._stats_dirty = True
+        self._stats_timer.start()
+        now = time.time()
+        if now - self._last_scroll_time >= 0.2:
+            proxy_idx = self.sort_proxy.mapFromSource(self.model.index(row, 0))
+            if self.proxy_table.visualRect(proxy_idx).isValid():
+                self.proxy_table.scrollTo(proxy_idx)
+            self.proxy_table.selectRow(row)
+            self._last_scroll_time = now
         if 0 <= row < len(self._entries):
             e = self._entries[row]
             if ttype == 2:
@@ -1886,13 +1909,15 @@ class TestPage(WizardPage):
                 kind = "TCP" if ttype == 0 else "DEEP"
                 mark = "✓" if ok else "✗"
                 detail = ""
-            t = THEMES[current_theme()]
-            color = t['success'] if ok else t['danger']
-            if ttype == 2:
-                color = t['warning'] if ok else t['danger']
             ping = f" {latency:.0f}ms" if latency else ""
             self.lbl_current.setText(f"{mark} [{kind}] {e.protocol} {e.host}:{e.port}{ping}{detail}")
-            self.lbl_current.setStyleSheet(f"padding: 4px 10px; background: {t['input_bg']}; border: 1px solid {t['border']}; border-radius: 6px; color: {color}; font-size: 11px;")
+            if not self._lbl_style_set:
+                t = THEMES[current_theme()]
+                color = t['success'] if ok else t['danger']
+                if ttype == 2:
+                    color = t['warning'] if ok else t['danger']
+                self.lbl_current.setStyleSheet(f"padding: 4px 10px; background: {t['input_bg']}; border: 1px solid {t['border']}; border-radius: 6px; color: {color}; font-size: 11px;")
+                self._lbl_style_set = True
 
     def _on_test_count(self, c: int):
         self.progress_bar.setValue(c)
@@ -1918,6 +1943,9 @@ class TestPage(WizardPage):
         self.model.dataChanged.emit(idx, idx)
 
     def _on_test_finished(self):
+        self.sort_proxy.setDynamicSortFilter(True)
+        self._flush_stats()
+        self._stats_timer.stop()
         self._cleanup_test()
         if self._stop_requested:
             self._stop_requested = False
@@ -2038,6 +2066,11 @@ class TestPage(WizardPage):
         self.model.clear()
         self.model.add_proxies(self._filtered_entries)
         self._update_stats()
+
+    def _flush_stats(self):
+        if self._stats_dirty:
+            self._stats_dirty = False
+            self._update_stats()
 
     def _update_stats(self):
         entries = self._filtered_entries
