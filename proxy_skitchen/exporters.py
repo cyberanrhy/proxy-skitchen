@@ -25,6 +25,8 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
 def _entry_ok(e: ProxyEntry) -> bool:
     if e.deep_tested and not e.deep_ok:
         return False
+    if e.rkn_tested and not e.rkn_ok:
+        return False
     return True
 
 
