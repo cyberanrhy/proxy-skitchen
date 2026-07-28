@@ -2075,8 +2075,8 @@ class TestPage(WizardPage):
     def _update_stats(self):
         entries = self._filtered_entries
         total = len(entries)
-        valid = sum(1 for e in entries if e.deep_ok or e.rkn_ok)
-        dead = sum(1 for e in entries if not (e.deep_ok or e.rkn_ok) and (e.deep_tested or e.rkn_tested))
+        valid = sum(1 for e in entries if (e.deep_ok or not e.deep_tested) and (e.rkn_ok or not e.rkn_tested))
+        dead = sum(1 for e in entries if (e.deep_tested and not e.deep_ok) or (e.rkn_tested and not e.rkn_ok))
         rkn_ok = sum(1 for e in entries if e.rkn_tested and e.rkn_ok)
         rkn_total = sum(1 for e in entries if e.rkn_tested)
         self.lbl_total.setText(f"Всего: {total}")
