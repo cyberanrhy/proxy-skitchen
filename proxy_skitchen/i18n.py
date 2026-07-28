@@ -46,6 +46,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "sources.import.paste_done": "✅ Добавлено {count} конфигов из вставки",
         "sources.import.no_uris": "Не найдено валидных URI-конфигов в тексте",
         "sources.context.remove": "🗑 Удалить",
+        "sources.context.view": "📄 Посмотреть",
+        "sources.context.open_browser": "🌐 Открыть в браузере",
         "sources.chk.hidden_configs": "🧪 Скрытые конфиги (экспериментально)",
         "sources.chk.hidden_configs.tooltip": "Ищет прокси внутри JSON, .env, исходников и Gists.\nМедленнее, но находит скрытые конфигурации.",
         
@@ -115,6 +117,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "test.filter.trojan": "Trojan",
         "test.filter.ss": "SS",
         "test.filter.hy2": "Hy2",
+        "test.filter.wireguard": "WireGuard",
         "test.btn.stop": "⏹ Стоп",
         "test.btn.stop_test": "⏹ Стоп тест",
         "test.btn.back": "← Назад",
@@ -296,6 +299,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "sources.import.paste_done": "✅ Added {count} configs from paste",
         "sources.import.no_uris": "No valid URI configs found in text",
         "sources.context.remove": "🗑 Remove",
+        "sources.context.view": "📄 View",
+        "sources.context.open_browser": "🌐 Open in browser",
         "sources.chk.hidden_configs": "🧪 Hidden configs (experimental)",
         "sources.chk.hidden_configs.tooltip": "Searches for proxies inside JSON, .env, source code and Gists.\nSlower, but finds hidden configurations.",
 
@@ -365,6 +370,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "test.filter.trojan": "Trojan",
         "test.filter.ss": "SS",
         "test.filter.hy2": "Hy2",
+        "test.filter.wireguard": "WireGuard",
         "test.btn.stop": "⏹ Stop",
         "test.btn.stop_test": "⏹ Stop Test",
         "test.btn.back": "← Back",
