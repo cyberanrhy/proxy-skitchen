@@ -753,9 +753,12 @@ class GitHubSearchWorker(QObject):
 
     def _download_files(self, full_name: str, branch: str, candidates: list) -> list[dict]:
         results = []
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        pool = ThreadPoolExecutor(max_workers=5)
+        try:
             fut_map = {}
             for item in candidates:
+                if self._stop:
+                    break
                 path = item.get("path", "")
                 raw_url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{quote(path, safe='/')}"
                 size = item.get("size", 0) or 0
@@ -771,10 +774,15 @@ class GitHubSearchWorker(QObject):
                         results.append(res)
                 except Exception:
                     pass
+        finally:
+            # Non-blocking shutdown when stopping — don't freeze the QThread
+            pool.shutdown(wait=not self._stop)
         return results
 
     def _download_file(self, raw_url: str, size: int, full_name: str, path: str) -> dict | None:
         if size > 5 * 1024 * 1024:
+            return None
+        if self._stop:
             return None
         try:
             use_proxy = _settings_data.get("proxy_enabled", True)
@@ -837,9 +845,11 @@ class GitHubSearchWorker(QObject):
                         embedded_links.append(u)
             for u in embedded_links:
                 if u.startswith('wireguard://') or u.startswith('wg://'):
-                    self.wg_signal.emit(u)
+                    if not self._stop:
+                        self.wg_signal.emit(u)
             if not embedded_links:
                 return None
+            name = os.path.basename(path)
             entry = {
                 "file_url": raw_url,
                 "name": f"{full_name}/{path}",
@@ -848,9 +858,9 @@ class GitHubSearchWorker(QObject):
                 "stars": 0,
                 "updated": "",
                 "embedded": True,
+                "count": len(embedded_links),
+                "uris": embedded_links,
             }
-            name = os.path.basename(path)
-            entry["count"] = len(embedded_links)
             self.progress_signal.emit(f"      🔗 {len(embedded_links)} hidden proxies in {name}")
             return entry
         except Exception:
@@ -863,6 +873,24 @@ class GitHubSearchWorker(QObject):
         full_name = m.group(1).rstrip('/')
         if full_name.endswith('.git'):
             full_name = full_name[:-4]
+        
+        # Period filter: проверяем pushed_at репозитория
+        if self.time_filter_days > 0:
+            repo_api = f"https://api.github.com/repos/{full_name}"
+            repo_data = self._api(repo_api, timeout=8)
+            if repo_data and isinstance(repo_data, dict):
+                pushed = repo_data.get("pushed_at", "")
+                if pushed:
+                    try:
+                        pushed_dt = datetime.fromisoformat(pushed.replace('Z', '+00:00'))
+                        age_days = (datetime.now(timezone.utc) - pushed_dt).total_seconds() / 86400
+                        if age_days > self.time_filter_days:
+                            self._log(f"SKIP {full_name}: pushed {age_days:.0f}d ago > {self.time_filter_days}d")
+                            self.progress_signal.emit(f"  ⏭ {full_name}: older than period")
+                            return []
+                    except ValueError:
+                        pass
+        
         self._log(f"WALK explicit start: {full_name}")
         self.progress_signal.emit(f"  📁 explicit: {full_name}")
         branches_to_try = ["main", "master"]

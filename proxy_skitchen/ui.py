@@ -1,4 +1,4 @@
-import os, sys, json, re, threading, time, base64
+import os, sys, json, re, threading, time, base64, urllib.request
 from datetime import datetime
 from .compat import TMP_DIR
 
@@ -12,7 +12,7 @@ def _debug(msg: str):
 from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens
-from .parsers import is_proxy_uri, extract_uris, get_server_port
+from .parsers import is_proxy_uri, extract_uris, get_server_port, get_protocol
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
@@ -151,6 +151,22 @@ class ScanProgressBar(QProgressBar):
         p.end()
 
 
+def _view_text_dialog(title: str, content: str, parent=None):
+    """Show a read-only text dialog with the given content (cross-platform)."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.resize(700, 500)
+    layout = QVBoxLayout(dlg)
+    te = QPlainTextEdit(content)
+    te.setReadOnly(True)
+    te.setFont(QFont("Consolas", 10))
+    te.setStyleSheet("background: #1a1d23; color: #cdd6f4; border: none;")
+    layout.addWidget(te)
+    btn = QPushButton("Close")
+    btn.clicked.connect(dlg.accept)
+    layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
+    dlg.exec_()
+
 def _cleanup_thread(thread, worker, wait_sec=3.0):
     if thread is None and worker is None:
         return
@@ -203,6 +219,7 @@ class SourcesPage(WizardPage):
         self._gh_results = []
         self._gh_thread = None
         self._gh_worker = None
+        self._gh_zombie = None
 
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
@@ -451,6 +468,7 @@ class SourcesPage(WizardPage):
         self.src_list.setAlternatingRowColors(True)
         self.src_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.src_list.customContextMenuRequested.connect(self._on_src_context)
+        self.src_list.itemDoubleClicked.connect(self._on_src_double_click)
         layout.addWidget(self.src_list, 1)
 
         nav = QHBoxLayout()
@@ -471,9 +489,41 @@ class SourcesPage(WizardPage):
         self._refresh_toolbar_buttons()
 
     def _cleanup_gh(self):
-        _cleanup_thread(getattr(self, '_gh_thread', None), getattr(self, '_gh_worker', None))
-        self._gh_thread = None
+        worker = getattr(self, '_gh_worker', None)
+        thread = getattr(self, '_gh_thread', None)
+        if worker is None and thread is None:
+            return
+        # Clear references FIRST — stale queued signals see None
         self._gh_worker = None
+        self._gh_thread = None
+        if worker is not None:
+            # Disconnect all signals — stale queued events are silently dropped by Qt
+            for sig_name in ('wg_signal', 'result_signal', 'partial_result_signal',
+                             'error_signal', 'progress_signal', 'count_signal', 'log_signal'):
+                try:
+                    getattr(worker, sig_name).disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            worker.stop()  # sets _stop=True, kills API procs
+            # NOTE: no deleteLater() — pool threads may still hold self ref via
+            # bound methods. Python GC cleans up when pool threads finish.
+        if thread is not None:
+            thread.quit()
+            # Keep zombie reference to prevent GC while thread finishes.
+            # After thread finishes, pool threads are also done (shutdown
+            # completed), so worker becomes unreferenced and Python GC handles it.
+            if thread.isRunning():
+                self._gh_zombie = thread
+                thread.finished.connect(self._on_gh_zombie_done)
+
+    def _on_gh_zombie_done(self):
+        thread = self._gh_zombie
+        if thread is not None:
+            try:
+                thread.finished.disconnect(self._on_gh_zombie_done)
+            except (TypeError, RuntimeError):
+                pass
+            self._gh_zombie = None
 
     def _switch_lang(self, code: str):
         if code != current_lang():
@@ -617,6 +667,7 @@ class SourcesPage(WizardPage):
         self.chk_wireguard.setChecked(True)
         kw_text = self.kw_input.text().strip()
         gh_url = self.gh_url_input.text().strip()
+        # Fallback: если нет ни ключевых слов, ни URL — ищем "wireguard" везде
         if not kw_text and not gh_url:
             self.kw_input.setText("wireguard")
         self._on_github_search(True, True)
@@ -676,10 +727,11 @@ class SourcesPage(WizardPage):
         for r in results:
             url = r.get("file_url", "")
             name = r.get("name", url)
+            uris = r.get("uris", [])
             if r.get("embedded", False):
-                self._add_source(_("gh.embed_prefix", name=name), url)
+                self._add_source(_("gh.embed_prefix", name=name), url, uris)
             else:
-                self._add_source(name, url)
+                self._add_source(name, url, uris)
         self._update_fetch_btn()
 
     def _on_gh_result(self, results: list):
@@ -693,10 +745,11 @@ class SourcesPage(WizardPage):
         for r in results:
             url = r.get("file_url", "")
             name = r.get("name", url)
+            uris = r.get("uris", [])
             if r.get("embedded", False):
-                self._add_source(_("gh.embed_prefix", name=name), url)
+                self._add_source(_("gh.embed_prefix", name=name), url, uris)
             else:
-                self._add_source(name, url)
+                self._add_source(name, url, uris)
             added += 1
         self.gh_status.setText(_("gh.found_files", count=added))
         self.gh_found_label.setText(f"✅ {added}")
@@ -745,15 +798,28 @@ class SourcesPage(WizardPage):
         self._add_source(url, url)
         self.url_input.clear()
 
-    def _add_source(self, name: str, url: str):
+    def _add_source(self, name: str, url: str, uris: list[str] | None = None):
         for i in range(self.src_list.count()):
             item = self.src_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == url:
                 return
-        item = QListWidgetItem(name)
+        # Build display text with protocol breakdown
+        label = name
+        if uris:
+            proto_counts: dict[str, int] = {}
+            for u in uris:
+                p = get_protocol(u)
+                proto_counts[p] = proto_counts.get(p, 0) + 1
+            parts = sorted(proto_counts.items(), key=lambda x: -x[1])
+            summary = " | ".join(f"{c} {p}" for p, c in parts[:5])
+            label = f"{name}  —  {summary}"
+        item = QListWidgetItem(label)
         item.setData(Qt.ItemDataRole.UserRole, url)
+        item.setData(Qt.ItemDataRole.UserRole + 1, uris or [])
+        if uris:
+            item.setToolTip("\n".join(uris))
         self.src_list.addItem(item)
-        self._sources.append((name, url))
+        self._sources.append((name, url, uris or []))
         self._update_fetch_btn()
 
     def _remove_source(self, url: str):
@@ -761,7 +827,7 @@ class SourcesPage(WizardPage):
             item = self.src_list.item(i)
             if item.data(Qt.ItemDataRole.UserRole) == url:
                 self.src_list.takeItem(i)
-                self._sources = [(n, u) for n, u in self._sources if u != url]
+                self._sources = [t for t in self._sources if t[1] != url]
                 self._update_fetch_btn()
                 return
 
@@ -770,8 +836,40 @@ class SourcesPage(WizardPage):
         if not item:
             return
         menu = QMenu()
-        menu.addAction(_("sources.context.remove"), lambda: self._remove_source(item.data(Qt.ItemDataRole.UserRole)))
+        url = item.data(Qt.ItemDataRole.UserRole)
+        menu.addAction(_("sources.context.view"), lambda: self._fetch_and_view(url, item))
+        menu.addAction(_("sources.context.open_browser"), lambda: QDesktopServices.openUrl(QUrl(url)))
+        menu.addAction(_("sources.context.remove"), lambda: self._remove_source(url))
         menu.exec_(self.src_list.mapToGlobal(pos))
+
+    def _on_src_double_click(self, item):
+        if item:
+            url = item.data(Qt.ItemDataRole.UserRole)
+            if url:
+                self._fetch_and_view(url, item)
+
+    def _fetch_and_view(self, url: str, item=None):
+        """Download URL content and show in text dialog."""
+        if not url:
+            return
+        # If item has stored URIs, show those as a quick list instead of full download
+        uris = item.data(Qt.ItemDataRole.UserRole + 1) if item and item.data(Qt.ItemDataRole.UserRole + 1) else None
+        if uris:
+            title = item.text().split("  —  ")[0] if "  —  " in item.text() else url.rsplit("/", 1)[-1]
+            content = "\n".join(uris)
+            _view_text_dialog(title, content, self)
+            return
+        try:
+            use_proxy = _settings_data.get("proxy_enabled", True)
+            req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen/2.0"})
+            if use_proxy:
+                req.set_proxy("socks5://127.0.0.1:12334", "http")
+            resp = urllib.request.urlopen(req, timeout=15)
+            content = resp.read().decode("utf-8", errors="replace")
+            name = url.rsplit("/", 1)[-1] if "/" in url else url
+            _view_text_dialog(name, content, self)
+        except Exception as e:
+            QMessageBox.warning(self, _("msg.error"), f"Failed to load:\n{url}\n\n{e}")
 
     def _on_clear(self):
         self.src_list.clear()
@@ -923,7 +1021,7 @@ class SourcesPage(WizardPage):
         self.period_combo.blockSignals(False)
 
     def get_sources(self) -> list[tuple[str, str]]:
-        return list(self._sources)
+        return [(t[0], t[1]) for t in self._sources]
 
     def on_enter(self):
         self._update_fetch_btn()
@@ -987,6 +1085,7 @@ class DownloadPage(WizardPage):
         self.src_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.src_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.src_table.setAlternatingRowColors(True)
+        self.src_table.cellDoubleClicked.connect(self._on_src_table_double_click)
         src_layout.addWidget(self.src_table)
         layout.addWidget(self.src_group)
 
@@ -1144,8 +1243,8 @@ class DownloadPage(WizardPage):
 
         n = len(sources)
         self.src_table.setRowCount(n)
-        for i, (name, _url) in enumerate(sources):
-            self._add_source_row_at(i, name)
+        for i, (name, url) in enumerate(sources):
+            self._add_source_row_at(i, name, url)
 
         self.src_group.show()
         self.btn_toggle_sources.show()
@@ -1209,12 +1308,13 @@ class DownloadPage(WizardPage):
             if cell:
                 cell.setBackground(QColor("#1e2338"))
 
-    def _add_source_row_at(self, row: int, name: str):
+    def _add_source_row_at(self, row: int, name: str, url: str = ""):
         icon_item = QTableWidgetItem("⏳")
         icon_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.src_table.setItem(row, 0, icon_item)
         name_item = QTableWidgetItem(name[:60])
         name_item.setToolTip(name)
+        name_item.setData(Qt.ItemDataRole.UserRole, url)
         self.src_table.setItem(row, 1, name_item)
         count_item = QTableWidgetItem("...")
         count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1246,6 +1346,26 @@ class DownloadPage(WizardPage):
         self.btn_toggle_sources.setText(
             _("download.hide_sources") if not hidden else _("download.show_sources", count=self.src_table.rowCount())
         )
+
+    def _on_src_table_double_click(self, row: int, col: int):
+        if col == 0:
+            return
+        item = self.src_table.item(row, 1)
+        if item is None:
+            return
+        url = item.data(Qt.ItemDataRole.UserRole)
+        if url:
+            try:
+                use_proxy = _settings_data.get("proxy_enabled", True)
+                req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen/2.0"})
+                if use_proxy:
+                    req.set_proxy("socks5://127.0.0.1:12334", "http")
+                resp = urllib.request.urlopen(req, timeout=15)
+                content = resp.read().decode("utf-8", errors="replace")
+                name = url.rsplit("/", 1)[-1] if "/" in url else url
+                _view_text_dialog(name, content, self)
+            except Exception as e:
+                QMessageBox.warning(self, _("msg.error"), f"Failed to load:\n{url}\n\n{e}")
 
     def _on_fetch_finished(self):
         self._cleanup_net()
@@ -1389,7 +1509,7 @@ class TestPage(WizardPage):
             _("test.filter.all"), _("test.filter.tuic"),
             _("test.filter.vless"), _("test.filter.vmess"),
             _("test.filter.trojan"), _("test.filter.ss"),
-            _("test.filter.hy2"),
+            _("test.filter.hy2"), _("test.filter.wireguard"),
         ])
         self.filter_combo.currentIndexChanged.connect(self._on_filter_change)
         actions.addWidget(self.filter_combo)
@@ -1899,7 +2019,7 @@ class TestPage(WizardPage):
             return False, str(e)[:60]
 
     def _on_filter_change(self, idx: int):
-        proto_map = [None, "TUIC", "VLESS", "VMESS", "Trojan", "SS", "Hy2"]
+        proto_map = [None, "TUIC", "VLESS", "VMESS", "Trojan", "SS", "Hy2", "WIREGUARD"]
         self._filter_proto = proto_map[idx] if 0 < idx < len(proto_map) else None
         self._apply_filter()
 
@@ -1996,7 +2116,7 @@ class TestPage(WizardPage):
             _("test.filter.all"), _("test.filter.tuic"),
             _("test.filter.vless"), _("test.filter.vmess"),
             _("test.filter.trojan"), _("test.filter.ss"),
-            _("test.filter.hy2"),
+            _("test.filter.hy2"), _("test.filter.wireguard"),
         ])
         self.filter_combo.setCurrentIndex(min(current, self.filter_combo.count() - 1))
         self.filter_combo.blockSignals(False)
