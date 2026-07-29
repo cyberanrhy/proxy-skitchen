@@ -1240,6 +1240,7 @@ class DownloadPage(WizardPage):
         self._sources_done = set()
         self._source_rows.clear()
         self._proto_counts.clear()
+        self._dedup_keys: set[str] = set()
 
         n = len(sources)
         self.src_table.setRowCount(n)
@@ -1290,11 +1291,18 @@ class DownloadPage(WizardPage):
         self.lbl_progress.setText(f"загрузка{dots} ({self._progress_last_done}/{self.progress_bar.maximum()}, {elapsed:.0f}s)")
 
     def _on_proxy_parsed(self, entries: list[ProxyEntry]):
-        self._entries.extend(entries)
+        added = 0
         for e in entries:
+            k = e.key()
+            if k in self._dedup_keys:
+                continue
+            self._dedup_keys.add(k)
+            self._entries.append(e)
+            added += 1
             p = e.protocol or "?"
             self._proto_counts[p] = self._proto_counts.get(p, 0) + 1
-        self.lbl_total.setText(_("download.stats.total", count=len(self._entries)))
+        if added:
+            self.lbl_total.setText(_("download.stats.total", count=len(self._entries)))
 
     def _on_source_started(self, name: str, idx: int):
         row = self._source_rows.get(name[:60])
@@ -1430,6 +1438,43 @@ class DownloadPage(WizardPage):
         return self._entries
 
 
+class ProxyFilterModel(QSortFilterProxyModel):
+    """Filters by protocol and/or security. Set filter props then invalidateFilter()."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._filter_proto: str | None = None
+        self._filter_security: str | None = None
+
+    def setFilterProto(self, proto: str | None):
+        self._filter_proto = proto
+        self.invalidateFilter()
+
+    def setFilterSecurity(self, sec: str | None):
+        self._filter_security = sec
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent=QModelIndex()) -> bool:
+        if self._filter_proto is None and self._filter_security is None:
+            return True
+        model = self.sourceModel()
+        if not hasattr(model, 'proxies') or source_row >= len(model.proxies):
+            return True
+        entry = model.proxies[source_row]
+        if self._filter_proto and entry.protocol != self._filter_proto:
+            return False
+        if self._filter_security and entry.security != self._filter_security:
+            return False
+        return True
+
+    def getFilteredEntries(self) -> tuple[list[int], list[ProxyEntry]]:
+        """Return (indices_in_source, entries) passing current filter."""
+        model = self.sourceModel()
+        if not hasattr(model, 'proxies'):
+            return [], []
+        indices = [i for i in range(len(model.proxies)) if self.filterAcceptsRow(i)]
+        return indices, [model.proxies[i] for i in indices]
+
+
 class TestPage(WizardPage):
     PHASE_IDLE = 0
     PHASE_TEST = 1
@@ -1438,9 +1483,6 @@ class TestPage(WizardPage):
         super().__init__(main)
         self._main = main
         self._entries = []
-        self._filtered_entries = []
-        self._filter_proto: str | None = None
-        self._filter_security: str | None = None
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._last_log_time = 0.0
@@ -1571,7 +1613,7 @@ class TestPage(WizardPage):
 
         # ── Table ──
         self.model = ProxyTableModel()
-        self.sort_proxy = QSortFilterProxyModel()
+        self.sort_proxy = ProxyFilterModel()
         self.sort_proxy.setSourceModel(self.model)
         self.sort_proxy.setDynamicSortFilter(True)
         self.proxy_table = QTableView()
@@ -1697,7 +1739,9 @@ class TestPage(WizardPage):
             seen_keys[k] = e
             deduped.append(e)
         self._entries = deduped
-        self._filtered_entries = list(deduped)
+        self.model.clear()
+        self.model.add_proxies(deduped)
+        self._update_stats()
         self._valid_cnt = 0
         self._dead_cnt = 0
         self.filter_combo.setCurrentIndex(0)
@@ -1784,24 +1828,24 @@ class TestPage(WizardPage):
     def _on_deep_test(self):
         if self._phase == self.PHASE_TEST:
             return
-        if not self._filtered_entries:
+        indices, filtered = self.sort_proxy.getFilteredEntries()
+        if not filtered:
             return
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._test_type = "deep"
-        self._run_test(subset=self._filtered_entries)
+        self._run_test(subset=filtered, subset_indices=indices)
 
     def _on_rkn_test(self):
         if self._phase == self.PHASE_TEST:
             return
-        if not self._filtered_entries:
+        indices, filtered = self.sort_proxy.getFilteredEntries()
+        if not filtered:
             return
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._test_type = "rkn"
-        alive = list(self._filtered_entries)
-        indices = list(range(len(alive)))
-        self._run_test(rkn=True, subset=alive, subset_indices=indices)
+        self._run_test(rkn=True, subset=filtered, subset_indices=indices)
 
     def _on_delete_dead(self):
         if self._dead_cnt == 0:
@@ -1815,7 +1859,9 @@ class TestPage(WizardPage):
         self._entries = alive
         self._valid_cnt = len(alive)
         self._dead_cnt = 0
-        self._apply_filter()
+        self.model.clear()
+        self.model.add_proxies(self._entries)
+        self._update_stats()
         self.btn_delete_dead.setEnabled(False)
         self.btn_rkn.setEnabled(len(self._entries) > 0)
         self._log(_("log.deleted_dead", count=removed))
@@ -1952,7 +1998,7 @@ class TestPage(WizardPage):
             return
         self._stopped = False
         self._completed = True
-        self._apply_filter()
+        self._update_stats()
         self._set_phase(self.PHASE_IDLE)
         self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
         self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
@@ -1966,7 +2012,9 @@ class TestPage(WizardPage):
                     self._entries = alive
                     self._valid_cnt = len(alive)
                     self._dead_cnt = 0
-                    self._apply_filter()
+                    self.model.clear()
+                    self.model.add_proxies(self._entries)
+                    self._update_stats()
                     self._log(f"🗑 удалено мёртвых: {removed}")
                 if any(e.tcp_ok or e.deep_ok for e in self._entries):
                     self._log(_("log.rkn_started"))
@@ -2048,23 +2096,14 @@ class TestPage(WizardPage):
 
     def _on_filter_change(self, idx: int):
         proto_map = [None, "TUIC", "VLESS", "VMESS", "Trojan", "SS", "Hy2", "WIREGUARD"]
-        self._filter_proto = proto_map[idx] if 0 < idx < len(proto_map) else None
-        self._apply_filter()
+        proto = proto_map[idx] if 0 < idx < len(proto_map) else None
+        self.sort_proxy.setFilterProto(proto)
+        self._update_stats()
 
     def _on_security_filter_change(self, idx: int):
         sec_map = [None, "tls", "reality", "none"]
-        self._filter_security = sec_map[idx] if 0 < idx < len(sec_map) else None
-        self._apply_filter()
-
-    def _apply_filter(self):
-        entries = self._entries
-        if self._filter_proto is not None:
-            entries = [e for e in entries if e.protocol == self._filter_proto]
-        if self._filter_security is not None:
-            entries = [e for e in entries if e.security == self._filter_security]
-        self._filtered_entries = list(entries)
-        self.model.clear()
-        self.model.add_proxies(self._filtered_entries)
+        sec = sec_map[idx] if 0 < idx < len(sec_map) else None
+        self.sort_proxy.setFilterSecurity(sec)
         self._update_stats()
 
     def _flush_stats(self):
@@ -2073,7 +2112,7 @@ class TestPage(WizardPage):
             self._update_stats()
 
     def _update_stats(self):
-        entries = self._filtered_entries
+        _, entries = self.sort_proxy.getFilteredEntries()
         total = len(entries)
         valid = sum(1 for e in entries if (e.deep_ok or not e.deep_tested) and (e.rkn_ok or not e.rkn_tested))
         dead = sum(1 for e in entries if (e.deep_tested and not e.deep_ok) or (e.rkn_tested and not e.rkn_ok))
@@ -2171,7 +2210,8 @@ class TestPage(WizardPage):
         self._update_stats()
 
     def get_entries(self) -> list[ProxyEntry]:
-        return self._filtered_entries
+        _, entries = self.sort_proxy.getFilteredEntries()
+        return entries
 
 
 class ExportPage(WizardPage):
