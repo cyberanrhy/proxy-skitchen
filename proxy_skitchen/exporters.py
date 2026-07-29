@@ -6,10 +6,13 @@ from .models import ProxyEntry
 
 
 def _clean_uri(uri: str) -> str:
-    uri = uri.strip()
-    if "#" in uri:
-        uri = uri.rsplit("#", 1)[0]
-    return uri
+    """If given a ProxyEntry, use its cached clean_uri(). Otherwise strip remark."""
+    if isinstance(uri, ProxyEntry):
+        return uri.clean_uri()
+    uri_str = uri.strip()
+    if "#" in uri_str:
+        uri_str = uri_str.rsplit("#", 1)[0]
+    return uri_str
 
 
 def _is_valid_entry(e: ProxyEntry) -> bool:
@@ -40,7 +43,7 @@ def format_raw(entries: list[ProxyEntry], include_failed: bool = False, clean: b
         if not _is_valid_entry(e):
             continue
         if include_failed or _entry_ok(e):
-            lines.append(_clean_uri(e.uri) if clean else e.uri)
+            lines.append(_clean_uri(e) if clean else e.uri)
     return "\n".join(lines) + "\n"
 
 

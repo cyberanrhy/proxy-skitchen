@@ -79,7 +79,7 @@ else:
     ] if os.path.isdir(p)), os.path.expanduser("~"))
 
 APP_NAME = "proxy-skitchen"
-APP_VERSION = "2.5.4"
+APP_VERSION = "3.0.0"
 
 if IS_WINDOWS:
     CREATE_NO_WINDOW = 0x08000000
