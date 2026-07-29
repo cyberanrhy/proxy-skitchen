@@ -1,37 +1,18 @@
 import json, base64, urllib.parse
 from .compat import *
 
+_FLAG_CACHE: dict[str, str] = {}
+
 
 def country_flag(code: str) -> str:
     if not code or len(code) != 2:
         return ""
-    return chr(ord(code[0]) + 127397) + chr(ord(code[1]) + 127397)
-
-_GOOD_SNI_DOMAINS = {
-    'bing.com', 'microsoft.com', 'apple.com', 'icloud.com', 'office.com', 'office365.com',
-    'azure.com', 'windows.com', 'live.com', 'outlook.com', 'skype.com', 'yammer.com',
-    'powerbi.com', 'sharepoint.com', 'dynamics.com', 'samsung.com', 'nvidia.com',
-    'amd.com', 'intel.com', 'adobe.com', 'cloudflare.com', 'cloudflare-nginx.com',
-    'cloudflare.net', 'google.com', 'googleapis.com', 'gstatic.com', 'youtube.com',
-    'ytimg.com', 'ggpht.com', 'blogger.com', 'blogspot.com', 'android.com',
-    'googlevideo.com', 'googleusercontent.com', 'google-analytics.com', 'goo.gl',
-    'facebook.com', 'fbcdn.net', 'messenger.com', 'instagram.com', 'whatsapp.com',
-    'cdninstagram.com', 'telegram.org', 't.me', 'tdesktop.com', 'speedtest.net',
-    'ooklaserver.net', 'cdn.jsdelivr.net', 'jsdelivr.net', 'github.com', 'github.io',
-    'githubusercontent.com', 'cloudfront.net', 'aws.amazon.com', 'amazonaws.com',
-    'amazon.com', 'aws.com', 'twitch.tv', 'twitter.com', 'x.com', 't.co',
-    'discord.com', 'discordapp.com', 'spotify.com', 'scdn.co', 'reddit.com',
-    'redditmedia.com', 'quic.cloud', 'bootstrapcdn.com', 'cdnjs.cloudflare.com',
-    'fonts.googleapis.com', 'fonts.gstatic.com', 'ajax.googleapis.com',
-    'stackpathcdn.com', 'akamaiedge.net', 'akamaihd.net', 'edgesuite.net',
-    'azureedge.net', 'azurefd.net', 'trafficmanager.net', 'servicebus.windows.net',
-    'v2ex.com', 'v2ex.co', 'ipapi.co', 'ip-api.com', 'ipinfo.io',
-    'vl.mccncs.com', 'mccncs.com', 'mmccncs.com', 'aztec.buzz',
-    'analytics.google.com', 'stats.g.doubleclick.net', 'adservice.google.com',
-    'pagead2.googlesyndication.com', 'googlesyndication.com', 'doubleclick.net',
-    'googleadservices.com', 'googleads.g.doubleclick.net', 'pubads.g.doubleclick.net',
-    'yandex.ru', 'yastatic.net', 'yandex.net', 'yadi.sk', 'disk.yandex.ru',
-}
+    cached = _FLAG_CACHE.get(code)
+    if cached is not None:
+        return cached
+    flag = chr(ord(code[0]) + 127397) + chr(ord(code[1]) + 127397)
+    _FLAG_CACHE[code] = flag
+    return flag
 
 PROTOCOL_PREFIXES = (
     'vless://', 'vmess://', 'trojan://', 'ss://', 'shadowsocks://',
@@ -111,7 +92,7 @@ class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
                  'tcp_ok', 'deep_ok', 'rkn_ok', 'latency_ms', 'deep_error', 'is_embedded',
                  'tcp_tested', 'deep_tested', 'rkn_tested', 'geo_tested', 'rkn_results',
-                 'security')
+                 'security', '_clean_uri')
 
     def __init__(self, uri: str, source: str = ""):
         self.uri = uri
@@ -133,6 +114,7 @@ class ProxyEntry:
         self.geo_tested = False
         self.rkn_results = []
         self.security = ""
+        self._clean_uri = ""
         self._parse()
 
     def _parse(self):
@@ -251,6 +233,16 @@ class ProxyEntry:
         if self.tcp_ok: return "✅"
         return "❌"
 
+    def clean_uri(self) -> str:
+        """Return cached clean URI (without #remark)."""
+        if not self._clean_uri:
+            uri = self.uri.strip()
+            idx = uri.rfind('#')
+            if idx != -1:
+                uri = uri[:idx]
+            self._clean_uri = uri.strip()
+        return self._clean_uri
+
     def __repr__(self):
         return f"<{self.status_emoji()} {self.display_protocol()} {self.host}:{self.port}>"
 
@@ -327,9 +319,35 @@ def _get_tokens() -> list[str]:
 class ProxyTableModel(QAbstractTableModel):
     HEADERS = ["Статус", "Протокол", "Хост", "Порт", "Страна", "Пинг"]
 
+    # Pre-allocated QColor objects for data() hot path
+    _FG_PROTO: dict[str, QColor] = {}
+    _FG_PING_FAST = QColor("#00e676")
+    _FG_PING_MED = QColor("#ffd740")
+    _FG_PING_SLOW = QColor("#ff6d00")
+    _FG_PING_DEAD = QColor("#ff5252")
+    _BG_OK = QColor("#1a2e26")
+    _BG_FAIL = QColor("#2e1a1e")
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.proxies: list[ProxyEntry] = []
+        # Cache translated headers once
+        from .i18n import _
+        self._headers = [
+            _("table.header.status"), _("table.header.proto"),
+            _("table.header.host"), _("table.header.port"),
+            _("table.header.country"), _("table.header.ping"),
+        ]
+        # Build QColor cache for protocol foregrounds (once per class)
+        if not ProxyTableModel._FG_PROTO:
+            PROTO_COLORS = {
+                "VLESS": "#7c4dff", "VMESS": "#448aff", "TROJAN": "#ff5252",
+                "HYSTERIA2": "#ff6d00", "HY2": "#ff6d00", "TUIC": "#00bfa5",
+                "WIREGUARD": "#76ff03", "WG": "#76ff03", "SS": "#69f0ae",
+            }
+            ProxyTableModel._FG_PROTO.update(
+                {proto: QColor(c) for proto, c in PROTO_COLORS.items()}
+            )
 
     def rowCount(self, parent=None):
         return len(self.proxies)
@@ -338,11 +356,9 @@ class ProxyTableModel(QAbstractTableModel):
         return len(self.HEADERS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
-        from .i18n import _
         if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
-            _headers = [_("table.header.status"), _("table.header.proto"), _("table.header.host"), _("table.header.port"), _("table.header.country"), _("table.header.ping")]
-            if section < len(_headers):
-                return _headers[section]
+            if section < len(self._headers):
+                return self._headers[section]
         return None
 
     COUNTRY_FLAGS = {
@@ -361,12 +377,6 @@ class ProxyTableModel(QAbstractTableModel):
         "Portugal":"🇵🇹","Croatia":"🇭🇷","Slovakia":"🇸🇰","Lithuania":"🇱🇹",
         "Latvia":"🇱🇻","Estonia":"🇪🇪","Serbia":"🇷🇸","Albania":"🇦🇱",
         "Algeria":"🇩🇿","Colombia":"🇨🇴",
-    }
-
-    PROTO_COLORS = {
-        "VLESS": "#7c4dff", "VMESS": "#448aff", "TROJAN": "#ff5252",
-        "HYSTERIA2": "#ff6d00", "HY2": "#ff6d00", "TUIC": "#00bfa5",
-        "WIREGUARD": "#76ff03", "WG": "#76ff03", "SS": "#69f0ae",
     }
 
     def _status_text(self, p: ProxyEntry) -> str:
@@ -397,21 +407,21 @@ class ProxyTableModel(QAbstractTableModel):
             if col == 5: return f"{p.latency_ms:.0f}ms" if p.latency_ms else ""
         if role == Qt.ItemDataRole.ForegroundRole:
             if col == 1:
-                c = self.PROTO_COLORS.get(p.protocol)
-                if c:
-                    return QColor(c)
+                qc = self._FG_PROTO.get(p.protocol)
+                if qc:
+                    return qc
             if col == 5 and p.latency_ms:
                 ms = p.latency_ms
-                if ms < 100: return QColor("#00e676")
-                if ms < 300: return QColor("#ffd740")
-                if ms < 500: return QColor("#ff6d00")
-                return QColor("#ff5252")
+                if ms < 100: return self._FG_PING_FAST
+                if ms < 300: return self._FG_PING_MED
+                if ms < 500: return self._FG_PING_SLOW
+                return self._FG_PING_DEAD
             return None
         if role == Qt.ItemDataRole.BackgroundRole:
             if p.deep_ok or p.rkn_ok:
-                return QColor("#1a2e26")
+                return self._BG_OK
             if p.deep_tested or p.rkn_tested:
-                return QColor("#2e1a1e")
+                return self._BG_FAIL
             return None
         if role == Qt.ItemDataRole.ToolTipRole:
             country_display = p.country or "-"

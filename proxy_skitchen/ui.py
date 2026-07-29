@@ -1460,9 +1460,9 @@ class ProxyFilterModel(QSortFilterProxyModel):
         if not hasattr(model, 'proxies') or source_row >= len(model.proxies):
             return True
         entry = model.proxies[source_row]
-        if self._filter_proto and entry.protocol != self._filter_proto:
+        if self._filter_proto and entry.protocol.upper() != self._filter_proto.upper():
             return False
-        if self._filter_security and entry.security != self._filter_security:
+        if self._filter_security and entry.security.upper() != self._filter_security.upper():
             return False
         return True
 
@@ -2802,7 +2802,8 @@ class SettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(_("main.title"))
+        from proxy_skitchen.compat import APP_VERSION
+        self.setWindowTitle(f"{_('main.title')} v{APP_VERSION}")
         # Window icon for taskbar
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
         self._app_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()

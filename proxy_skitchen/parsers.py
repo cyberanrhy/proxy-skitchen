@@ -1,6 +1,14 @@
 import re, json, base64, urllib.parse, html, os, atexit
 from typing import Optional
 
+# ── Pre-compiled regexes ──
+_IS_IP_RE = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+_IS_BASE64_RE = re.compile(r'^[A-Za-z0-9+/=]{50,}$')
+_IS_IPPORT_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$')
+_IS_HOSTPORT_RE = re.compile(r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+$', re.IGNORECASE)
+_WRAP_IPPORT_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$')
+_WRAP_HOSTPORT_RE = re.compile(r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+$', re.IGNORECASE)
+
 GOOD_SNI_DOMAINS = {
     'bing.com', 'microsoft.com', 'apple.com', 'icloud.com', 'office.com', 'office365.com',
     'azure.com', 'windows.com', 'live.com', 'outlook.com', 'skype.com',
@@ -34,7 +42,7 @@ PROTOCOL_PREFIXES = (
 
 
 def is_ip(s: str) -> bool:
-    return bool(re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', s))
+    return bool(_IS_IP_RE.match(s))
 
 
 def strip_remark(uri: str) -> tuple[str, str]:
@@ -239,9 +247,7 @@ def is_proxy_uri(s: str) -> bool:
     s = s.strip().lower()
     if s.startswith(PROTOCOL_PREFIXES):
         return True
-    # Also accept IP:port or host:port (to be wrapped later)
-    if re.match(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$', s) or \
-       re.match(r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+$', s, re.IGNORECASE):
+    if _IS_IPPORT_RE.match(s) or _IS_HOSTPORT_RE.match(s):
         return True
     return False
 
@@ -262,7 +268,7 @@ def extract_uris(text: str) -> list[str]:
         line = line.strip()
         if not line or line.startswith('//') or line.startswith('#'):
             continue
-        if re.match(r'^[A-Za-z0-9+/=]{50,}$', line):
+        if _IS_BASE64_RE.match(line):
             try:
                 decoded = base64.b64decode(line).decode("utf-8", errors="ignore")
                 for sl in decoded.splitlines():
@@ -325,7 +331,6 @@ def parse_json_proxies(data: str) -> list[str]:
 
 
 def wrap_raw_host(uri: str) -> str:
-    if re.match(r'^\d{1,3}(?:\.\d{1,3}){3}:\d+$', uri) or \
-       re.match(r'^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[a-z]{2,}:\d+$', uri, re.IGNORECASE):
+    if _WRAP_IPPORT_RE.match(uri) or _WRAP_HOSTPORT_RE.match(uri):
         return f"socks5://{uri}"
     return uri
