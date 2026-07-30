@@ -18,6 +18,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "ru": {
         # ── SourcesPage ──
         "sources.title": "🔍 <b>Шаг 1: Источники</b>",
+        "sources.btn.settings": "⚙ Настройки",
         "sources.btn.settings.tooltip": "Настройки",
         "sources.btn.stop": "⏹ Стоп",
         "sources.group.github": "GitHub поиск",
@@ -78,6 +79,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "period.24h": "24h",
         "period.3d": "3d",
         "period.7d": "7d",
+        "period.30d": "30d",
 
         # ── GH search status ──
         "gh.searching": "🔍 Поиск: {kw}",
@@ -271,6 +273,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "en": {
         # ── SourcesPage ──
         "sources.title": "🔍 <b>Step 1: Sources</b>",
+        "sources.btn.settings": "⚙ Settings",
         "sources.btn.settings.tooltip": "Settings",
         "sources.btn.stop": "⏹ Stop",
         "sources.group.github": "GitHub Search",
@@ -331,6 +334,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "period.24h": "24h",
         "period.3d": "3d",
         "period.7d": "7d",
+        "period.30d": "30d",
 
         # ── GH search status ──
         "gh.searching": "🔍 Searching: {kw}",

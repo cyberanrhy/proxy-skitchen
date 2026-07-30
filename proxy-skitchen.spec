@@ -3,10 +3,10 @@
 
 a = Analysis(
     ['run_proxy_skitchen.py'],
-    pathex=['.'],
+    pathex=[],
     binaries=[],
-    datas=[('proxy_skitchen/icon.png', 'proxy_skitchen')],
-    hiddenimports=['PySide6.QtSvg', 'PySide6.QtNetwork'],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

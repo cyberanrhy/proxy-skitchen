@@ -101,7 +101,8 @@ def get_server_port(uri: str) -> tuple[Optional[str], Optional[int]]:
     line = uri.strip()
     l = line.lower()
     for pfx in ['vless://', 'trojan://', 'ss://', 'hysteria://', 'hy://',
-                 'hysteria2://', 'hy2://', 'tuic://', 'socks5://', 'socks4://']:
+                 'hysteria2://', 'hy2://', 'tuic://', 'socks5://', 'socks4://',
+                 'wireguard://', 'wg://']:
         if l.startswith(pfx):
             line = line[len(pfx):]
             break

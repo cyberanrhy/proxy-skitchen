@@ -257,8 +257,8 @@ class SourcesPage(WizardPage):
         self.btn_theme_light.clicked.connect(lambda: self._main._switch_theme("light"))
         top.addWidget(self.btn_theme_light)
 
-        self.btn_settings = QPushButton("⚙")
-        self.btn_settings.setFixedSize(32, 22)
+        self.btn_settings = QPushButton(_("sources.btn.settings"))
+        self.btn_settings.setFixedHeight(22)
         self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
         self.btn_settings.clicked.connect(self._on_settings)
         top.addWidget(self.btn_settings)
@@ -320,30 +320,34 @@ class SourcesPage(WizardPage):
         gh_body = QVBoxLayout(self.gh_group)
         gh_body.setSpacing(3)
 
-        # Row: keywords + period + search buttons
+        # Row: keywords (full width)
         kw_row = QHBoxLayout()
         self.lbl_keywords = QLabel(_("sources.label.keywords"))
         kw_row.addWidget(self.lbl_keywords)
         self.kw_input = QLineEdit()
         self.kw_input.setPlaceholderText(_("sources.input.keywords.placeholder"))
         kw_row.addWidget(self.kw_input, 1)
-        kw_row.addSpacing(4)
+        gh_body.addLayout(kw_row)
+
+        # Row: period + search buttons + options
+        action_row = QHBoxLayout()
+        action_row.addSpacing(70)
         self.lbl_period = QLabel(_("sources.label.period"))
-        kw_row.addWidget(self.lbl_period)
+        action_row.addWidget(self.lbl_period)
         self.period_combo = QComboBox()
-        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
+        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d"), _("period.30d")]:
             self.period_combo.addItem(p)
         self.period_combo.setCurrentText(_("period.6h"))
-        kw_row.addWidget(self.period_combo)
-        kw_row.addSpacing(8)
+        action_row.addWidget(self.period_combo)
+        action_row.addSpacing(8)
         self.btn_quick_search = QPushButton(_("sources.btn.quick_search"))
         self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #4a5168; border-radius: 3px; padding: 2px 8px; font-size: 10px; } QPushButton:hover { background: rgba(91,141,239,0.08); }")
         self.btn_quick_search.clicked.connect(lambda: self._on_github_search(False, False))
-        kw_row.addWidget(self.btn_quick_search)
+        action_row.addWidget(self.btn_quick_search)
         self.btn_deep_search = QPushButton(_("sources.btn.deep_search"))
         self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #7c5cbf; border-radius: 3px; padding: 2px 8px; font-size: 10px; } QPushButton:hover { background: rgba(124,92,191,0.12); }")
         self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
-        kw_row.addWidget(self.btn_deep_search)
+        action_row.addWidget(self.btn_deep_search)
         self.btn_wg_search = QPushButton("🔒 WG")
         self.btn_wg_search.setStyleSheet(
             "QPushButton { background: transparent; border: 2px solid #2d7c3f; border-radius: 3px; "
@@ -351,15 +355,16 @@ class SourcesPage(WizardPage):
             "QPushButton:hover { background: rgba(76,175,80,0.12); }"
         )
         self.btn_wg_search.clicked.connect(self._on_wg_search)
-        kw_row.addWidget(self.btn_wg_search)
+        action_row.addWidget(self.btn_wg_search)
         self.chk_hidden_configs = QCheckBox(_("sources.chk.hidden_configs"))
         self.chk_hidden_configs.setToolTip(_("sources.chk.hidden_configs.tooltip"))
         self.chk_hidden_configs.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
-        kw_row.addWidget(self.chk_hidden_configs)
+        action_row.addWidget(self.chk_hidden_configs)
         self.chk_wireguard = QCheckBox("🔒 WireGuard")
         self.chk_wireguard.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
-        kw_row.addWidget(self.chk_wireguard)
-        gh_body.addLayout(kw_row)
+        action_row.addWidget(self.chk_wireguard)
+        action_row.addStretch()
+        gh_body.addLayout(action_row)
 
         # Row: GitHub URL filter
         url_row = QHBoxLayout()
@@ -608,7 +613,7 @@ class SourcesPage(WizardPage):
             return
         keywords = [kw.strip() for kw in kw_text.replace(',', ' ').split() if kw.strip()]
         period_map = {_("period.1h"): 0.04, _("period.2h"): 0.08, _("period.4h"): 0.17, _("period.6h"): 0.25,
-                      _("period.8h"): 0.33, _("period.12h"): 0.5, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7}
+                      _("period.8h"): 0.33, _("period.12h"): 0.5, _("period.24h"): 1, _("period.3d"): 3, _("period.7d"): 7, _("period.30d"): 30}
         time_days = period_map.get(self.period_combo.currentText(), 7)
         tokens = _get_tokens()
         repos = []
@@ -988,6 +993,7 @@ class SourcesPage(WizardPage):
 
     def retranslate(self):
         self.lbl_title.setText(_("sources.title"))
+        self.btn_settings.setText(_("sources.btn.settings"))
         self.btn_settings.setToolTip(_("sources.btn.settings.tooltip"))
         self.btn_stop.setText(_("sources.btn.stop"))
         self._refresh_toolbar_buttons()
@@ -1012,7 +1018,7 @@ class SourcesPage(WizardPage):
         current = self.period_combo.currentText()
         self.period_combo.blockSignals(True)
         self.period_combo.clear()
-        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d")]:
+        for p in [_("period.1h"), _("period.2h"), _("period.4h"), _("period.6h"), _("period.8h"), _("period.12h"), _("period.24h"), _("period.3d"), _("period.7d"), _("period.30d")]:
             self.period_combo.addItem(p)
         if self.period_combo.findText(current) >= 0:
             self.period_combo.setCurrentText(current)
@@ -1525,10 +1531,13 @@ class TestPage(WizardPage):
         self.lbl_total = QLabel(_("test.stats.total", count=0))
         self.lbl_valid = QLabel(_("test.stats.valid", count=0))
         self.lbl_dead = QLabel(_("test.stats.dead", count=0))
+        self.lbl_wg = QLabel("")
+        self.lbl_wg.setVisible(False)
         self.lbl_rkn = QLabel("")
         cards.addWidget(self.lbl_total)
         cards.addWidget(self.lbl_valid)
         cards.addWidget(self.lbl_dead)
+        cards.addWidget(self.lbl_wg)
         cards.addWidget(self.lbl_rkn)
         cards.addStretch()
         self.lbl_current = QLabel("")
@@ -1682,9 +1691,11 @@ class TestPage(WizardPage):
         self._card_total = f"padding: 6px 12px; background: {bg}; border: 1px solid {bd}; border-radius: 6px; font-size: 13px; font-weight: bold; color: {fg}; min-width: 80px;"
         self._card_valid = f"padding: 6px 12px; background: {ok_bg}; border: 1px solid {ok_bd}; border-radius: 6px; font-size: 13px; font-weight: bold; color: {ok}; min-width: 80px;"
         self._card_dead = f"padding: 6px 12px; background: {bad_bg}; border: 1px solid {bad_bd}; border-radius: 6px; font-size: 13px; font-weight: bold; color: {bad}; min-width: 80px;"
+        self._card_wg = f"padding: 6px 12px; background: {ibg}; border: 1px solid #76ff03; border-radius: 6px; font-size: 13px; font-weight: bold; color: #76ff03; min-width: 80px;"
         self.lbl_total.setStyleSheet(self._card_total)
         self.lbl_valid.setStyleSheet(self._card_valid)
         self.lbl_dead.setStyleSheet(self._card_dead)
+        self.lbl_wg.setStyleSheet(self._card_wg)
         self._card_rkn = f"padding: 4px 10px; background: {ibg}; border: 1px solid {warn}; border-radius: 6px; color: {warn}; font-size: 11px;"
         self.lbl_rkn.setStyleSheet(self._card_rkn)
 
@@ -1851,7 +1862,11 @@ class TestPage(WizardPage):
         if self._dead_cnt == 0:
             QMessageBox.information(self, _("msg.info"), _("log.no_dead"))
             return
-        alive = [e for e in self._entries if e.tcp_ok is True or e.deep_ok is True]
+        alive = [
+            e for e in self._entries
+            if not (e.tcp_tested or e.deep_tested or e.rkn_tested)
+               or e.tcp_ok or e.deep_ok or e.rkn_ok
+        ]
         removed = len(self._entries) - len(alive)
         if removed == 0:
             QMessageBox.information(self, _("msg.info"), _("log.no_dead_to_delete"))
@@ -1885,7 +1900,23 @@ class TestPage(WizardPage):
                        subset=list(entries), subset_indices=list(indices))
 
     def _run_test(self, rkn: bool = False, subset: list[ProxyEntry] | None = None, subset_indices: list[int] | None = None):
-        target = subset if subset is not None else self._entries
+        total = len(subset) if subset is not None else len(self._entries)
+        if subset is not None and subset_indices is not None:
+            filtered = [(i, e) for i, e in zip(subset_indices, subset) if e.protocol not in ('WIREGUARD', 'WG')]
+            if not filtered:
+                self._log("⚠ WireGuard не тестируется — нет подходящих entry")
+                return
+            subset_indices, target = zip(*filtered)
+            subset_indices, target = list(subset_indices), list(target)
+        else:
+            target = subset if subset is not None else self._entries
+            target = [e for e in target if e.protocol not in ('WIREGUARD', 'WG')]
+            if not target:
+                self._log("⚠ WireGuard не тестируется — нет подходящих entry")
+                return
+        skipped = total - len(target)
+        if skipped:
+            self._log(f"⚠ Пропущено WireGuard: {skipped}")
         self._stop_requested = False
         self._set_phase(self.PHASE_TEST)
         self.progress_bar.setMaximum(len(target))
@@ -2006,7 +2037,11 @@ class TestPage(WizardPage):
         if self._main._pipeline_mode:
             if self._main._pipeline_stage == 1:
                 self._main._pipeline_stage = 2
-                alive = [e for e in self._entries if e.tcp_ok is True or e.deep_ok is True]
+                alive = [
+                    e for e in self._entries
+                    if not (e.tcp_tested or e.deep_tested or e.rkn_tested)
+                       or e.tcp_ok or e.deep_ok or e.rkn_ok
+                ]
                 removed = len(self._entries) - len(alive)
                 if removed:
                     self._entries = alive
@@ -2114,20 +2149,30 @@ class TestPage(WizardPage):
     def _update_stats(self):
         _, entries = self.sort_proxy.getFilteredEntries()
         total = len(entries)
-        valid = sum(1 for e in entries if (e.deep_ok or not e.deep_tested) and (e.rkn_ok or not e.rkn_tested))
-        dead = sum(1 for e in entries if (e.deep_tested and not e.deep_ok) or (e.rkn_tested and not e.rkn_ok))
         rkn_ok = sum(1 for e in entries if e.rkn_tested and e.rkn_ok)
         rkn_total = sum(1 for e in entries if e.rkn_tested)
+        wg_cnt = sum(1 for e in self._entries if e.protocol in ('WIREGUARD', 'WG'))
         self.lbl_total.setText(f"Всего: {total}")
-        self.lbl_valid.setText(f"Живых: {valid}")
-        self.lbl_dead.setText(f"Мёртвых: {dead}")
+        if self._phase == self.PHASE_IDLE and not self._completed:
+            self.lbl_valid.setText(f"Живых: ?")
+            self.lbl_dead.setText(f"Мёртвых: ?")
+            self.lbl_valid.setStyleSheet(self._card_total)
+            self.lbl_dead.setStyleSheet(self._card_total)
+        else:
+            self.lbl_valid.setText(f"Живых: {self._valid_cnt}")
+            self.lbl_dead.setText(f"Мёртвых: {self._dead_cnt}")
+            self.lbl_valid.setStyleSheet(self._card_valid if self._valid_cnt > 0 else self._card_total)
+            self.lbl_dead.setStyleSheet(self._card_dead if self._dead_cnt > 0 else self._card_total)
+        if wg_cnt:
+            self.lbl_wg.setText(f"🔒 WG: {wg_cnt}")
+            self.lbl_wg.setVisible(True)
+        else:
+            self.lbl_wg.setVisible(False)
         if rkn_total:
             self.lbl_rkn.setText(f"🛡 RKN: {rkn_ok}/{rkn_total}")
             self.lbl_rkn.setVisible(True)
         else:
             self.lbl_rkn.setVisible(False)
-        self.lbl_valid.setStyleSheet(self._card_valid if valid > 0 else self._card_total)
-        self.lbl_dead.setStyleSheet(self._card_dead if dead > 0 else self._card_total)
 
     def _on_table_context(self, pos):
         idx = self.proxy_table.indexAt(pos)
@@ -3002,7 +3047,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
             return
-        if self._tray is None:
+        if self._tray is None or not QSystemTrayIcon.isSystemTrayAvailable():
             event.accept()
             return
         event.ignore()
