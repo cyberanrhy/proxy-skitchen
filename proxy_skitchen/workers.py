@@ -567,32 +567,53 @@ class GitHubSearchWorker(QObject):
         if self.time_filter_days > 0:
             since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             date_filter = f"+pushed:>={since}"
-        url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={min(self.max_repos, 30)}"
-        data = self._api(url)
-        if data is None:
-            return results
-        for repo in data.get("items", [])[:self.max_repos]:
+        per_page = min(self.max_repos, 100)
+        page = 1
+        collected = 0
+        while collected < self.max_repos:
             if self._stop:
                 break
-            repo_url = repo.get("html_url", "")
-            full_name = repo.get("full_name", "")
-            default_branch = repo.get("default_branch", "main")
-            self.progress_signal.emit(f"  🔍 hidden scan: {full_name} ⭐{repo.get('stargazers_count', 0)}")
-            api_url = f"https://api.github.com/repos/{full_name}/git/trees/{default_branch}?recursive=1"
-            tree_data = self._api(api_url)
-            if tree_data is None or not isinstance(tree_data, dict):
-                continue
-            tree = tree_data.get("tree", [])
-            candidates = self._filter_tree_items(full_name, tree)
-            if not candidates:
-                continue
-            self.progress_signal.emit(f"    🎯 {len(candidates)} files to scan for hidden URIs")
-            file_results = self._download_files(full_name, default_branch, candidates)
-            for r in file_results:
-                r["embedded"] = True
-            results.extend(file_results)
-            self.count_signal.emit(len(results))
-            self.partial_result_signal.emit(list(results))
+            url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={per_page}&page={page}"
+            data = self._api(url)
+            if data is None or not isinstance(data, dict):
+                break
+            items = data.get("items", [])
+            if not items:
+                break
+            for repo in items:
+                if self._stop or collected >= self.max_repos:
+                    break
+                collected += 1
+                repo_url = repo.get("html_url", "")
+                full_name = repo.get("full_name", "")
+                default_branch = repo.get("default_branch", "main")
+                self.progress_signal.emit(f"  🔍 hidden scan: {full_name} ⭐{repo.get('stargazers_count', 0)}")
+                api_url = f"https://api.github.com/repos/{full_name}/git/trees/{default_branch}?recursive=1"
+                tree_data = self._api(api_url)
+                if tree_data is None or not isinstance(tree_data, dict):
+                    continue
+                tree = tree_data.get("tree", [])
+                candidates = self._filter_tree_items(full_name, tree)
+                if not candidates:
+                    continue
+                self.progress_signal.emit(f"    🎯 {len(candidates)} files to scan for hidden URIs")
+                modified = self._get_modified_files_in_period(full_name, default_branch)
+                if modified is not None:
+                    before = len(candidates)
+                    candidates = [c for c in candidates if c.get("path", "") in modified]
+                    kept = len(candidates)
+                    self.progress_signal.emit(f"    ⏱ {full_name}: {before}→{kept} after period filter")
+                    if not candidates:
+                        continue
+                file_results = self._download_files(full_name, default_branch, candidates)
+                for r in file_results:
+                    r["embedded"] = True
+                results.extend(file_results)
+                self.count_signal.emit(len(results))
+                self.partial_result_signal.emit(list(results))
+            if len(items) < per_page:
+                break
+            page += 1
         return results
 
     def _search_gists(self, keywords: list[str]) -> list[dict]:
@@ -660,26 +681,64 @@ class GitHubSearchWorker(QObject):
         results = []
         date_filter = ""
         if self.time_filter_days > 0:
-            from datetime import datetime, timedelta, timezone
             since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             date_filter = f"+pushed:>={since}"
-        url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={min(self.max_repos, 30)}"
-        data = self._api(url)
-        if data is None:
-            return results
-        for repo in data.get("items", [])[:self.max_repos]:
+        per_page = min(self.max_repos, 100)
+        page = 1
+        collected = 0
+        while collected < self.max_repos:
             if self._stop:
                 break
-            repo_url = repo.get("html_url", "")
-            if repo_url in seen_repos:
-                continue
-            seen_repos.add(repo_url)
-            self.progress_signal.emit(f"  scan {repo['full_name']} ⭐{repo['stargazers_count']}")
-            found = self._walk(repo)
-            results.extend(found)
-            self.partial_result_signal.emit(list(results))
-            self.count_signal.emit(len(results))
+            url = f"https://api.github.com/search/repositories?q={query}{date_filter}&sort=updated&per_page={per_page}&page={page}"
+            data = self._api(url)
+            if data is None or not isinstance(data, dict):
+                break
+            items = data.get("items", [])
+            if not items:
+                break
+            for repo in items:
+                if self._stop or collected >= self.max_repos:
+                    break
+                repo_url = repo.get("html_url", "")
+                if repo_url in seen_repos:
+                    continue
+                seen_repos.add(repo_url)
+                collected += 1
+                self.progress_signal.emit(f"  scan {repo['full_name']} ⭐{repo['stargazers_count']}")
+                found = self._walk(repo)
+                results.extend(found)
+                self.partial_result_signal.emit(list(results))
+                self.count_signal.emit(len(results))
+            if len(items) < per_page:
+                break
+            page += 1
         return results
+
+    def _get_modified_files_in_period(self, full_name: str, branch: str) -> set[str] | None:
+        """Return set of file paths modified in the time period, or None if unknown."""
+        if self.time_filter_days <= 0 or self.time_filter_days >= 7:
+            return None
+        since = (datetime.now(timezone.utc) - timedelta(days=self.time_filter_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        commits_url = f"https://api.github.com/repos/{full_name}/commits?sha={branch}&since={since}&per_page=30"
+        commits = self._api(commits_url)
+        if not commits or not isinstance(commits, list) or len(commits) == 0:
+            return None
+        if len(commits) == 1:
+            parents = commits[0].get("parents") or [{}]
+            parent_sha = parents[0].get("sha", "") if parents else ""
+        else:
+            parents = commits[-1].get("parents") or [{}]
+            parent_sha = parents[0].get("sha", "") if parents else ""
+        if not parent_sha:
+            return None
+        compare_url = f"https://api.github.com/repos/{full_name}/compare/{parent_sha}...{branch}"
+        diff = self._api(compare_url)
+        if not diff or not isinstance(diff, dict):
+            return None
+        files = diff.get("files", [])
+        if not files:
+            return set()
+        return {f.get("filename", "") for f in files if isinstance(f, dict)}
 
     def _walk(self, repo: dict) -> list[dict]:
         full_name = repo.get("full_name", "")
@@ -696,6 +755,14 @@ class GitHubSearchWorker(QObject):
         if not candidates:
             return results
         self.progress_signal.emit(f"  🎯 {full_name}: {len(candidates)} files to check")
+        modified = self._get_modified_files_in_period(full_name, default_branch)
+        if modified is not None:
+            before = len(candidates)
+            candidates = [c for c in candidates if c.get("path", "") in modified]
+            kept = len(candidates)
+            self.progress_signal.emit(f"  ⏱ {full_name}: {before}→{kept} after period filter")
+            if not candidates:
+                return results
         results = self._download_files(full_name, default_branch, candidates)
         self.count_signal.emit(len(results))
         return results
@@ -762,7 +829,7 @@ class GitHubSearchWorker(QObject):
                 path = item.get("path", "")
                 raw_url = f"https://raw.githubusercontent.com/{full_name}/{branch}/{quote(path, safe='/')}"
                 size = item.get("size", 0) or 0
-                fut = pool.submit(self._download_file, raw_url, size, full_name, path)
+                fut = pool.submit(self._download_file, raw_url, size, full_name, path, branch)
                 fut_map[fut] = path
                 self.progress_signal.emit(f"    📄 {full_name}/{path}")
             for fut in as_completed(fut_map):
@@ -779,7 +846,7 @@ class GitHubSearchWorker(QObject):
             pool.shutdown(wait=not self._stop)
         return results
 
-    def _download_file(self, raw_url: str, size: int, full_name: str, path: str) -> dict | None:
+    def _download_file(self, raw_url: str, size: int, full_name: str, path: str, branch: str = "") -> dict | None:
         if size > 5 * 1024 * 1024:
             return None
         if self._stop:
@@ -794,10 +861,13 @@ class GitHubSearchWorker(QObject):
             cmd.extend(["-H", "User-Agent: Mozilla/5.0", raw_url])
             result = subprocess.run(cmd, capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
             if result.returncode != 0:
-                self._log(f"DL FAIL {path}: curl rc={result.returncode}, proxy={use_proxy}, err={result.stderr.decode()[:100]}")
-                return None
-            body = result.stdout.decode("utf-8", errors="ignore")
-            self._log(f"DL OK {path}: {len(body)} bytes, proxy={use_proxy}")
+                self._log(f"DL FAIL {path}: curl rc={result.returncode}, proxy={use_proxy}")
+                body = self._fallback_download_via_api(full_name, path, branch)
+                if not body:
+                    return None
+            else:
+                body = result.stdout.decode("utf-8", errors="ignore")
+                self._log(f"DL OK {path}: {len(body)} bytes, proxy={use_proxy}")
             ext = os.path.splitext(path)[1].lower()
             embedded_links = []
             seen = set()
@@ -864,6 +934,24 @@ class GitHubSearchWorker(QObject):
             self.progress_signal.emit(f"      🔗 {len(embedded_links)} hidden proxies in {name}")
             return entry
         except Exception:
+            return None
+
+    def _fallback_download_via_api(self, full_name: str, path: str, branch: str) -> str | None:
+        api_url = f"https://api.github.com/repos/{full_name}/contents/{quote(path, safe='/')}?ref={branch}"
+        data = self._api(api_url)
+        if not data or not isinstance(data, dict):
+            self._log(f"DL FAIL {path}: API fallback returned no data")
+            return None
+        content_b64 = data.get("content", "")
+        if not content_b64:
+            self._log(f"DL FAIL {path}: API fallback — no content field")
+            return None
+        try:
+            body = base64.b64decode(content_b64).decode("utf-8", errors="ignore")
+            self._log(f"DL OK {path}: {len(body)} bytes via API fallback")
+            return body
+        except Exception as e:
+            self._log(f"DL FAIL {path}: API fallback decode error: {e}")
             return None
 
     def _walk_explicit(self, repo_url: str) -> list[dict]:
