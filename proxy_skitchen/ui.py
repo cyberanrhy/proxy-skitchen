@@ -1865,7 +1865,8 @@ class TestPage(WizardPage):
         alive = [
             e for e in self._entries
             if not (e.tcp_tested or e.deep_tested or e.rkn_tested)
-               or e.tcp_ok or e.deep_ok or e.rkn_ok
+               or (e.rkn_tested and e.rkn_ok)
+               or (not e.rkn_tested and (e.tcp_ok or e.deep_ok))
         ]
         removed = len(self._entries) - len(alive)
         if removed == 0:
@@ -1958,7 +1959,7 @@ class TestPage(WizardPage):
             ok = False
             filtered = True
         self.model.update_entry(row, ok, latency, error, ttype)
-        if filtered and ttype in (1, 2) and 0 <= row < len(self._entries):
+        if filtered and ttype == 1 and 0 <= row < len(self._entries):
             self._entries[row].tcp_ok = False
             self._entries[row].deep_ok = False
         if ok:
@@ -2040,7 +2041,8 @@ class TestPage(WizardPage):
                 alive = [
                     e for e in self._entries
                     if not (e.tcp_tested or e.deep_tested or e.rkn_tested)
-                       or e.tcp_ok or e.deep_ok or e.rkn_ok
+                       or (e.rkn_tested and e.rkn_ok)
+                       or (not e.rkn_tested and (e.tcp_ok or e.deep_ok))
                 ]
                 removed = len(self._entries) - len(alive)
                 if removed:
