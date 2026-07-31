@@ -1773,6 +1773,7 @@ class TestPage(WizardPage):
             self.btn_stop.setEnabled(True)
             self.btn_deep.setEnabled(False)
             self.btn_rkn.setEnabled(False)
+            self.btn_delete_dead.setEnabled(False)
             self.btn_continue.setVisible(False)
             self.progress_bar.setVisible(True)
             self.lbl_phase.setText(_("test.phase.test"))
@@ -1873,7 +1874,7 @@ class TestPage(WizardPage):
             QMessageBox.information(self, _("msg.info"), _("log.no_dead_to_delete"))
             return
         self._entries = alive
-        self._valid_cnt = len(alive)
+        self._valid_cnt = sum(1 for e in alive if e.tcp_ok or e.deep_ok or e.rkn_ok)
         self._dead_cnt = 0
         self.model.clear()
         self.model.add_proxies(self._entries)
@@ -2155,7 +2156,7 @@ class TestPage(WizardPage):
         rkn_total = sum(1 for e in entries if e.rkn_tested)
         wg_cnt = sum(1 for e in self._entries if e.protocol in ('WIREGUARD', 'WG'))
         self.lbl_total.setText(f"Всего: {total}")
-        if self._phase == self.PHASE_IDLE and not self._completed:
+        if self._test_type is None:
             self.lbl_valid.setText(f"Живых: ?")
             self.lbl_dead.setText(f"Мёртвых: ?")
             self.lbl_valid.setStyleSheet(self._card_total)
