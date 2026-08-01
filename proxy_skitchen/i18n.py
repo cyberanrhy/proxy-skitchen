@@ -171,6 +171,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "export.radio.singbox": "📦 Sing-box JSON",
         "export.radio.clash": "🌐 Clash YAML",
         "export.radio.hiddify": "🏠 Hiddify (RAW)",
+        "export.radio.amnezia": "🔵 Amnezia (WireGuard .conf)",
         "export.group.options": "Опции",
         "export.chk.failed": "Включать непроверенные (failed)",
         "export.chk.smart_names": "Умные имена (🇩🇪 1 - DE - VLESS - 443)",
@@ -197,6 +198,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "export.github.done": "✅ Файл обновлён в GitHub",
         "export.github.no_token": "⚠ Нет GitHub токена — добавь в Настройки → GitHub",
         "export.msg.no_data": "⚠ Нет данных для экспорта. Сначала скачай и протестируй прокси.",
+        "export.msg.no_wg": "⚠ Нет конвертированных WireGuard-конфигов. Сначала скачай и протестируй прокси.",
 
         # ── MainWindow ──
         "main.title": "Proxy Skitchen",
@@ -426,6 +428,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "export.radio.singbox": "📦 Sing-box JSON",
         "export.radio.clash": "🌐 Clash YAML",
         "export.radio.hiddify": "🏠 Hiddify (RAW)",
+        "export.radio.amnezia": "🔵 Amnezia (WireGuard .conf)",
         "export.group.options": "Options",
         "export.chk.failed": "Include failed",
         "export.chk.smart_names": "Smart names (🇩🇪 1 - DE - VLESS - 443)",
@@ -452,6 +455,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "export.github.done": "✅ File updated on GitHub",
         "export.github.no_token": "⚠ No GitHub token — add in Settings → GitHub",
         "export.msg.no_data": "⚠ No data to export. Download and test proxies first.",
+        "export.msg.no_wg": "⚠ No converted WireGuard configs. Download and test proxies first.",
 
         # ── MainWindow ──
         "main.title": "Proxy Skitchen",
