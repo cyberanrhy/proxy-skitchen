@@ -283,6 +283,75 @@ def _extract_ss_pass(uri: str) -> str:
     return ""
 
 
+def _parse_wireguard_uri(uri: str) -> Optional[dict]:
+    """Parse a wireguard:// URI into fields for a WireGuard .conf."""
+    from urllib.parse import parse_qs, unquote
+    if not uri.startswith("wireguard://"):
+        return None
+    rest = uri[len("wireguard://"):]
+    if "@" not in rest or "?" not in rest:
+        return None
+    priv, after_at = rest.split("@", 1)
+    host_port, qs_str = after_at.split("?", 1)
+    qs_str = qs_str.split("#")[0]
+    q = parse_qs(qs_str)
+    if ":" not in host_port:
+        return None
+    host, port_s = host_port.rsplit(":", 1)
+    try:
+        port = int(port_s)
+    except ValueError:
+        return None
+    def _v(key, default=""):
+        return q[key][0] if q.get(key) else default
+    return {
+        "private_key": unquote(priv),
+        "host": host,
+        "port": port,
+        "address": unquote(_v("address")),
+        "public_key": unquote(_v("publickey", _v("pubkey"))),
+        "mtu": _v("mtu", "1280"),
+        "keepalive": _v("keepalive", "25"),
+    }
+
+
+def format_amnezia(entries: list[ProxyEntry], include_failed: bool = False) -> str:
+    """Concatenated WireGuard .conf blocks for Amnezia import (preview only)."""
+    blocks = []
+    for i, e in enumerate(entries, 1):
+        if e.protocol not in ('WIREGUARD', 'WG'):
+            continue
+        if not include_failed and not _entry_ok(e):
+            continue
+        conf = wireguard_conf_from_entry(e)
+        if conf:
+            blocks.append(f"# {i} — {e.host}:{e.port}\n{conf}")
+    return "\n".join(blocks) + "\n"
+
+
+def wireguard_conf_from_entry(e: ProxyEntry) -> Optional[str]:
+    """Build a single WireGuard .conf block from a ProxyEntry's wireguard:// URI."""
+    if not (e.uri and e.uri.startswith("wireguard://")):
+        return None
+    p = _parse_wireguard_uri(e.uri)
+    if not p:
+        return None
+    lines = [
+        "[Interface]",
+        f"PrivateKey = {p['private_key']}",
+        f"Address = {p['address']}",
+        "DNS = 1.1.1.1, 1.0.0.1",
+        f"MTU = {p['mtu']}",
+        "",
+        "[Peer]",
+        f"PublicKey = {p['public_key']}",
+        f"Endpoint = {p['host']}:{p['port']}",
+        "AllowedIPs = 0.0.0.0/0, ::/0",
+        f"PersistentKeepalive = {p['keepalive']}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _extract_ss_cipher(uri: str) -> str:
     try:
         clean = uri.replace('ss://', '').replace('SS://', '')

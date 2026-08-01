@@ -13,7 +13,7 @@ from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_server_port, get_protocol
-from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri
+from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, format_amnezia, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri, wireguard_conf_from_entry
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
 
@@ -2297,8 +2297,9 @@ class ExportPage(WizardPage):
         self.fmt_singbox = QRadioButton(_("export.radio.singbox"))
         self.fmt_clash = QRadioButton(_("export.radio.clash"))
         self.fmt_hiddify = QRadioButton(_("export.radio.hiddify"))
+        self.fmt_amnezia = QRadioButton(_("export.radio.amnezia"))
         self.fmt_raw.setChecked(True)
-        for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify):
+        for rb in (self.fmt_raw, self.fmt_v2rayn, self.fmt_singbox, self.fmt_clash, self.fmt_hiddify, self.fmt_amnezia):
             fmt_l.addWidget(rb)
             rb.toggled.connect(self._update_preview)
         fmt_opts.addLayout(fmt_l)
@@ -2494,6 +2495,8 @@ class ExportPage(WizardPage):
             return format_clash
         if self.fmt_hiddify.isChecked():
             return format_hiddify
+        if self.fmt_amnezia.isChecked():
+            return format_amnezia
         return format_raw
 
     def _get_content(self) -> str:
@@ -2523,6 +2526,8 @@ class ExportPage(WizardPage):
         if self.fmt_hiddify.isChecked():
             title = self.sub_title_input.text().strip() or "My Subscription"
             return fmt(entries, include_failed=self.chk_failed.isChecked(), title=title, clean=clean)
+        if self.fmt_amnezia.isChecked():
+            return fmt(entries, include_failed=self.chk_failed.isChecked())
         body = fmt(entries, include_failed=self.chk_failed.isChecked(), clean=clean)
         return body
 
@@ -2542,6 +2547,7 @@ class ExportPage(WizardPage):
         self.fmt_singbox.setText(_("export.radio.singbox"))
         self.fmt_clash.setText(_("export.radio.clash"))
         self.fmt_hiddify.setText(_("export.radio.hiddify"))
+        self.fmt_amnezia.setText(_("export.radio.amnezia"))
         self.chk_failed.setText(_("export.chk.failed"))
         self.chk_smart_names.setText(_("export.chk.smart_names"))
         self.chk_clean_names.setText(_("export.chk.clean_names"))
@@ -2560,7 +2566,40 @@ class ExportPage(WizardPage):
         QApplication.clipboard().setText(content)
         QMessageBox.information(self, _("msg.done"), _("msg.copied"))
 
+    def _save_amnezia_confs(self, base_dir: str) -> int:
+        """Write one .conf per WG entry into base_dir/amnezia_<ts>/ ."""
+        entries = self._main.test_page.get_entries() or self._main.test_page._entries
+        include_failed = self.chk_failed.isChecked()
+        confs = []
+        for e in entries:
+            if e.protocol not in ('WIREGUARD', 'WG'):
+                continue
+            if not include_failed and not _entry_ok(e):
+                continue
+            conf = wireguard_conf_from_entry(e)
+            if conf:
+                confs.append((e, conf))
+        if not confs:
+            return 0
+        ts = datetime.now().strftime("%Y.%m.%d_%H%M")
+        out_dir = os.path.join(base_dir, f"amnezia_{ts}")
+        os.makedirs(out_dir, exist_ok=True)
+        for i, (e, conf) in enumerate(confs, 1):
+            name = f"wg-{i:02d}_{e.host}_{e.port}.conf"
+            with open(os.path.join(out_dir, name), "w", encoding="utf-8") as f:
+                f.write(conf)
+        return len(confs)
+
     def _on_save(self):
+        if self.fmt_amnezia.isChecked():
+            count = self._save_amnezia_confs(DESKTOP_DIR)
+            if count == 0:
+                QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_wg"))
+                return
+            ts = datetime.now().strftime("%Y.%m.%d_%H%M")
+            path = os.path.join(DESKTOP_DIR, f"amnezia_{ts}")
+            QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
+            return
         content = self._get_content_with_header()
         if not content.strip():
             QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
@@ -2577,6 +2616,15 @@ class ExportPage(WizardPage):
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
     def _on_save_desktop(self):
+        if self.fmt_amnezia.isChecked():
+            count = self._save_amnezia_confs(DESKTOP_DIR)
+            if count == 0:
+                QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_wg"))
+                return
+            ts = datetime.now().strftime("%Y.%m.%d_%H%M")
+            path = os.path.join(DESKTOP_DIR, f"amnezia_{ts}")
+            QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
+            return
         content = self._get_content_with_header()
         if not content.strip():
             QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
