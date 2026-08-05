@@ -675,6 +675,24 @@ class GitHubSearchWorker(QObject):
         return results
 
     def _search_and_walk(self, keyword: str, seen_repos: set) -> list[dict]:
+        # Если ключевое слово — валидный GitHub-владелец, обходим все его репозитории напрямую.
+        if self._looks_like_owner(keyword):
+            owner_repos = self._fetch_user_repos(keyword)
+            if owner_repos:
+                self.progress_signal.emit(f"  👤 {keyword}: фактический владелец, {len(owner_repos)} репозиториев")
+                results = []
+                for i, full_name in enumerate(owner_repos):
+                    if self._stop:
+                        break
+                    self.progress_signal.emit(f"  📁 [{i+1}/{len(owner_repos)}]: {full_name}")
+                    if full_name in seen_repos:
+                        continue
+                    seen_repos.add(full_name)
+                    found = self._walk_explicit(full_name)
+                    results.extend(found)
+                    self.partial_result_signal.emit(list(results))
+                    self.count_signal.emit(len(results))
+                return results
         query = urllib.parse.quote(keyword)
         if self.owner:
             query += f"+user:{self.owner}"
@@ -713,6 +731,17 @@ class GitHubSearchWorker(QObject):
                 break
             page += 1
         return results
+
+    def _looks_like_owner(self, keyword: str) -> bool:
+        """Return True if the keyword looks like a GitHub username/org name."""
+        if not keyword or len(keyword) > 39:
+            return False
+        if not re.match(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$', keyword):
+            return False
+        self.progress_signal.emit(f"  👤 checking if '{keyword}' is a GitHub owner...")
+        url = f"https://api.github.com/users/{urllib.parse.quote(keyword)}"
+        data = self._api(url, timeout=8)
+        return isinstance(data, dict) and data.get("login") is not None
 
     def _get_modified_files_in_period(self, full_name: str, branch: str) -> set[str] | None:
         """Return set of file paths modified in the time period, or None if unknown."""
