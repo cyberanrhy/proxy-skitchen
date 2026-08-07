@@ -2916,6 +2916,27 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 0)
         layout.setSpacing(0)
 
+        # App header: title + clickable repo link
+        self._header_bar = QFrame()
+        self._header_bar.setObjectName("AppHeader")
+        header_l = QHBoxLayout(self._header_bar)
+        header_l.setContentsMargins(10, 6, 10, 6)
+        header_l.setSpacing(10)
+
+        self.header_title = QLabel(_("main.header_title"))
+        self.header_title.setObjectName("HeaderTitle")
+        self.header_title.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        header_l.addWidget(self.header_title)
+        header_l.addStretch()
+
+        self.repo_link = QLabel(_("main.repo_link"))
+        self.repo_link.setObjectName("RepoLink")
+        self.repo_link.setOpenExternalLinks(True)
+        self.repo_link.setTextFormat(Qt.TextFormat.RichText)
+        self.repo_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        header_l.addWidget(self.repo_link)
+        layout.addWidget(self._header_bar)
+
         self.source_page = SourcesPage(self)
         self.download_page = DownloadPage(self)
         self.test_page = TestPage(self)
@@ -3061,6 +3082,40 @@ class MainWindow(QMainWindow):
                 background: {indicator_bg}; border-color: {indicator_accent};
             }}
         """)
+        # App header: title + clickable repo link with hover
+        accent = colors['accent']
+        accent_hover = QColor(accent).lighter(130).name()
+        self._header_bar.setStyleSheet(f"""
+            #AppHeader {{
+                background: {colors['input_bg']};
+                border-bottom: 1px solid {colors['border']};
+                border-radius: 6px;
+            }}
+            #HeaderTitle {{
+                color: {fg};
+                font-size: 14px;
+                font-weight: bold;
+            }}
+            #RepoLink {{
+                color: {accent};
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            #RepoLink a {{
+                color: {accent};
+                text-decoration: none;
+            }}
+            #RepoLink a:hover {{
+                color: {accent_hover};
+                text-decoration: underline;
+            }}
+            #RepoLink a:visited {{
+                color: {accent};
+                text-decoration: none;
+            }}
+        """)
+        self.header_title.setText(_('main.header_title'))
+        self.repo_link.setText(f'<a href="https://github.com/cyberanrhy/proxy-skitchen">{_("main.repo_link")}</a>')
         self.apply_language()
         self.test_page._apply_test_theme()
         self.export_page._apply_export_theme()

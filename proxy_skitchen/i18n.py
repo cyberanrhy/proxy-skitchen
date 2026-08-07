@@ -202,6 +202,8 @@ STRINGS: dict[str, dict[str, str]] = {
 
         # ── MainWindow ──
         "main.title": "Proxy Skitchen",
+        "main.header_title": "Proxy Skitchen",
+        "main.repo_link": "github.com/cyberanrhy ↗",
         "main.proxy_toggle": "🔌 Прокси",
         "main.proxy_toggle_on": "🔌 Прокси ✅",
         "main.proxy_toggle_off": "🔌 Прокси ❌",
@@ -459,6 +461,8 @@ STRINGS: dict[str, dict[str, str]] = {
 
         # ── MainWindow ──
         "main.title": "Proxy Skitchen",
+        "main.header_title": "Proxy Skitchen",
+        "main.repo_link": "github.com/cyberanrhy ↗",
         "main.proxy_toggle": "🔌 Proxy",
         "main.proxy_toggle_on": "🔌 Proxy ✅",
         "main.proxy_toggle_off": "🔌 Proxy ❌",
