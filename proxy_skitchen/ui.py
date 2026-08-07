@@ -125,7 +125,8 @@ class ScanProgressBar(QProgressBar):
         p.setPen(Qt.PenStyle.NoPen)
 
         # light bg
-        p.setBrush(QColor("#1e293b"))
+        _t = THEMES[current_theme()]
+        p.setBrush(QColor(_t['progress_bg']))
         p.drawRoundedRect(bar_rect, r, r)
 
         val = max(0, min(1, self.value() / max(self.maximum(), 1)))
@@ -133,9 +134,14 @@ class ScanProgressBar(QProgressBar):
             fill_w = max(4, (w - 2) * val)
             fill_rect = QRectF(1, 1, fill_w, h - 2)
             grad = QLinearGradient(0, 0, w, 0)
-            grad.setColorAt(0.0, QColor("#2563eb"))
-            grad.setColorAt(0.5, QColor("#3b82f6"))
-            grad.setColorAt(1.0, QColor("#60a5fa"))
+            if current_theme() == "dark":
+                grad.setColorAt(0.0, QColor("#2563eb"))
+                grad.setColorAt(0.5, QColor("#3b82f6"))
+                grad.setColorAt(1.0, QColor("#60a5fa"))
+            else:
+                grad.setColorAt(0.0, QColor("#1d4ed8"))
+                grad.setColorAt(0.5, QColor("#2f6fed"))
+                grad.setColorAt(1.0, QColor("#3b82f6"))
             p.setBrush(grad)
             p.drawRoundedRect(fill_rect, r, r)
 
@@ -160,7 +166,8 @@ def _view_text_dialog(title: str, content: str, parent=None):
     te = QPlainTextEdit(content)
     te.setReadOnly(True)
     te.setFont(QFont("Consolas", 10))
-    te.setStyleSheet("background: #1a1d23; color: #cdd6f4; border: none;")
+    _t = THEMES[current_theme()]
+    te.setStyleSheet(f"background: {_t['code_bg']}; color: {_t['code_fg']}; border: 1px solid {_t['border']};")
     layout.addWidget(te)
     btn = QPushButton("Close")
     btn.clicked.connect(dlg.accept)
@@ -341,27 +348,23 @@ class SourcesPage(WizardPage):
         action_row.addWidget(self.period_combo)
         action_row.addSpacing(8)
         self.btn_quick_search = QPushButton(_("sources.btn.quick_search"))
-        self.btn_quick_search.setStyleSheet("QPushButton { background: transparent; border: 1px solid #4a5168; border-radius: 3px; padding: 2px 8px; font-size: 10px; } QPushButton:hover { background: rgba(91,141,239,0.08); }")
+        self.btn_quick_search.setObjectName("BtnQuickSearch")
         self.btn_quick_search.clicked.connect(lambda: self._on_github_search(False, False))
         action_row.addWidget(self.btn_quick_search)
         self.btn_deep_search = QPushButton(_("sources.btn.deep_search"))
-        self.btn_deep_search.setStyleSheet("QPushButton { background: transparent; border: 2px solid #7c5cbf; border-radius: 3px; padding: 2px 8px; font-size: 10px; } QPushButton:hover { background: rgba(124,92,191,0.12); }")
+        self.btn_deep_search.setObjectName("BtnDeepSearch")
         self.btn_deep_search.clicked.connect(lambda: self._on_github_search(True, True))
         action_row.addWidget(self.btn_deep_search)
         self.btn_wg_search = QPushButton("🔒 WG")
-        self.btn_wg_search.setStyleSheet(
-            "QPushButton { background: transparent; border: 2px solid #2d7c3f; border-radius: 3px; "
-            "padding: 2px 8px; font-size: 10px; color: #4caf50; } "
-            "QPushButton:hover { background: rgba(76,175,80,0.12); }"
-        )
+        self.btn_wg_search.setObjectName("BtnWgSearch")
         self.btn_wg_search.clicked.connect(self._on_wg_search)
         action_row.addWidget(self.btn_wg_search)
         self.chk_hidden_configs = QCheckBox(_("sources.chk.hidden_configs"))
         self.chk_hidden_configs.setToolTip(_("sources.chk.hidden_configs.tooltip"))
-        self.chk_hidden_configs.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
+        self.chk_hidden_configs.setObjectName("ChkHiddenConfigs")
         action_row.addWidget(self.chk_hidden_configs)
         self.chk_wireguard = QCheckBox("🔒 WireGuard")
-        self.chk_wireguard.setStyleSheet("QCheckBox { font-size: 10px; color: #7c89a8; }")
+        self.chk_wireguard.setObjectName("ChkWireguard")
         action_row.addWidget(self.chk_wireguard)
         action_row.addStretch()
         gh_body.addLayout(action_row)
@@ -387,34 +390,28 @@ class SourcesPage(WizardPage):
         self.gh_progress_bar.setFixedHeight(6)
         pr.addWidget(self.gh_progress_bar)
         self.gh_found_label = QLabel("")
-        self.gh_found_label.setStyleSheet("color: #5b8def; font-weight: 700;")
+        self.gh_found_label.setObjectName("GhFoundLabel")
         pr.addWidget(self.gh_found_label)
         gp.addLayout(pr)
         self.gh_status = QLabel("")
         self.gh_status.setWordWrap(True)
-        self.gh_status.setStyleSheet("color: #7c89a8; font-size: 11px;")
+        self.gh_status.setObjectName("GhStatus")
         gp.addWidget(self.gh_status)
         self.gh_log = QPlainTextEdit()
         self.gh_log.setReadOnly(True)
         self.gh_log.setMaximumBlockCount(300)
         self.gh_log.setVisible(False)
         self.gh_log.setFixedHeight(120)
-        self.gh_log.setStyleSheet(
-            "QPlainTextEdit { background: #1a1d23; color: #7c89a8; "
-            "border: 1px solid #2a2d35; border-radius: 3px; "
-            "font-family: Consolas, monospace; font-size: 10px; padding: 2px; }"
-        )
+        self.gh_log.setObjectName("GhLog")
+        self.gh_log.setFont(QFont("Consolas", 9))
         gp.addWidget(self.gh_log)
         self.wg_results = QPlainTextEdit()
         self.wg_results.setReadOnly(True)
         self.wg_results.setVisible(False)
         self.wg_results.setFixedHeight(80)
         self.wg_results.setPlaceholderText("WireGuard URIs from search appear here")
-        self.wg_results.setStyleSheet(
-            "QPlainTextEdit { background: #1a1d23; color: #7c89a8; "
-            "border: 1px solid #2a2d35; border-radius: 3px; "
-            "font-family: Consolas, monospace; font-size: 10px; padding: 2px; }"
-        )
+        self.wg_results.setObjectName("WgResults")
+        self.wg_results.setFont(QFont("Consolas", 9))
         gp.addWidget(self.wg_results)
         self.btn_copy_wg = QPushButton("📋 Copy all")
         self.btn_copy_wg.setVisible(False)
@@ -445,7 +442,7 @@ class SourcesPage(WizardPage):
         self.lbl_subscriptions = QLabel(_("sources.label.subscriptions"))
         src_header.addWidget(self.lbl_subscriptions)
         self.import_status = QLabel("")
-        self.import_status.setStyleSheet("color: #7c89a8; font-size: 10px;")
+        self.import_status.setObjectName("ImportStatus")
         src_header.addWidget(self.import_status)
         src_header.addStretch()
         self.btn_import_file = QPushButton("📂")
@@ -566,8 +563,30 @@ class SourcesPage(WizardPage):
         self.gh_status.setStyleSheet(f"color: {t['muted_fg']}; font-size: 11px;")
         self.url_group.setStyleSheet(f"QGroupBox {{ border: 1px solid {t['border']}; border-radius: 6px; margin-top: 10px; padding: 12px 8px 8px 8px; font-weight: 600; color: {t['accent']}; }} QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}")
         self.import_status.setStyleSheet(f"font-size:11px;color:{t['muted']};")
-        self.btn_import_file.setStyleSheet("QPushButton{font-size:12px;padding:2px;border:1px solid rgba(116,199,160,0.3);border-radius:3px;}QPushButton:hover{background:rgba(116,199,160,0.15);}")
-        self.btn_import_paste.setStyleSheet("QPushButton{font-size:12px;padding:2px;border:1px solid rgba(91,141,239,0.3);border-radius:3px;}QPushButton:hover{background:rgba(91,141,239,0.15);}")
+        self.btn_import_file.setStyleSheet(f"QPushButton{{font-size:12px;padding:2px;border:1px solid {t['success_border']};border-radius:3px;color:{t['success']};}}QPushButton:hover{{background:rgba({int(t['success'][1:3],16)},{int(t['success'][3:5],16)},{int(t['success'][5:7],16)},0.15);}}")
+        self.btn_import_paste.setStyleSheet(f"QPushButton{{font-size:12px;padding:2px;border:1px solid {acc};border-radius:3px;color:{acc};}}QPushButton:hover{{background:rgba({int(acc[1:3],16)},{int(acc[3:5],16)},{int(acc[5:7],16)},0.15);}}")
+        self.btn_quick_search.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: 1px solid {t['border']}; border-radius: 3px; padding: 2px 8px; font-size: 10px; color: {t['fg']}; }}"
+            f"QPushButton:hover {{ background: rgba({int(acc[1:3],16)},{int(acc[3:5],16)},{int(acc[5:7],16)},0.08); border-color: {acc}; }}"
+        )
+        self.btn_deep_search.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: 2px solid {t['accent2']}; border-radius: 3px; padding: 2px 8px; font-size: 10px; color: {t['accent2']}; }}"
+            f"QPushButton:hover {{ background: rgba({int(t['accent2'][1:3],16)},{int(t['accent2'][3:5],16)},{int(t['accent2'][5:7],16)},0.12); }}"
+        )
+        self.btn_wg_search.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: 2px solid {t['success']}; border-radius: 3px; padding: 2px 8px; font-size: 10px; color: {t['success']}; }}"
+            f"QPushButton:hover {{ background: rgba({int(t['success'][1:3],16)},{int(t['success'][3:5],16)},{int(t['success'][5:7],16)},0.12); }}"
+        )
+        self.chk_hidden_configs.setStyleSheet(f"QCheckBox {{ font-size: 10px; color: {t['muted_fg']}; }}")
+        self.chk_wireguard.setStyleSheet(f"QCheckBox {{ font-size: 10px; color: {t['muted_fg']}; }}")
+        self.gh_log.setStyleSheet(
+            f"QPlainTextEdit {{ background: {t['code_bg']}; color: {t['code_fg']}; "
+            f"border: 1px solid {t['border']}; border-radius: 3px; padding: 2px; }}"
+        )
+        self.wg_results.setStyleSheet(
+            f"QPlainTextEdit {{ background: {t['code_bg']}; color: {t['code_fg']}; "
+            f"border: 1px solid {t['border']}; border-radius: 3px; padding: 2px; }}"
+        )
 
     def _on_settings(self):
         try:
@@ -1051,6 +1070,8 @@ class DownloadPage(WizardPage):
         self._stopped = False
         self._completed = False
         self._fetch_start_time = 0.0
+        self._cell_started_bg = QColor("#1e2338")
+        self._cell_done_bg = QColor("#181c2e")
         self._sources_ok = 0
         self._sources_total = 0
         self._source_rows: dict[str, int] = {}
@@ -1191,6 +1212,8 @@ class DownloadPage(WizardPage):
             QTableWidget::item {{ color: {fg}; padding: 2px 4px; }}
             QHeaderView::section {{ background: {bg}; color: {fg}; border: none; border-bottom: 1px solid {bd}; padding: 4px 6px; font-weight: bold; }}
         """)
+        self._cell_started_bg = QColor(t['input_bg'])
+        self._cell_done_bg = QColor(t['bg'])
 
     def _set_phase(self, phase: int):
         self._phase = phase
@@ -1320,7 +1343,7 @@ class DownloadPage(WizardPage):
         for c in range(3):
             cell = self.src_table.item(row, c)
             if cell:
-                cell.setBackground(QColor("#1e2338"))
+                cell.setBackground(self._cell_started_bg)
 
     def _add_source_row_at(self, row: int, name: str, url: str = ""):
         icon_item = QTableWidgetItem("⏳")
@@ -1349,7 +1372,7 @@ class DownloadPage(WizardPage):
         for c in range(3):
             cell = self.src_table.item(row, c)
             if cell:
-                cell.setBackground(QColor("#181c2e"))
+                cell.setBackground(self._cell_done_bg)
         if ok and name not in self._sources_done:
             self._sources_done.add(name)
             self._sources_ok += 1
@@ -1650,7 +1673,7 @@ class TestPage(WizardPage):
         self.log_out = QTextEdit()
         self.log_out.setReadOnly(True)
         self.log_out.setFixedHeight(100)
-        self.log_out.setStyleSheet("color: #f0f4ff; font-size: 12px;")
+        self.log_out.setStyleSheet("font-size: 12px;")
         layout.addWidget(self.log_out)
 
         # ── Bottom nav ──
@@ -2418,7 +2441,9 @@ class ExportPage(WizardPage):
         for b in (self.btn_back, self.btn_copy, self.btn_save, self.btn_save_desk):
             b.setStyleSheet(gen_btn)
 
-        self.btn_gh_push.setStyleSheet(f"QPushButton{{background:rgba(91,141,239,0.10);border:2px solid #5b8def;border-radius:4px;padding:6px 18px;font-weight:bold;font-size:12px;color:#5b8def;}}QPushButton:hover{{background:rgba(91,141,239,0.25);}}QPushButton:disabled{{color:{muted};border-color:{c};background:transparent;}}")
+        acc_c = t['accent']
+        acc_rgb = f"{int(acc_c[1:3],16)},{int(acc_c[3:5],16)},{int(acc_c[5:7],16)}"
+        self.btn_gh_push.setStyleSheet(f"QPushButton{{background:rgba({acc_rgb},0.10);border:2px solid {acc_c};border-radius:4px;padding:6px 18px;font-weight:bold;font-size:12px;color:{acc_c};}}QPushButton:hover{{background:rgba({acc_rgb},0.25);}}QPushButton:disabled{{color:{muted};border-color:{c};background:transparent;}}")
 
         self.gh_status_label.setStyleSheet(f"font-size:11px;color:{muted};")
 
@@ -3193,7 +3218,7 @@ def get_style_string(colors: dict) -> str:
             font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
         }}
         QPushButton:hover {{ background-color: {colors['accent']}; color: white; border-color: {colors['accent']}; }}
-        QPushButton:disabled {{ background-color: transparent; color: #4a5168; border-color: {colors['border']}; }}
+        QPushButton:disabled {{ background-color: transparent; color: {colors['muted']}; border-color: {colors['border']}; }}
         QLineEdit, QComboBox {{
             background-color: {colors['input_bg']}; color: {colors['fg']};
             border: 1px solid {colors['border']}; border-radius: 3px; padding: 4px 8px;
@@ -3231,9 +3256,9 @@ def get_style_string(colors: dict) -> str:
         QPushButton#TabButton {{
             background: transparent;
             border: none;
-            border-right: 1px solid rgba(54,61,87,0.4);
+            border-right: 1px solid {colors['border']};
             padding: 4px 12px 3px 12px;
-            color: #6b7089;
+            color: {colors['tab_muted']};
             font-family: monospace;
             font-size: 10px;
             font-weight: 500;
@@ -3244,8 +3269,8 @@ def get_style_string(colors: dict) -> str:
             letter-spacing: 0;
         }}
         QPushButton#TabButton:hover {{
-            background: rgba(255,255,255,0.04);
-            color: #9aa0b8;
+            background: {colors['tab_hover_bg']};
+            color: {colors['muted_fg']};
         }}
         QPushButton#TabButton[active="true"] {{
             background: {colors['bg']};

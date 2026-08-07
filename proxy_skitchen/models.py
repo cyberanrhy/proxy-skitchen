@@ -46,6 +46,20 @@ THEMES = {
         "warning_border": "rgba(235,203,139,0.3)",
         "muted": "#4a5168",
         "muted_fg": "#7c89a8",
+        "table_ok_bg": "#1a2e26",
+        "table_ok_fg": "#74c7a0",
+        "table_fail_bg": "#2e1a1e",
+        "table_fail_fg": "#e36262",
+        "ping_fast": "#00e676",
+        "ping_med": "#ffd740",
+        "ping_slow": "#ff6d00",
+        "ping_dead": "#ff5252",
+        "accent2": "#7c5cbf",
+        "progress_bg": "#1e293b",
+        "code_bg": "#1a1d23",
+        "code_fg": "#cdd6f4",
+        "tab_muted": "#6b7089",
+        "tab_hover_bg": "rgba(255,255,255,0.04)",
     },
     "light": {
         "bg": "#f5f2ed",
@@ -65,6 +79,20 @@ THEMES = {
         "warning_border": "rgba(245,127,23,0.25)",
         "muted": "#9e9e9e",
         "muted_fg": "#616161",
+        "table_ok_bg": "#e8f5e9",
+        "table_ok_fg": "#2e7d32",
+        "table_fail_bg": "#ffebee",
+        "table_fail_fg": "#c62828",
+        "ping_fast": "#2e7d32",
+        "ping_med": "#b26a00",
+        "ping_slow": "#ef6c00",
+        "ping_dead": "#c62828",
+        "accent2": "#6a4fb8",
+        "progress_bg": "#e0e0e0",
+        "code_bg": "#f5f2ed",
+        "code_fg": "#3d424a",
+        "tab_muted": "#8a8f9e",
+        "tab_hover_bg": "rgba(0,0,0,0.04)",
     }
 }
 
@@ -319,14 +347,11 @@ def _get_tokens() -> list[str]:
 class ProxyTableModel(QAbstractTableModel):
     HEADERS = ["Статус", "Протокол", "Хост", "Порт", "Страна", "Пинг"]
 
-    # Pre-allocated QColor objects for data() hot path
+    # Pre-allocated QColor objects for data() hot path (per-theme cache)
     _FG_PROTO: dict[str, QColor] = {}
-    _FG_PING_FAST = QColor("#00e676")
-    _FG_PING_MED = QColor("#ffd740")
-    _FG_PING_SLOW = QColor("#ff6d00")
-    _FG_PING_DEAD = QColor("#ff5252")
-    _BG_OK = QColor("#1a2e26")
-    _BG_FAIL = QColor("#2e1a1e")
+    _PROTO_LIGHT: dict[str, QColor] = {}
+    _theme_cache: dict[str, dict] = {}
+    _last_theme: str = ""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -340,14 +365,44 @@ class ProxyTableModel(QAbstractTableModel):
         ]
         # Build QColor cache for protocol foregrounds (once per class)
         if not ProxyTableModel._FG_PROTO:
-            PROTO_COLORS = {
-                "VLESS": "#7c4dff", "VMESS": "#448aff", "TROJAN": "#ff5252",
-                "HYSTERIA2": "#ff6d00", "HY2": "#ff6d00", "TUIC": "#00bfa5",
-                "WIREGUARD": "#76ff03", "WG": "#76ff03", "SS": "#69f0ae",
-            }
-            ProxyTableModel._FG_PROTO.update(
-                {proto: QColor(c) for proto, c in PROTO_COLORS.items()}
-            )
+            ProxyTableModel._build_proto_colors()
+
+    @classmethod
+    def _theme_colors(cls) -> dict:
+        """QColor objects for the current theme, cached per theme."""
+        if not cls._FG_PROTO:
+            cls._build_proto_colors()
+        theme = current_theme()
+        if cls._theme_cache.get("__theme__") == theme:
+            return cls._theme_cache
+        t = THEMES[theme]
+        cls._theme_cache = {
+            "__theme__": theme,
+            "ok_bg": QColor(t["table_ok_bg"]),
+            "ok_fg": QColor(t["table_ok_fg"]),
+            "fail_bg": QColor(t["table_fail_bg"]),
+            "fail_fg": QColor(t["table_fail_fg"]),
+            "ping_fast": QColor(t["ping_fast"]),
+            "ping_med": QColor(t["ping_med"]),
+            "ping_slow": QColor(t["ping_slow"]),
+            "ping_dead": QColor(t["ping_dead"]),
+            "proto": cls._PROTO_LIGHT if theme == "light" else cls._FG_PROTO,
+        }
+        return cls._theme_cache
+
+    @classmethod
+    def _build_proto_colors(cls):
+        PROTO_COLORS = {
+            "VLESS": "#7c4dff", "VMESS": "#448aff", "TROJAN": "#ff5252",
+            "HYSTERIA2": "#ff6d00", "HY2": "#ff6d00", "TUIC": "#00bfa5",
+            "WIREGUARD": "#76ff03", "WG": "#76ff03", "SS": "#69f0ae",
+        }
+        cls._FG_PROTO.update(
+            {proto: QColor(c) for proto, c in PROTO_COLORS.items()}
+        )
+        cls._PROTO_LIGHT.update(
+            {proto: QColor(c).darker(230) for proto, c in PROTO_COLORS.items()}
+        )
 
     def rowCount(self, parent=None):
         return len(self.proxies)
@@ -406,22 +461,24 @@ class ProxyTableModel(QAbstractTableModel):
                 return f"{flag} {p.country}" if flag else (p.country or "")
             if col == 5: return f"{p.latency_ms:.0f}ms" if p.latency_ms else ""
         if role == Qt.ItemDataRole.ForegroundRole:
+            tc = self._theme_colors()
             if col == 1:
-                qc = self._FG_PROTO.get(p.protocol)
+                qc = tc["proto"].get(p.protocol)
                 if qc:
                     return qc
             if col == 5 and p.latency_ms:
                 ms = p.latency_ms
-                if ms < 100: return self._FG_PING_FAST
-                if ms < 300: return self._FG_PING_MED
-                if ms < 500: return self._FG_PING_SLOW
-                return self._FG_PING_DEAD
+                if ms < 100: return tc["ping_fast"]
+                if ms < 300: return tc["ping_med"]
+                if ms < 500: return tc["ping_slow"]
+                return tc["ping_dead"]
             return None
         if role == Qt.ItemDataRole.BackgroundRole:
+            tc = self._theme_colors()
             if p.deep_ok or p.rkn_ok:
-                return self._BG_OK
+                return tc["ok_bg"]
             if p.deep_tested or p.rkn_tested:
-                return self._BG_FAIL
+                return tc["fail_bg"]
             return None
         if role == Qt.ItemDataRole.ToolTipRole:
             country_display = p.country or "-"
