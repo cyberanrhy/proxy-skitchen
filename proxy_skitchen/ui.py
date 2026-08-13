@@ -13,7 +13,7 @@ from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_server_port, get_protocol
-from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, format_amnezia, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri, wireguard_conf_from_entry
+from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, format_amnezia, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri, wireguard_conf_from_entry, validate_content
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
 
@@ -2543,7 +2543,7 @@ class ExportPage(WizardPage):
                     continue
                 idx += 1
                 name = smart_name(e, idx, clean_names)
-                uri = _clean_uri(e.uri) if clean else e.uri
+                uri = _clean_uri(e.uri)
                 lines.append(f"{uri}#{name}")
             return "\n".join(lines) + "\n"
         if self.fmt_clash.isChecked():
@@ -2615,6 +2615,19 @@ class ExportPage(WizardPage):
                 f.write(conf)
         return len(confs)
 
+    def _current_fmt(self) -> str:
+        if self.fmt_v2rayn.isChecked():
+            return 'v2rayn'
+        if self.fmt_singbox.isChecked():
+            return 'singbox'
+        if self.fmt_clash.isChecked():
+            return 'clash'
+        if self.fmt_hiddify.isChecked():
+            return 'hiddify'
+        if self.fmt_amnezia.isChecked():
+            return 'amnezia'
+        return 'raw'
+
     def _on_save(self):
         if self.fmt_amnezia.isChecked():
             count = self._save_amnezia_confs(DESKTOP_DIR)
@@ -2629,6 +2642,14 @@ class ExportPage(WizardPage):
         if not content.strip():
             QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
             return
+        valid, broken = validate_content(content, self._current_fmt())
+        if valid == 0:
+            QMessageBox.warning(self, _("msg.warning"), _("export.msg.empty_after_filter"))
+            return
+        if broken > 0:
+            ret = QMessageBox.question(self, _("msg.warning"), _("export.msg.broken_lines", count=broken))
+            if ret != QMessageBox.StandardButton.Yes:
+                return
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         default_name = f"sub_ski_{ts}.txt"
         path, _ = QFileDialog.getSaveFileName(self, _("export.btn.save"),
@@ -2654,6 +2675,14 @@ class ExportPage(WizardPage):
         if not content.strip():
             QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
             return
+        valid, broken = validate_content(content, self._current_fmt())
+        if valid == 0:
+            QMessageBox.warning(self, _("msg.warning"), _("export.msg.empty_after_filter"))
+            return
+        if broken > 0:
+            ret = QMessageBox.question(self, _("msg.warning"), _("export.msg.broken_lines", count=broken))
+            if ret != QMessageBox.StandardButton.Yes:
+                return
         ts = datetime.now().strftime("%Y.%m.%d_%H%M")
         path = os.path.join(DESKTOP_DIR, f"sub_ski_{ts}.txt")
         with open(path, "w", encoding="utf-8") as f:
@@ -2663,19 +2692,16 @@ class ExportPage(WizardPage):
     def _get_content_with_header(self) -> str:
         if self.fmt_hiddify.isChecked():
             return self._get_content()
+        content = self._get_content()
+        if self.fmt_v2rayn.isChecked() or self.fmt_singbox.isChecked():
+            return content
         title = self.sub_title_input.text().strip() or "My Subscription"
         repo = self.gh_repo_input.text().strip()
         fpath = self.gh_file_input.text().strip()
         link = f"github.com/{repo}/blob/main/{fpath}" if repo and fpath else ""
-        header_lines = [
-            f"#profile-title: {title}",
-            "#profile-update-interval: 1",
-            "#hide-settings: 1",
-        ]
         if link:
-            header_lines.insert(0, f"# {title} | {link}")
-        content = self._get_content()
-        return "\n".join(header_lines) + "\n" + content
+            return f"# {title} | {link}\n\n{content}"
+        return content
 
     def _on_github_push(self):
         repo = self.gh_repo_input.text().strip()
@@ -2688,13 +2714,10 @@ class ExportPage(WizardPage):
             QMessageBox.warning(self, _("msg.warning"), _("export.github.no_token"))
             return
         token = tokens[0]
-        content = self._get_content()
+        content = self._get_content_with_header()
         if not content.strip():
             QMessageBox.warning(self, _("msg.warning"), _("export.msg.no_data"))
             return
-        if not self.fmt_hiddify.isChecked():
-            title = self.sub_title_input.text().strip() or "My Subscription"
-            content = f"#profile-title: {title}\n#profile-update-interval: 24\n#hide-settings: 1\n\n{content}"
         self.gh_status_label.setText(_("export.github.pushing"))
         self.btn_gh_push.setEnabled(False)
         from concurrent.futures import ThreadPoolExecutor

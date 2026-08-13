@@ -6,17 +6,20 @@ from .models import ProxyEntry
 
 
 def _clean_uri(uri: str) -> str:
-    """If given a ProxyEntry, use its cached clean_uri(). Otherwise strip remark."""
+    """If given a ProxyEntry, use its cached clean_uri(). Otherwise normalize."""
     if isinstance(uri, ProxyEntry):
         return uri.clean_uri()
-    uri_str = uri.strip()
-    if "#" in uri_str:
-        uri_str = uri_str.rsplit("#", 1)[0]
-    return uri_str
+    from .parsers import normalize_uri
+    return normalize_uri(uri)
 
 
 def _is_valid_entry(e: ProxyEntry) -> bool:
     if not e.host or e.port is None or e.port == 0:
+        return False
+    from .parsers import uri_has_insecure, uri_sni_messy
+    if uri_has_insecure(e.uri):
+        return False
+    if e.protocol not in ('WIREGUARD', 'WG') and uri_sni_messy(e.uri):
         return False
     if e.protocol in ('VLESS', 'VMESS', 'TROJAN') and not _extract_user(e.uri):
         return False
@@ -123,6 +126,36 @@ def format_hiddify(entries: list[ProxyEntry], include_failed: bool = False, titl
     for e in valid:
         lines.append(_clean_uri(e.uri) if clean else e.uri)
     return "\n".join(lines) + "\n"
+
+
+def validate_content(content: str, fmt: str) -> tuple[int, int]:
+    """Return (valid_count, broken_count) for a rendered export body."""
+    if fmt == 'v2rayn':
+        try:
+            content = base64.b64decode(content).decode('utf-8', errors='ignore')
+        except Exception:
+            content = ""
+    if fmt in ('singbox', 'clash'):
+        try:
+            obj = json.loads(content)
+            items = []
+            if isinstance(obj, dict):
+                items = obj.get('outbounds', obj.get('proxies', []))
+            return len(items), 0
+        except Exception:
+            return 0, 0
+    from .parsers import is_proxy_uri
+    valid = 0
+    broken = 0
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if is_proxy_uri(line):
+            valid += 1
+        else:
+            broken += 1
+    return valid, broken
 
 
 def smart_name(entry: ProxyEntry, idx: int = 0, clean_names: bool = False) -> str:
