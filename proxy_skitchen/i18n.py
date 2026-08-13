@@ -199,6 +199,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "export.github.no_token": "⚠ Нет GitHub токена — добавь в Настройки → GitHub",
         "export.msg.no_data": "⚠ Нет данных для экспорта. Сначала скачай и протестируй прокси.",
         "export.msg.no_wg": "⚠ Нет конвертированных WireGuard-конфигов. Сначала скачай и протестируй прокси.",
+        "export.msg.empty_after_filter": "⚠ Все прокси отфильтрованы (insecure или битый SNI). Экспорт отменён.",
+        "export.msg.broken_lines": "⚠ Обнаружены невалидные строки: {count}. Продолжить?",
 
         # ── MainWindow ──
         "main.title": "Proxy Skitchen",
@@ -458,6 +460,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "export.github.no_token": "⚠ No GitHub token — add in Settings → GitHub",
         "export.msg.no_data": "⚠ No data to export. Download and test proxies first.",
         "export.msg.no_wg": "⚠ No converted WireGuard configs. Download and test proxies first.",
+        "export.msg.empty_after_filter": "⚠ All proxies were filtered out (insecure or broken SNI). Export cancelled.",
+        "export.msg.broken_lines": "⚠ Found invalid lines: {count}. Continue?",
 
         # ── MainWindow ──
         "main.title": "Proxy Skitchen",

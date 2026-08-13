@@ -81,6 +81,92 @@ def sni_is_good(sni: str) -> bool:
     return False
 
 
+def normalize_query(qs: str) -> str:
+    """Clean a query string: fix &amp;, drop empty params, stray & and ?&."""
+    if not qs:
+        return ""
+    qs = qs.replace('&amp;', '&').replace('?&', '&')
+    pairs = []
+    for part in qs.split('&'):
+        part = part.strip()
+        if not part:
+            continue
+        if '=' in part:
+            key, _, val = part.partition('=')
+            if not key or not val:
+                continue
+        pairs.append(part)
+    return '&'.join(pairs).strip('&')
+
+
+def normalize_uri(uri: str) -> str:
+    """Normalize a proxy URI: fix shadowsocks://, strip #remark, clean query."""
+    uri = uri.strip()
+    if not uri:
+        return uri
+    idx = uri.rfind('#')
+    remark = uri[idx + 1:] if idx != -1 else ''
+    clean = uri[:idx] if idx != -1 else uri
+    lower = clean.lower()
+    if lower.startswith('shadowsocks://'):
+        clean = 'ss://' + clean[len('shadowsocks://'):]
+        lower = clean.lower()
+    qmark = clean.find('?')
+    if qmark != -1 and not lower.startswith('vmess://'):
+        base, qs = clean[:qmark], clean[qmark + 1:]
+        clean_qs = normalize_query(qs)
+        clean = f"{base}?{clean_qs}" if clean_qs else base
+    return clean
+
+
+def uri_has_insecure(uri: str) -> bool:
+    """True if the URI explicitly allows insecure TLS (insecure=1/true/yes)."""
+    try:
+        qmark = uri.find('?')
+        if qmark == -1:
+            return False
+        params = urllib.parse.parse_qs(uri[qmark + 1:].split('#')[0])
+        vals = params.get('insecure', [])
+        if not vals:
+            return False
+        return vals[0].strip().lower() in ('1', 'true', 'yes', 'on')
+    except Exception:
+        return False
+
+
+def uri_sni_messy(uri: str) -> bool:
+    """True if the URI has an SNI that is garbage (IP, whitespace, junk chars)."""
+    sni = _raw_sni(uri)
+    if not sni:
+        return False
+    sni = sni.strip()
+    if is_ip(sni):
+        return True
+    if len(sni) < 4 or sni.startswith('.') or sni.endswith('.'):
+        return True
+    if any(ch.isspace() or ch in '~_*?#/\\' for ch in sni):
+        return True
+    return False
+
+
+def _raw_sni(uri: str) -> Optional[str]:
+    """Extract the raw sni query value without filtering IPs."""
+    try:
+        clean = uri.strip()
+        qmark = clean.find('?')
+        if qmark == -1:
+            return None
+        qs = clean[qmark + 1:].split('#')[0]
+        params = urllib.parse.parse_qs(qs.replace('&amp;', '&'))
+        for key in ('sni', 'serverName', 'server_name'):
+            vals = params.get(key, [])
+            if vals and vals[0].strip():
+                return vals[0].strip()
+    except Exception:
+        pass
+    return None
+
+
 def get_protocol(uri: str) -> str:
     l = uri.strip().lower()
     if l.startswith('vless://'): return 'vless'

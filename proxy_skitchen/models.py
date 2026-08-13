@@ -123,7 +123,8 @@ class ProxyEntry:
                  'security', '_clean_uri')
 
     def __init__(self, uri: str, source: str = ""):
-        self.uri = uri
+        from .parsers import normalize_uri
+        self.uri = normalize_uri(uri)
         self.protocol = ""
         self.host = ""
         self.port = 0
@@ -247,7 +248,8 @@ class ProxyEntry:
             pass
 
     def key(self) -> str:
-        return f"{self.host}:{self.port}"
+        proto = (self.protocol or "?").lower()
+        return f"{proto}:{self.host}:{self.port}"
 
     def display_protocol(self) -> str:
         p = self.protocol
@@ -262,13 +264,9 @@ class ProxyEntry:
         return "❌"
 
     def clean_uri(self) -> str:
-        """Return cached clean URI (without #remark)."""
+        """Return cached clean URI (without #remark), normalized."""
         if not self._clean_uri:
-            uri = self.uri.strip()
-            idx = uri.rfind('#')
-            if idx != -1:
-                uri = uri[:idx]
-            self._clean_uri = uri.strip()
+            self._clean_uri = self.uri
         return self._clean_uri
 
     def __repr__(self):
