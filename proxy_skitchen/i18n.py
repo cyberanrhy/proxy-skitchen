@@ -274,6 +274,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "event.test_current": "#{n} {mark} {kind} {proto} {host}:{port}",
         "event.test_progress": "{mode}: {done}/{total} ({pct}%)",
         "event.threads": "{mode}: {done}/{total} ({threads} потоков)",
+        "event.eta": "осталось ~{eta}",
     },
 
     "en": {
@@ -535,6 +536,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "event.test_current": "#{n} {mark} {kind} {proto} {host}:{port}",
         "event.test_progress": "{mode}: {done}/{total} ({pct}%)",
         "event.threads": "{mode}: {done}/{total} ({threads} threads)",
+        "event.eta": "~{eta} left",
     },
 }
 
