@@ -2943,6 +2943,40 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+class RepoLinkLabel(QLabel):
+    """Clickable repo link with theme-aware inline color (QSS can't style <a> in QLabel)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._base = "#5b8def"
+        self._hover = "#8cb0f5"
+        self.setOpenExternalLinks(True)
+        self.setTextFormat(Qt.TextFormat.RichText)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._render(False)
+
+    def set_colors(self, base: str, hover: str):
+        self._base = base
+        self._hover = hover
+        self._render(False)
+
+    def _render(self, hovered: bool):
+        color = self._hover if hovered else self._base
+        deco = "underline" if hovered else "none"
+        self.setText(
+            f'<a href="https://github.com/cyberanrhy/proxy-skitchen" '
+            f'style="color:{color};text-decoration:{deco};">{_("main.repo_link")}</a>'
+        )
+
+    def enterEvent(self, e):
+        self._render(True)
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._render(False)
+        super().leaveEvent(e)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2977,11 +3011,7 @@ class MainWindow(QMainWindow):
         header_l.addWidget(self.header_title)
         header_l.addStretch()
 
-        self.repo_link = QLabel(_("main.repo_link"))
-        self.repo_link.setObjectName("RepoLink")
-        self.repo_link.setOpenExternalLinks(True)
-        self.repo_link.setTextFormat(Qt.TextFormat.RichText)
-        self.repo_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.repo_link = RepoLinkLabel()
         header_l.addWidget(self.repo_link)
         layout.addWidget(self._header_bar)
 
@@ -3132,7 +3162,12 @@ class MainWindow(QMainWindow):
         """)
         # App header: title + clickable repo link with hover
         accent = colors['accent']
-        accent_hover = QColor(accent).lighter(130).name()
+        if current_theme() == 'dark':
+            link_color = QColor(accent).lighter(120).name()
+            link_hover = QColor(accent).lighter(150).name()
+        else:
+            link_color = accent
+            link_hover = QColor(accent).darker(115).name()
         self._header_bar.setStyleSheet(f"""
             #AppHeader {{
                 background: {colors['input_bg']};
@@ -3145,25 +3180,12 @@ class MainWindow(QMainWindow):
                 font-weight: bold;
             }}
             #RepoLink {{
-                color: {accent};
                 font-size: 12px;
                 font-weight: bold;
             }}
-            #RepoLink a {{
-                color: {accent};
-                text-decoration: none;
-            }}
-            #RepoLink a:hover {{
-                color: {accent_hover};
-                text-decoration: underline;
-            }}
-            #RepoLink a:visited {{
-                color: {accent};
-                text-decoration: none;
-            }}
         """)
         self.header_title.setText(_('main.header_title'))
-        self.repo_link.setText(f'<a href="https://github.com/cyberanrhy/proxy-skitchen">{_("main.repo_link")}</a>')
+        self.repo_link.set_colors(link_color, link_hover)
         self.apply_language()
         self.test_page._apply_test_theme()
         self.export_page._apply_export_theme()
