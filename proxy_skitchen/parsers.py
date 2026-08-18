@@ -107,6 +107,8 @@ def normalize_uri(uri: str) -> str:
     idx = uri.rfind('#')
     remark = uri[idx + 1:] if idx != -1 else ''
     clean = uri[:idx] if idx != -1 else uri
+    if '#' in clean:
+        clean = clean.split('#', 1)[0]
     lower = clean.lower()
     if lower.startswith('shadowsocks://'):
         clean = 'ss://' + clean[len('shadowsocks://'):]
