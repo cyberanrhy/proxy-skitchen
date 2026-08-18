@@ -1515,6 +1515,7 @@ class TestPage(WizardPage):
         self._valid_cnt = 0
         self._dead_cnt = 0
         self._last_log_time = 0.0
+        self._test_start_time = 0.0
         self._phase = self.PHASE_IDLE
         self._test_thread = None
         self._tester = None
@@ -1943,6 +1944,7 @@ class TestPage(WizardPage):
         if skipped:
             self._log(f"⚠ Пропущено WireGuard: {skipped}")
         self._stop_requested = False
+        self._test_start_time = time.time()
         self._set_phase(self.PHASE_TEST)
         self.progress_bar.setMaximum(len(target))
         self.progress_bar.setValue(0)
@@ -2031,6 +2033,25 @@ class TestPage(WizardPage):
             self._last_log_time = now
         if not self.lbl_current.text():
             self.lbl_current.setText(_("event.test_progress", mode=mode, done=done, total=total, pct=done*100//max(total,1)))
+        elapsed = now - self._test_start_time
+        if done > 0 and elapsed > 1:
+            pct = done * 100 // max(total, 1)
+            eta_secs = (total - done) / (done / elapsed)
+            self.lbl_phase.setText(f"{_('test.phase.test')} · {pct}% · {_('event.eta', eta=self._format_eta(eta_secs))}")
+
+    def _format_eta(self, secs: float) -> str:
+        secs = int(max(0, secs))
+        ru = current_lang() == 'ru'
+        sec_u = "с" if ru else "s"
+        min_u = "м" if ru else "m"
+        h_u = "ч" if ru else "h"
+        if secs < 60:
+            return f"{secs} {sec_u}"
+        m, s = divmod(secs, 60)
+        if m < 60:
+            return f"{m} {min_u} {s:02d} {sec_u}"
+        h, m = divmod(m, 60)
+        return f"{h} {h_u} {m} {min_u}"
 
     def _on_max_latency_toggled(self, checked: bool):
         _settings_data["max_latency_enabled"] = checked
