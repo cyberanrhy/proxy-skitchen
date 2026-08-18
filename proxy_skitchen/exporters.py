@@ -92,7 +92,7 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_
         return "proxies: []\n"
     lines = ["proxies:"]
     for p in proxies:
-        lines.append(f"  - name: {p['name']}")
+        lines.append(f"  - name: {json.dumps(p['name'], ensure_ascii=False)}")
         lines.append(f"    type: {p['type']}")
         lines.append(f"    server: {p['server']}")
         lines.append(f"    port: {p['port']}")
@@ -102,16 +102,28 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_
             lines.append(f"    password: {p['password']}")
         if p.get('cipher'):
             lines.append(f"    cipher: {p['cipher']}")
-        if p.get('udp', False):
-            lines.append("    udp: true")
+        if p.get('flow'):
+            lines.append(f"    flow: {p['flow']}")
+        if p.get('network'):
+            lines.append(f"    network: {p['network']}")
         if p.get('tls', False):
             lines.append("    tls: true")
-        if p.get('sni'):
-            lines.append(f"    sni: {p['sni']}")
-        if p.get('skip-cert-verify', False):
-            lines.append("    skip-cert-verify: true")
+        if p.get('servername'):
+            lines.append(f"    servername: {p['servername']}")
+        if p.get('client-fingerprint'):
+            lines.append(f"    client-fingerprint: {p['client-fingerprint']}")
         if p.get('ws-path'):
             lines.append(f"    ws-path: {p['ws-path']}")
+        if p.get('ws-headers'):
+            lines.append("    ws-headers:")
+            for k, v in p['ws-headers'].items():
+                lines.append(f"      {k}: {v}")
+        if p.get('reality-opts'):
+            lines.append("    reality-opts:")
+            for k, v in p['reality-opts'].items():
+                lines.append(f"      {k}: {v}")
+        if p.get('skip-cert-verify', False):
+            lines.append("    skip-cert-verify: true")
     return "\n".join(lines) + "\n"
 
 
@@ -136,14 +148,15 @@ def validate_content(content: str, fmt: str) -> tuple[int, int]:
         except Exception:
             content = ""
     if fmt in ('singbox', 'clash'):
-        try:
-            obj = json.loads(content)
-            items = []
-            if isinstance(obj, dict):
-                items = obj.get('outbounds', obj.get('proxies', []))
-            return len(items), 0
-        except Exception:
-            return 0, 0
+        if fmt == 'singbox':
+            try:
+                obj = json.loads(content)
+                items = obj.get('outbounds', []) if isinstance(obj, dict) else []
+                return len(items), 0
+            except Exception:
+                return 0, 0
+        valid = sum(1 for line in content.splitlines() if line.strip().startswith('- name:'))
+        return valid, 0
     from .parsers import is_proxy_uri
     valid = 0
     broken = 0
@@ -222,19 +235,98 @@ def _country_to_flag(country: str) -> str:
     return mapping.get(country, "")
 
 
+def _query_param(uri: str, key: str) -> str:
+    """Extract a single query parameter from a proxy URI (empty if absent)."""
+    try:
+        from urllib.parse import urlparse, parse_qs
+        q = urlparse(uri).query
+        if not q:
+            return ""
+        vals = parse_qs(q)
+        return vals.get(key, [''])[0]
+    except Exception:
+        return ""
+
+
 def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
+    """Build a valid sing-box outbound; return None for unsupported/incomplete entries."""
     proto = e.protocol.lower()
+
+    if proto == 'ss':
+        method = _extract_ss_cipher(e.uri)
+        pw = _extract_ss_pass(e.uri)
+        if not method or not pw:
+            return None
+        return {"type": "ss", "server": e.host, "server_port": e.port,
+                "method": method, "password": pw}
+
+    if proto == 'tuic':
+        uuid = _extract_user(e.uri)
+        if not uuid:
+            return None
+        out = {"type": "tuic", "server": e.host, "server_port": e.port, "uuid": uuid}
+        return out
+
+    if proto in ('wireguard', 'wg'):
+        p = _parse_wireguard_uri(e.uri)
+        if not p or not p.get('private_key') or not p.get('public_key') or not p.get('address'):
+            return None
+        return {
+            "type": "wireguard", "server": p['host'], "server_port": p['port'],
+            "local_address": [p['address']], "private_key": p['private_key'],
+            "peer_public_key": p['public_key'], "mtu": int(p.get('mtu') or 1280),
+        }
+
+    if proto not in ('vless', 'vmess', 'trojan', 'hy2', 'hysteria2', 'socks5', 'http', 'https'):
+        return None
+
     out = {"type": proto, "server": e.host, "server_port": e.port}
-    if proto in ('vless', 'trojan'):
+
+    if proto == 'vless':
+        uuid = _extract_user(e.uri)
+        if not uuid:
+            return None
+        out["uuid"] = uuid
+        flow = _query_param(e.uri, 'flow')
+        if flow:
+            out["flow"] = flow
+        security = (e.security or "").lower()
+        pbk = _query_param(e.uri, 'pbk')
+        sid = _query_param(e.uri, 'sid')
+        if security == 'reality' and pbk:
+            out["tls"] = {
+                "enabled": True, "server_name": e.sni or e.host,
+                "reality": {"enabled": True, "public_key": pbk, "short_id": sid or ""},
+            }
+        elif e.sni:
+            out["tls"] = {"enabled": True, "server_name": e.sni}
+    elif proto == 'trojan':
+        pw = _extract_user(e.uri)
+        if not pw:
+            return None
+        out["password"] = pw
         out["tls"] = {"enabled": True, "server_name": e.sni or e.host}
-    elif e.sni:
-        out["tls"] = {"enabled": True, "server_name": e.sni}
-    if proto in ('vless', 'vmess', 'trojan'):
-        out["uuid"] = _extract_user(e.uri)
-    elif proto == 'ss':
-        out["password"] = _extract_ss_pass(e.uri)
-    elif proto in ('hy2', 'hysteria2', 'hysteria', 'hy'):
-        out["password"] = _extract_user(e.uri)
+    elif proto == 'vmess':
+        uuid = _extract_user(e.uri)
+        if not uuid:
+            return None
+        out["uuid"] = uuid
+        path = _query_param(e.uri, 'path') or _query_param(e.uri, 'ws-path')
+        host = _query_param(e.uri, 'host')
+        if path or host:
+            tr = {"type": "ws", "path": path or "/"}
+            if host:
+                tr["headers"] = {"Host": host}
+            out["transport"] = tr
+        if e.sni:
+            out["tls"] = {"enabled": True, "server_name": e.sni}
+    elif proto in ('hy2', 'hysteria2'):
+        pw = _extract_user(e.uri)
+        if not pw:
+            return None
+        out["password"] = pw
+        out["tls"] = {"enabled": True, "server_name": e.sni or e.host}
+
     return out
 
 
@@ -242,27 +334,79 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
     proto = e.protocol.lower()
     name = smart_name(e, idx, clean_names)
     p = {"name": name, "server": e.host, "port": e.port}
-    if proto in ('vless', 'trojan'):
-        p["type"] = proto
-        p["uuid"] = _extract_user(e.uri)
+    if proto == 'vless':
+        uuid = _extract_user(e.uri)
+        if not uuid:
+            return None
+        p["type"] = "vless"
+        p["uuid"] = uuid
+        flow = _query_param(e.uri, 'flow')
+        if flow:
+            p["flow"] = flow
+        if e.sni:
+            p["servername"] = e.sni
+        if (e.security or "").lower() == 'reality':
+            pbk = _query_param(e.uri, 'pbk')
+            sid = _query_param(e.uri, 'sid')
+            if not pbk:
+                return None
+            p["tls"] = True
+            p["client-fingerprint"] = _query_param(e.uri, 'fp') or "chrome"
+            p["reality-opts"] = {"public-key": pbk, "short-id": sid or ""}
+        elif e.security and e.security.lower() != 'none':
+            p["tls"] = True
+        path = _query_param(e.uri, 'path')
+        host = _query_param(e.uri, 'host')
+        if path or host:
+            p["network"] = "ws"
+            if path:
+                p["ws-path"] = path
+            if host:
+                p["ws-headers"] = {"Host": host}
+        return p
+    if proto == 'trojan':
+        pw = _extract_user(e.uri)
+        if not pw:
+            return None
+        p["type"] = "trojan"
+        p["password"] = pw
         p["tls"] = True
         if e.sni:
-            p["sni"] = e.sni
+            p["servername"] = e.sni
         return p
     if proto == 'vmess':
+        uuid = _extract_user(e.uri)
+        if not uuid:
+            return None
         p["type"] = "vmess"
-        p["uuid"] = _extract_user(e.uri)
+        p["uuid"] = uuid
+        path = _query_param(e.uri, 'path') or _query_param(e.uri, 'ws-path')
+        host = _query_param(e.uri, 'host')
+        if path or host:
+            p["network"] = "ws"
+            if path:
+                p["ws-path"] = path
+            if host:
+                p["ws-headers"] = {"Host": host}
+        if e.security and e.security.lower() != 'none':
+            p["tls"] = True
         return p
     if proto == 'ss':
-        p["type"] = "ss"
         pw = _extract_ss_pass(e.uri)
-        if pw:
-            p["password"] = pw
-            p["cipher"] = _extract_ss_cipher(e.uri) or "aes-256-gcm"
+        if not pw:
+            return None
+        p["type"] = "ss"
+        p["password"] = pw
+        p["cipher"] = _extract_ss_cipher(e.uri) or "aes-256-gcm"
         return p
     if proto in ('hy2', 'hysteria2'):
+        pw = _extract_user(e.uri)
+        if not pw:
+            return None
         p["type"] = "hysteria2"
-        p["password"] = _extract_user(e.uri)
+        p["password"] = pw
+        if e.sni:
+            p["servername"] = e.sni
         return p
     if proto == 'socks5':
         p["type"] = "socks5"
