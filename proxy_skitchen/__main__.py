@@ -89,11 +89,13 @@ def _ask_int(label: str, default: int) -> int:
 
 def _version() -> str:
     try:
+        if getattr(sys, "frozen", False):
+            return "3.0.0"
         import tomllib
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pyproject.toml"), "rb") as f:
-            return tomllib.load(f).get("project", {}).get("version", "3.0")
+            return tomllib.load(f).get("project", {}).get("version", "3.0.0")
     except Exception:
-        return "3.0"
+        return "3.0.0"
 
 
 _TIPS = [

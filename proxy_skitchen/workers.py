@@ -481,7 +481,8 @@ class GitHubSearchWorker(QObject):
 
     @Slot()
     def run(self):
-        print("DEBUG: GitHubSearchWorker.run() started", file=sys.stderr)
+        if os.environ.get("PS_DEBUG"):
+            print("DEBUG: GitHubSearchWorker.run() started", file=sys.stderr)
         self._stop = False
         results = []
         try:
@@ -536,7 +537,8 @@ class GitHubSearchWorker(QObject):
             self.result_signal.emit(results)
         except Exception as e:
             self.error_signal.emit(f"Search critical error: {e}")
-        print("DEBUG: GitHubSearchWorker.run() finished", file=sys.stderr)
+        if os.environ.get("PS_DEBUG"):
+            print("DEBUG: GitHubSearchWorker.run() finished", file=sys.stderr)
 
     def _fetch_user_repos(self, owner: str) -> list[str]:
         """Fetch all non-derived repos for a user/org via API."""
