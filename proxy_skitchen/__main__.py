@@ -66,7 +66,7 @@ class CliRunner:
         worker.result_signal.connect(lambda res: found.extend(res))
         worker.run()
         if args.output:
-            with open(args.output, "w") as f:
+            with open(args.output, "w", encoding="utf-8") as f:
                 for s in found:
                     f.write(f"{s['file_url']}\n")
             self._json_out({"status": "ok", "count": len(found), "output": args.output})
@@ -106,7 +106,7 @@ class CliRunner:
                 self._json_out({"status": "error", "url": url, "message": str(e)})
                 return
         if args.output:
-            with open(args.output, "w") as f:
+            with open(args.output, "w", encoding="utf-8") as f:
                 for u in proxies:
                     f.write(f"{u}\n")
             self._json_out({"status": "ok", "count": len(proxies), "valid": len(proxies),
@@ -229,7 +229,7 @@ class CliRunner:
                     deep_ok += 1
         out = {"status": "ok", "total": total, "dropped": dropped, "tcp_ok": tcp_ok, "deep_ok": deep_ok, "rkn_ok": rkn_ok}
         if args.output:
-            with open(args.output, "w") as f:
+            with open(args.output, "w", encoding="utf-8") as f:
                 for u in ok_uris:
                     f.write(f"{u}\n")
             out["output"] = args.output
@@ -346,7 +346,7 @@ class CliRunner:
             ]
             for u in ok_uris:
                 lines.append(_clean_uri(u) if args.clean else u)
-            with open(args.output, "w") as f:
+            with open(args.output, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
             out["output"] = args.output
         self._json_out(out)
