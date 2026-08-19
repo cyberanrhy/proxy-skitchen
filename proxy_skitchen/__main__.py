@@ -122,7 +122,15 @@ class CliRunner:
 
     def cmd_test_file(self, args):
         with open(args.file) as f:
-            uris = [_clean_uri(l.strip()) if args.clean else l.strip() for l in f if l.strip() and is_proxy_uri(l.strip())]
+            lines = [l.strip() for l in f if l.strip() and is_proxy_uri(l.strip())]
+        uris = []
+        dropped = 0
+        for u in lines:
+            e = ProxyEntry(u)
+            if _is_valid_entry(e):
+                uris.append(_clean_uri(e) if args.clean else u)
+            else:
+                dropped += 1
         total = len(uris)
         tcp_ok = deep_ok = rkn_ok = 0
         ok_uris = []
@@ -143,7 +151,7 @@ class CliRunner:
                 d_ok, lat, err = sb_tester.test(uri, 19999 + (i % 10000))
                 if d_ok:
                     deep_ok += 1
-        out = {"status": "ok", "total": total, "tcp_ok": tcp_ok, "deep_ok": deep_ok, "rkn_ok": rkn_ok}
+        out = {"status": "ok", "total": total, "dropped": dropped, "tcp_ok": tcp_ok, "deep_ok": deep_ok, "rkn_ok": rkn_ok}
         if args.output:
             with open(args.output, "w") as f:
                 for u in ok_uris:
@@ -196,11 +204,14 @@ class CliRunner:
                 from proxy_skitchen.parsers import extract_uris, parse_json_proxies
                 uris = extract_uris(data)
                 json_uris = parse_json_proxies(data)
-                # Combine and deduplicate while preserving order
+                # Combine and deduplicate while preserving order, keep only valid entries
                 seen_local = set()
                 for u in uris + json_uris:
-                    if u not in seen_local:
-                        seen_local.add(u)
+                    if u in seen_local:
+                        continue
+                    seen_local.add(u)
+                    e = ProxyEntry(u)
+                    if _is_valid_entry(e):
                         all_uris.append(u)
                 if args.verbose:
                     print(f"  🔍 Extracted {len(uris)} + {len(json_uris)} = {len(all_uris)} uris from this source", file=sys.stderr, flush=True)
