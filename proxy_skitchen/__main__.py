@@ -150,6 +150,15 @@ class CliRunner:
     def _json_out(self, data):
         print(json.dumps(data, ensure_ascii=False))
 
+    def _status(self, msg):
+        print(f"{_c('cyan')}:: {msg}{_c('reset')}", file=sys.stderr, flush=True)
+
+    def _ok(self, msg):
+        print(f"{_c('green')}:: [OK] {msg}{_c('reset')}", file=sys.stderr, flush=True)
+
+    def _warn(self, msg):
+        print(f"{_c('yellow')}:: [!!] {msg}{_c('reset')}", file=sys.stderr, flush=True)
+
     def cmd_search(self, args):
         tokens = _get_tokens()
         if args.token:
@@ -162,7 +171,9 @@ class CliRunner:
         )
         found = []
         worker.result_signal.connect(lambda res: found.extend(res))
+        self._status(f"поиск на GitHub: {' '.join(args.keywords)} (период: {args.period} дн.)")
         worker.run()
+        self._ok(f"найдено подписок: {len(found)}")
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
                 for s in found:
@@ -175,6 +186,7 @@ class CliRunner:
         proxies = []
         total_uris = 0
         for url in args.urls:
+            self._status(f"скачиваю: {url}")
             try:
                 import subprocess
                 cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "15",
@@ -201,8 +213,10 @@ class CliRunner:
                         proxies.append(_clean_uri(e) if args.clean else e.uri)
                 total_uris += len(seen)
             except Exception as e:
+                self._warn(f"{url}: {str(e)[:100]}")
                 self._json_out({"status": "error", "url": url, "message": str(e)})
                 return
+        self._ok(f"всего прокси: {len(proxies)}, отброшено: {total_uris - len(proxies)}")
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
                 for u in proxies:
@@ -228,6 +242,7 @@ class CliRunner:
 
         raw_uris = []
         for src in args.sources:
+            self._status(f"читаю: {src}")
             if src.startswith(("http://", "https://")):
                 import subprocess
                 cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "15",
@@ -269,6 +284,8 @@ class CliRunner:
                 continue
             seen.add(k)
             entries.append(e)
+        self._ok(f"прокси: {len(entries)}, отброшено: {dropped}")
+        self._status(f"экспорт в {fmt}...")
 
         kwargs = {}
         if fmt == "clash":
@@ -277,20 +294,24 @@ class CliRunner:
             kwargs["title"] = args.title
         content = formatters[fmt](entries, include_failed=True, **kwargs)
         valid, broken = validate_content(content, fmt)
+        self._ok(f"валидация: {valid} ок, {broken} битых")
         out = {"status": "ok", "format": fmt, "count": len(entries), "dropped": dropped,
                "valid": valid, "broken": broken}
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(content)
+            self._ok(f"сохранено: {args.output}")
             out["output"] = args.output
         else:
             print(content, end="")
         self._json_out(out)
 
     def cmd_test(self, args):
+        self._status(f"TCP-тест {args.host}:{args.port}...")
         start = time.time()
         ok = test_tcp(args.host, args.port)
         ms = (time.time() - start) * 1000
+        self._ok(f"{'доступен' if ok else 'недоступен'} ({ms:.0f} мс)")
         self._json_out({"status": "ok" if ok else "fail", "host": args.host, "port": args.port, "latency_ms": round(ms, 1)})
 
     def cmd_test_file(self, args):
@@ -306,6 +327,7 @@ class CliRunner:
             else:
                 dropped += 1
         total = len(uris)
+        self._status(f"файл: {total} прокси, отброшено: {dropped}")
         tcp_ok = deep_ok = rkn_ok = 0
         ok_uris = []
         sb_tester = SingBoxTester() if args.deep or args.rkn else None
@@ -314,6 +336,8 @@ class CliRunner:
             if not host or not port:
                 continue
             ok = test_tcp(host, port)
+            mark = f"{_c('green')}OK{_c('reset')}" if ok else f"{_c('red')}FAIL{_c('reset')}"
+            self._status(f"[{i + 1}/{total}] {host}:{port} ... {mark}")
             if ok:
                 tcp_ok += 1
                 ok_uris.append(uri)
@@ -325,6 +349,7 @@ class CliRunner:
                 d_ok, lat, err = sb_tester.test(uri, 19999 + (i % 10000))
                 if d_ok:
                     deep_ok += 1
+        self._ok(f"tcp: {tcp_ok}/{total}, deep: {deep_ok}, rkn: {rkn_ok}")
         out = {"status": "ok", "total": total, "dropped": dropped, "tcp_ok": tcp_ok, "deep_ok": deep_ok, "rkn_ok": rkn_ok}
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
@@ -334,8 +359,6 @@ class CliRunner:
         self._json_out(out)
 
     def cmd_pipeline(self, args):
-        if args.verbose:
-            print("Pipeline: поиск...", file=sys.stderr, flush=True)
         tokens = _get_tokens()
         if args.token:
             tokens = [args.token]
@@ -347,19 +370,18 @@ class CliRunner:
         )
         found = []
         worker.result_signal.connect(lambda res: found.extend(res))
+        self._status(f"этап 1/3: поиск на GitHub: {' '.join(args.keywords)} (период: {args.period} дн.)")
         worker.run()
-        if args.verbose:
-            print(f"Pipeline: найдено {len(found)} подписок", file=sys.stderr, flush=True)
+        self._ok(f"найдено подписок: {len(found)}")
         if not found:
             self._json_out({"status": "ok", "total": 0, "tcp_ok": 0, "deep_ok": 0, "message": "ничего не найдено"})
             return
 
         import subprocess
         all_uris = []
+        self._status(f"этап 2/3: скачивание {len(found)} подписок...")
         for src in found:
             url = src["file_url"]
-            if args.verbose:
-                print(f"  fetch {url[:60]}...", file=sys.stderr, flush=True)
             try:
                 cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "15",
                        "-H", "User-Agent: Mozilla/5.0", url]
@@ -369,12 +391,9 @@ class CliRunner:
                     cmd.insert(2, "socks5://127.0.0.1:12334")
                 result = subprocess.run(cmd, capture_output=True, timeout=25, creationflags=CREATE_NO_WINDOW)
                 if result.returncode != 0:
-                    if args.verbose:
-                        print(f"  ✗ curl err: {result.stderr.decode()[:60]}", file=sys.stderr, flush=True)
+                    self._warn(f"curl: {result.stderr.decode()[:60]}")
                     continue
                 data = result.stdout.decode("utf-8", errors="ignore")
-                if args.verbose:
-                    print(f"  📄 fetched {len(data)} chars: {data[:200]}", file=sys.stderr, flush=True)
                 from proxy_skitchen.parsers import extract_uris, parse_json_proxies
                 uris = extract_uris(data)
                 json_uris = parse_json_proxies(data)
@@ -387,11 +406,9 @@ class CliRunner:
                     e = ProxyEntry(u)
                     if _is_valid_entry(e):
                         all_uris.append(u)
-                if args.verbose:
-                    print(f"  🔍 Extracted {len(uris)} + {len(json_uris)} = {len(all_uris)} uris from this source", file=sys.stderr, flush=True)
+                self._ok(f"{url[:60]}... -> {len(all_uris)} URI")
             except Exception as e:
-                if args.verbose:
-                    print(f"  ✗ {str(e)[:60]}", file=sys.stderr, flush=True)
+                self._warn(f"{str(e)[:60]}")
 
         # dedup by canonical key: proto:host:port (same host+port but different proto are kept)
         seen = set()
@@ -402,37 +419,36 @@ class CliRunner:
             if k not in seen:
                 seen.add(k)
                 unique.append(u)
-        if args.verbose:
-            print(f"Pipeline: {len(unique)} уникальных URI", file=sys.stderr, flush=True)
+        self._ok(f"уникальных URI: {len(unique)}")
 
         # tcp test
         tcp_ok = 0
         ok_uris = []
-        for u in unique:
+        self._status(f"этап 3/3: TCP-тест {len(unique)} прокси...")
+        for i, u in enumerate(unique):
             host, port = get_server_port(u)
             if host and port and test_tcp(host, port):
                 tcp_ok += 1
                 ok_uris.append(u)
-        if args.verbose:
-            print(f"Pipeline: TCP ok {tcp_ok}/{len(unique)}", file=sys.stderr, flush=True)
+        self._ok(f"tcp: {tcp_ok}/{len(unique)}")
 
         deep_ok = 0
         rkn_ok = 0
         sb_tester = SingBoxTester() if args.deep or args.rkn else None
         if args.rkn and sb_tester:
             for i, u in enumerate(ok_uris):
-                if args.verbose:
-                    print(f"  rkn {i+1}/{len(ok_uris)}...", file=sys.stderr, flush=True)
+                self._status(f"rkn [{i + 1}/{len(ok_uris)}]")
                 r_ok, lat, err, results = sb_tester.test_rkn_bypass(u, 29999 + (i % 10000))
                 if r_ok:
                     rkn_ok += 1
         elif args.deep and sb_tester:
             for i, u in enumerate(ok_uris):
-                if args.verbose:
-                    print(f"  deep {i+1}/{len(ok_uris)}...", file=sys.stderr, flush=True)
+                self._status(f"deep [{i + 1}/{len(ok_uris)}]")
                 d_ok, lat, err = sb_tester.test(u, 19999 + (i % 10000))
                 if d_ok:
                     deep_ok += 1
+
+        self._ok(f"итог: tcp={tcp_ok}, deep={deep_ok}, rkn={rkn_ok}")
 
         out = {"status": "ok", "total": len(unique), "tcp_ok": tcp_ok, "deep_ok": deep_ok, "rkn_ok": rkn_ok}
         if args.output:
