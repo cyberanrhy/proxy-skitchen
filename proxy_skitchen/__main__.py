@@ -36,12 +36,13 @@ def excepthook(etype, value, tb):
 sys.excepthook = excepthook
 
 from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW, IS_WINDOWS
-from .models import ProxyEntry, _auth_data, _get_tokens
+from .models import ProxyEntry, _auth_data, _get_tokens, _settings_data, current_theme
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
 from .exporters import (format_raw, format_v2rayn, format_singbox, format_clash,
                         format_hiddify, validate_content, _clean_uri, _is_valid_entry)
 from .tester import test_tcp, test_tls, SingBoxTester
 from .workers import GitHubSearchWorker
+from .i18n import current_lang
 
 
 _ANSI = None
@@ -93,6 +94,50 @@ def _version() -> str:
             return tomllib.load(f).get("project", {}).get("version", "3.0")
     except Exception:
         return "3.0"
+
+
+_TIPS = [
+    "экспорт в sing-box — пункт 6 меню",
+    "для поиска нужен токен GitHub — добавьте его в GUI (Настройки → GitHub)",
+    "тест из файла (пункт 4) отсеет мёртвые прокси",
+    "формат Hiddify лучше всего подходит для мобильных клиентов",
+    "несколько источников для экспорта можно перечислить через пробел",
+    "проверить один прокси быстро — пункт 3 (хост + порт)",
+]
+
+
+def _tip() -> str:
+    return _TIPS[int(time.time()) // 86400 % len(_TIPS)]
+
+
+def _build_date() -> str:
+    try:
+        if getattr(sys, "frozen", False):
+            return time.strftime("%d.%m.%Y", time.localtime(os.path.getmtime(sys.executable)))
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pyproject.toml")
+        return time.strftime("%d.%m.%Y", time.localtime(os.path.getmtime(p)))
+    except Exception:
+        return time.strftime("%d.%m.%Y")
+
+
+def _system_info() -> list[str]:
+    lines = []
+    tokens = _get_tokens()
+    cache = _settings_data.get("proxy_cache", [])
+    try:
+        lang = current_lang()
+    except Exception:
+        lang = "ru"
+    try:
+        theme = current_theme()
+    except Exception:
+        theme = "dark"
+    token_str = f"{_c('green')}{len(tokens)}{_c('reset')}" if tokens else f"{_c('red')}0{_c('reset')} (настройте в GUI)"
+    lines.append(f"{_c('cyan')}https://github.com/cyberanrhy/proxy-skitchen{_c('reset')}")
+    lines.append(f"{_c('dim')}токены GitHub: {token_str}{_c('reset')} | {_c('dim')}кэш:{_c('reset')} {len(cache)} прокси | {_c('dim')}язык:{_c('reset')} {lang} | {_c('dim')}тема:{_c('reset')} {theme}")
+    lines.append(f"{_c('dim')}версия: {_version()} · сборка {_build_date()}{_c('reset')}")
+    lines.append(f"{_c('yellow')}совет: {_tip()}{_c('reset')}")
+    return lines
 
 
 class CliRunner:
@@ -423,7 +468,10 @@ class CliRunner:
                 print(f"{_c('magenta')}{line}{_c('reset')}   {_c('dim')}поиск | тест | экспорт прокси-подписок{_c('reset')}")
             else:
                 print(f"{_c('magenta')}{line}{_c('reset')}")
-        print(f"{_c('dim')}:: {'-' * 48}{_c('reset')}")
+        print(f"{_c('dim')}:: {'-' * 54}{_c('reset')}")
+        for line in _system_info():
+            print(f":: {line}")
+        print(f"{_c('dim')}:: {'-' * 54}{_c('reset')}")
 
     def _print_menu(self):
         print()
@@ -439,8 +487,6 @@ class CliRunner:
         ]
         for num, label in items:
             print(f"  {_c('green')}{num}{_c('reset')}) {label}")
-        print()
-        print(f"  {_c('dim')}{' ' * 14}{_c('reset')}{_c('cyan')}https://github.com/cyberanrhy/proxy-skitchen{_c('reset')}")
 
     def run_menu(self):
         from types import SimpleNamespace as NS
