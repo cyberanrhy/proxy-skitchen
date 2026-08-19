@@ -38,7 +38,8 @@ sys.excepthook = excepthook
 from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW, IS_WINDOWS
 from .models import ProxyEntry, _auth_data, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
-from .exporters import format_raw, _clean_uri, _is_valid_entry
+from .exporters import (format_raw, format_v2rayn, format_singbox, format_clash,
+                        format_hiddify, validate_content, _clean_uri, _is_valid_entry)
 from .tester import test_tcp, test_tls, SingBoxTester
 from .workers import GitHubSearchWorker
 
@@ -114,6 +115,80 @@ class CliRunner:
             self._json_out({"status": "ok", "count": len(proxies), "valid": len(proxies),
                             "dropped": total_uris - len(proxies), "uris": proxies})
 
+    def cmd_export(self, args):
+        formatters = {
+            "raw": format_raw,
+            "v2rayn": format_v2rayn,
+            "singbox": format_singbox,
+            "clash": format_clash,
+            "hiddify": format_hiddify,
+        }
+        fmt = args.format
+        if fmt not in formatters:
+            self._json_out({"status": "error", "message": f"unknown format: {fmt}"})
+            return
+
+        raw_uris = []
+        for src in args.sources:
+            if src.startswith(("http://", "https://")):
+                import subprocess
+                cmd = ["curl", "-sL", "--connect-timeout", "8", "--max-time", "15",
+                       "-H", "User-Agent: Mozilla/5.0", src]
+                from proxy_skitchen.models import _settings_data
+                if _settings_data.get("proxy_enabled", True):
+                    cmd.insert(1, "--proxy")
+                    cmd.insert(2, "socks5://127.0.0.1:12334")
+                try:
+                    result = subprocess.run(cmd, capture_output=True, timeout=25, creationflags=CREATE_NO_WINDOW)
+                    if result.returncode != 0:
+                        raise Exception(result.stderr.decode()[:80])
+                    data = result.stdout.decode("utf-8", errors="ignore")
+                except Exception as e:
+                    self._json_out({"status": "error", "source": src, "message": str(e)})
+                    return
+            else:
+                try:
+                    with open(src, encoding="utf-8") as f:
+                        data = f.read().lstrip('\ufeff')
+                except Exception as e:
+                    self._json_out({"status": "error", "source": src, "message": str(e)})
+                    return
+            from proxy_skitchen.parsers import extract_uris, parse_json_proxies
+            raw_uris.extend(extract_uris(data))
+            raw_uris.extend(parse_json_proxies(data))
+
+        # parse -> filter -> dedup by canonical key
+        seen = set()
+        entries = []
+        dropped = 0
+        for u in raw_uris:
+            e = ProxyEntry(u)
+            if not _is_valid_entry(e):
+                dropped += 1
+                continue
+            k = e.key()
+            if k in seen:
+                continue
+            seen.add(k)
+            entries.append(e)
+
+        kwargs = {}
+        if fmt == "clash":
+            kwargs["clean_names"] = args.clean_names
+        if fmt == "hiddify":
+            kwargs["title"] = args.title
+        content = formatters[fmt](entries, include_failed=True, **kwargs)
+        valid, broken = validate_content(content, fmt)
+        out = {"status": "ok", "format": fmt, "count": len(entries), "dropped": dropped,
+               "valid": valid, "broken": broken}
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(content)
+            out["output"] = args.output
+        else:
+            print(content, end="")
+        self._json_out(out)
+
     def cmd_test(self, args):
         start = time.time()
         ok = test_tcp(args.host, args.port)
@@ -121,8 +196,9 @@ class CliRunner:
         self._json_out({"status": "ok" if ok else "fail", "host": args.host, "port": args.port, "latency_ms": round(ms, 1)})
 
     def cmd_test_file(self, args):
-        with open(args.file) as f:
-            lines = [l.strip() for l in f if l.strip() and is_proxy_uri(l.strip())]
+        with open(args.file, encoding="utf-8") as f:
+            data = f.read().lstrip('\ufeff')
+        lines = [l.strip() for l in data.splitlines() if l.strip() and is_proxy_uri(l.strip())]
         uris = []
         dropped = 0
         for u in lines:
@@ -311,6 +387,18 @@ def build_parser(runner: CliRunner):
     ptf.add_argument("--output", "-o", default="")
     ptf.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")
     ptf.add_argument("--no-clean", dest="clean", action="store_false", help="Сохранять оригинальные URI с #fragment")
+
+    pex = sub.add_parser("export", help="Скачать/прочитать подписку и выгрузить в формате",
+        epilog="Примеры: export sub.txt --format singbox -o config.json\n"
+               "          export https://example.com/sub --format clash -o config.yaml\n"
+               "          export a.txt b.txt --format hiddify --title \"My Sub\"")
+    pex.add_argument("sources", nargs="+", help="Локальные файлы или http(s) URL подписок")
+    pex.add_argument("--format", "-f", default="raw",
+                     choices=["raw", "v2rayn", "singbox", "clash", "hiddify"],
+                     help="Формат выгрузки (по умолчанию raw)")
+    pex.add_argument("--clean-names", action="store_true", help="Clash: простые имена без эмодзи")
+    pex.add_argument("--title", default="VPN Config", help="Hiddify: заголовок подписки")
+    pex.add_argument("--output", "-o", default="", help="Файл для сохранения (иначе вывод в stdout)")
 
     pp = sub.add_parser("pipeline", help="Полный конвейер: поиск → тест → сохранение",
         epilog="Пресеты: vless subscription, vmess subscription, trojan subscription, "
