@@ -439,6 +439,8 @@ class CliRunner:
         ]
         for num, label in items:
             print(f"  {_c('green')}{num}{_c('reset')}) {label}")
+        print()
+        print(f"  {_c('dim')}{' ' * 14}{_c('reset')}{_c('cyan')}https://github.com/cyberanrhy/proxy-skitchen{_c('reset')}")
 
     def run_menu(self):
         from types import SimpleNamespace as NS
@@ -606,6 +608,10 @@ def main():
     runner = CliRunner()
     p = build_parser(runner)
     if len(sys.argv) <= 1:
+        if os.environ.get("PROXY_SKITCHEN_CLI") == "1":
+            app = QCoreApplication(sys.argv)
+            runner.run_menu()
+            return
         main_gui()
         return
     args = p.parse_args()
