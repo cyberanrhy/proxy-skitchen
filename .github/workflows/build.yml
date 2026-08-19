@@ -20,11 +20,14 @@ jobs:
       - run: pip install -r requirements.txt pyinstaller
 
       - run: pyinstaller proxy-skitchen.spec --noconfirm
+      - run: pyinstaller proxy-skitchen-cli.spec --noconfirm
 
       - uses: actions/upload-artifact@v4
         with:
           name: proxy-skitchen-windows
-          path: dist/proxy-skitchen.exe
+          path: |
+            dist/proxy-skitchen.exe
+            dist/proxy-skitchen-cli.exe
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -39,5 +42,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: proxy-skitchen.exe
+          files: |
+            proxy-skitchen.exe
+            proxy-skitchen-cli.exe
           generate_release_notes: true
