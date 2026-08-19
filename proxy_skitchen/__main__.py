@@ -38,7 +38,7 @@ sys.excepthook = excepthook
 from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW, IS_WINDOWS
 from .models import ProxyEntry, _auth_data, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
-from .exporters import format_raw, _clean_uri
+from .exporters import format_raw, _clean_uri, _is_valid_entry
 from .tester import test_tcp, test_tls, SingBoxTester
 from .workers import GitHubSearchWorker
 
@@ -74,6 +74,7 @@ class CliRunner:
 
     def cmd_fetch(self, args):
         proxies = []
+        total_uris = 0
         for url in args.urls:
             try:
                 import subprocess
@@ -90,12 +91,16 @@ class CliRunner:
                 from proxy_skitchen.parsers import extract_uris, parse_json_proxies
                 uris = extract_uris(data)
                 json_uris = parse_json_proxies(data)
-                # Combine and deduplicate while preserving order
+                # Combine and deduplicate while preserving order, keep only valid entries
                 seen = set()
                 for u in uris + json_uris:
-                    if u not in seen:
-                        seen.add(u)
-                        proxies.append(_clean_uri(u) if args.clean else u)
+                    if u in seen:
+                        continue
+                    seen.add(u)
+                    e = ProxyEntry(u)
+                    if _is_valid_entry(e):
+                        proxies.append(_clean_uri(e) if args.clean else e.uri)
+                total_uris += len(seen)
             except Exception as e:
                 self._json_out({"status": "error", "url": url, "message": str(e)})
                 return
@@ -103,9 +108,11 @@ class CliRunner:
             with open(args.output, "w") as f:
                 for u in proxies:
                     f.write(f"{u}\n")
-            self._json_out({"status": "ok", "count": len(proxies), "output": args.output})
+            self._json_out({"status": "ok", "count": len(proxies), "valid": len(proxies),
+                            "dropped": total_uris - len(proxies), "output": args.output})
         else:
-            self._json_out({"status": "ok", "count": len(proxies), "uris": proxies})
+            self._json_out({"status": "ok", "count": len(proxies), "valid": len(proxies),
+                            "dropped": total_uris - len(proxies), "uris": proxies})
 
     def cmd_test(self, args):
         start = time.time()
