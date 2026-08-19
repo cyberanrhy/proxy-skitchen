@@ -219,15 +219,15 @@ class CliRunner:
                 if args.verbose:
                     print(f"  ✗ {str(e)[:60]}", file=sys.stderr, flush=True)
 
-        # dedup
+        # dedup by canonical key: proto:host:port (same host+port but different proto are kept)
         seen = set()
         unique = []
         for u in all_uris:
-            host, port = get_server_port(u)
-            if host is not None and port is not None:
-                if (host, port) not in seen:
-                    seen.add((host, port))
-                    unique.append(u)
+            e = ProxyEntry(u)
+            k = e.key()
+            if k not in seen:
+                seen.add(k)
+                unique.append(u)
         if args.verbose:
             print(f"Pipeline: {len(unique)} уникальных URI", file=sys.stderr, flush=True)
 
