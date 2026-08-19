@@ -286,7 +286,7 @@ def _load_settings() -> dict:
 def _save_settings(data: dict):
     os.makedirs(SETTINGS_DIR, exist_ok=True)
     tmp = SETTINGS_FILE + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp, SETTINGS_FILE)
 
@@ -312,7 +312,7 @@ def _save_auth(data: dict):
     from .compat import IS_WINDOWS
     os.makedirs(SETTINGS_DIR, exist_ok=True)
     tmp = AUTH_FILE + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     if not IS_WINDOWS:
         os.chmod(tmp, 0o600)

@@ -294,7 +294,7 @@ def _save_geo_cache():
     try:
         d = os.path.dirname(_GEO_CACHE_FILE)
         os.makedirs(d, exist_ok=True)
-        with open(_GEO_CACHE_FILE, "w") as f:
+        with open(_GEO_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(_GEO_CACHE, f, indent=2)
         _GEO_CACHE_DIRTY = False
     except Exception:

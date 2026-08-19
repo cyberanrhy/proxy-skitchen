@@ -90,15 +90,15 @@ _LOG_LIMIT = 1024 * 1024       # 1 MB max
 _LOG_KEEP = 768 * 1024         # keep ~768 KB after truncation
 
 def _write_log(path: str, msg: str):
-    """Write to a debug log with built-in size limit."""
+    """Write to a debug log with built-in size limit. UTF-8, lossy-safe."""
     try:
         if os.path.exists(path) and os.path.getsize(path) > _LOG_LIMIT:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
                 data = f.read()
             tail = data[-_LOG_KEEP:]
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8", errors="replace") as f:
                 f.write(tail)
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
             f.write(f"[{datetime.now().isoformat()}] {msg}\n")
     except Exception:
         pass
