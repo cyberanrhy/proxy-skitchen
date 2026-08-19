@@ -178,7 +178,9 @@ class CliRunner:
             with open(args.output, "w", encoding="utf-8") as f:
                 for s in found:
                     f.write(f"{s['file_url']}\n")
-            self._json_out({"status": "ok", "count": len(found), "output": args.output})
+            out_path = os.path.abspath(args.output)
+            self._ok(f"сохранено: {out_path}")
+            self._json_out({"status": "ok", "count": len(found), "output": out_path})
         else:
             self._json_out({"status": "ok", "count": len(found), "sources": found})
 
@@ -221,8 +223,10 @@ class CliRunner:
             with open(args.output, "w", encoding="utf-8") as f:
                 for u in proxies:
                     f.write(f"{u}\n")
+            out_path = os.path.abspath(args.output)
+            self._ok(f"сохранено: {out_path}")
             self._json_out({"status": "ok", "count": len(proxies), "valid": len(proxies),
-                            "dropped": total_uris - len(proxies), "output": args.output})
+                            "dropped": total_uris - len(proxies), "output": out_path})
         else:
             self._json_out({"status": "ok", "count": len(proxies), "valid": len(proxies),
                             "dropped": total_uris - len(proxies), "uris": proxies})
@@ -300,8 +304,9 @@ class CliRunner:
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(content)
-            self._ok(f"сохранено: {args.output}")
-            out["output"] = args.output
+            out_path = os.path.abspath(args.output)
+            self._ok(f"сохранено: {out_path}")
+            out["output"] = out_path
         else:
             print(content, end="")
         self._json_out(out)
@@ -355,7 +360,9 @@ class CliRunner:
             with open(args.output, "w", encoding="utf-8") as f:
                 for u in ok_uris:
                     f.write(f"{u}\n")
-            out["output"] = args.output
+            out_path = os.path.abspath(args.output)
+            self._ok(f"сохранено: {out_path}")
+            out["output"] = out_path
         self._json_out(out)
 
     def cmd_pipeline(self, args):
@@ -462,7 +469,9 @@ class CliRunner:
                 lines.append(_clean_uri(u) if args.clean else u)
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
-            out["output"] = args.output
+            out_path = os.path.abspath(args.output)
+            self._ok(f"сохранено: {out_path}")
+            out["output"] = out_path
         self._json_out(out)
 
     def _pacman(self) -> str:
