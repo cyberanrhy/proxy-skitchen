@@ -936,7 +936,7 @@ class SourcesPage(WizardPage):
         for path in paths:
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                    content = f.read().lstrip('\ufeff')
                 for line in content.splitlines():
                     line = line.strip()
                     if not line or line.startswith('#') or line.startswith('//'):

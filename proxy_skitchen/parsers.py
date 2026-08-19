@@ -352,6 +352,7 @@ def extract_inline_uris(line: str) -> list[str]:
 
 
 def extract_uris(text: str) -> list[str]:
+    text = text.lstrip('\ufeff')
     uris = []
     for line in text.splitlines():
         line = line.strip()
