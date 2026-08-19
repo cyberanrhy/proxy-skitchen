@@ -2079,6 +2079,16 @@ class TestPage(WizardPage):
         self._set_phase(self.PHASE_IDLE)
         self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
         self._log(_("log.test_done", valid=self._valid_cnt, total=len(self._entries)))
+        tray = getattr(self._main, "_tray", None)
+        if tray is not None and QSystemTrayIcon.isSystemTrayAvailable():
+            try:
+                tray.showMessage(
+                    "Proxy Skitchen",
+                    _("notify.test_done", valid=self._valid_cnt, total=len(self._entries)),
+                    QSystemTrayIcon.Information, 3000,
+                )
+            except Exception:
+                pass
         self._main.update_status_bar()
         if self._main._pipeline_mode:
             if self._main._pipeline_stage == 1:
