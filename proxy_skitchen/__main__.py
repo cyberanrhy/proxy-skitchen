@@ -75,37 +75,6 @@ def _c(name: str, text: str = "") -> str:
     return code
 
 
-# 5x7 ASCII font for the logo (works in any terminal, no unicode needed)
-_FONT = {
-    "P": ["#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "],
-    "R": ["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"],
-    "O": [" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "],
-    "X": ["#   #", "#   #", " # # ", "  #  ", " # # ", "#   #", "#   #"],
-    "Y": ["#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  "],
-    "S": [" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "],
-    "K": ["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"],
-    "I": ["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "#####"],
-    "T": ["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "],
-    "C": [" ####", "#    ", "#    ", "#    ", "#    ", "#    ", " ####"],
-    "H": ["#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"],
-    "E": ["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"],
-    "N": ["#   #", "##  #", "# # #", "#  ##", "#   #", "#   #", "#   #"],
-    "V": ["#   #", "#   #", "#   #", "#   #", "#   #", " # # ", "  #  "],
-    "A": [" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"],
-    " ": ["     ", "     ", "     ", "     ", "     ", "     ", "     "],
-}
-
-
-def _render_logo(text: str) -> str:
-    """Render a 5x7 ASCII-art banner for the given text."""
-    rows = [""] * 7
-    for ch in text.upper():
-        glyph = _FONT.get(ch, _FONT[" "])
-        for i in range(7):
-            rows[i] += glyph[i] + " "
-    return "\n".join(r.rstrip() for r in rows)
-
-
 def _ask_int(label: str, default: int) -> int:
     raw = input(f"{label} [{default}]: ").strip()
     if not raw:
@@ -446,16 +415,15 @@ class CliRunner:
         )
 
     def _print_banner(self):
-        logo = _render_logo("PROXY SKITCHEN").splitlines()
         pac = self._pacman().splitlines()
-        for i in range(max(len(pac), len(logo))):
-            p = pac[i] if i < len(pac) else " " * 9
-            l = logo[i] if i < len(logo) else ""
-            print(f"{_c('magenta')}{p}{_c('reset')}   {_c('cyan')}{l}{_c('reset')}")
-        print()
-        print(f"{_c('green')}:: {_c('bold')}Proxy Skitchen{_c('reset')} {_c('dim')}v{_version()}{_c('reset')}")
-        print(f"{_c('dim')}:: поиск | тест | экспорт прокси-подписок")
-        print(f"{_c('dim')}:: {'-' * 62}{_c('reset')}")
+        for i, line in enumerate(pac):
+            if i == 2:
+                print(f"{_c('magenta')}{line}{_c('reset')}   {_c('cyan')}{_c('bold')}Proxy Skitchen{_c('reset')} {_c('dim')}v{_version()}{_c('reset')}")
+            elif i == 3:
+                print(f"{_c('magenta')}{line}{_c('reset')}   {_c('dim')}поиск | тест | экспорт прокси-подписок{_c('reset')}")
+            else:
+                print(f"{_c('magenta')}{line}{_c('reset')}")
+        print(f"{_c('dim')}:: {'-' * 48}{_c('reset')}")
 
     def _print_menu(self):
         print()
