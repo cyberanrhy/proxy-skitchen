@@ -44,6 +44,88 @@ from .tester import test_tcp, test_tls, SingBoxTester
 from .workers import GitHubSearchWorker
 
 
+_ANSI = None
+
+
+def _ansi() -> dict:
+    """ANSI color codes, empty dict if terminal does not support colors."""
+    if not sys.stdout.isatty():
+        return {}
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.SetConsoleMode(k.GetStdHandle(-11), 7)
+        except Exception:
+            pass
+    return {
+        "reset": "\033[0m", "bold": "\033[1m", "dim": "\033[2m",
+        "cyan": "\033[36m", "green": "\033[32m", "yellow": "\033[33m",
+        "magenta": "\033[35m", "red": "\033[31m", "blue": "\033[34m",
+    }
+
+
+def _c(name: str, text: str = "") -> str:
+    global _ANSI
+    if _ANSI is None:
+        _ANSI = _ansi()
+    code = _ANSI.get(name, "")
+    if text:
+        return f"{code}{text}{_ANSI.get('reset', '')}"
+    return code
+
+
+# 5x7 ASCII font for the logo (works in any terminal, no unicode needed)
+_FONT = {
+    "P": ["#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "],
+    "R": ["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"],
+    "O": [" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "],
+    "X": ["#   #", "#   #", " # # ", "  #  ", " # # ", "#   #", "#   #"],
+    "Y": ["#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  "],
+    "S": [" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "],
+    "K": ["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"],
+    "I": ["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "#####"],
+    "T": ["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "],
+    "C": [" ####", "#    ", "#    ", "#    ", "#    ", "#    ", " ####"],
+    "H": ["#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"],
+    "E": ["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"],
+    "N": ["#   #", "##  #", "# # #", "#  ##", "#   #", "#   #", "#   #"],
+    "V": ["#   #", "#   #", "#   #", "#   #", "#   #", " # # ", "  #  "],
+    "A": [" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"],
+    " ": ["     ", "     ", "     ", "     ", "     ", "     ", "     "],
+}
+
+
+def _render_logo(text: str) -> str:
+    """Render a 5x7 ASCII-art banner for the given text."""
+    rows = [""] * 7
+    for ch in text.upper():
+        glyph = _FONT.get(ch, _FONT[" "])
+        for i in range(7):
+            rows[i] += glyph[i] + " "
+    return "\n".join(r.rstrip() for r in rows)
+
+
+def _ask_int(label: str, default: int) -> int:
+    raw = input(f"{label} [{default}]: ").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print("Число не распознано, использую значение по умолчанию.")
+        return default
+
+
+def _version() -> str:
+    try:
+        import tomllib
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pyproject.toml"), "rb") as f:
+            return tomllib.load(f).get("project", {}).get("version", "3.0")
+    except Exception:
+        return "3.0"
+
+
 class CliRunner:
     def __init__(self):
         self._uris: list[str] = []
@@ -351,6 +433,111 @@ class CliRunner:
             out["output"] = args.output
         self._json_out(out)
 
+    def _pacman(self) -> str:
+        return (
+            "     .--.\n"
+            "    /    \\\n"
+            "   /      \\\n"
+            "  |   /\\   |\n"
+            "  |  /  \\  |\n"
+            "   \\      /\n"
+            "    \\    /\n"
+            "     `--'"
+        )
+
+    def _print_banner(self):
+        logo = _render_logo("PROXY SKITCHEN").splitlines()
+        pac = self._pacman().splitlines()
+        for i in range(max(len(pac), len(logo))):
+            p = pac[i] if i < len(pac) else " " * 9
+            l = logo[i] if i < len(logo) else ""
+            print(f"{_c('magenta')}{p}{_c('reset')}   {_c('cyan')}{l}{_c('reset')}")
+        print()
+        print(f"{_c('green')}:: {_c('bold')}Proxy Skitchen{_c('reset')} {_c('dim')}v{_version()}{_c('reset')}")
+        print(f"{_c('dim')}:: поиск | тест | экспорт прокси-подписок")
+        print(f"{_c('dim')}:: {'-' * 62}{_c('reset')}")
+
+    def _print_menu(self):
+        print()
+        print(f"{_c('cyan')}:: {_c('bold')}Выберите действие{_c('reset')}")
+        items = [
+            ("1", "Поиск подписок на GitHub"),
+            ("2", "Скачать подписку (fetch)"),
+            ("3", "Тест одного прокси"),
+            ("4", "Тест прокси из файла"),
+            ("5", "Полный конвейер (pipeline)"),
+            ("6", "Экспорт в формат (raw/v2rayn/singbox/clash/hiddify)"),
+            ("0", "Выход"),
+        ]
+        for num, label in items:
+            print(f"  {_c('green')}{num}{_c('reset')}) {label}")
+
+    def run_menu(self):
+        from types import SimpleNamespace as NS
+        self._print_banner()
+        while True:
+            self._print_menu()
+            try:
+                choice = input(f"\n{_c('green')}::{_c('reset')} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n{_c('dim')}Выход.{_c('reset')}")
+                break
+            if choice in ("0", "q", "exit"):
+                print(f"{_c('dim')}Выход.{_c('reset')}")
+                break
+            try:
+                if choice == "1":
+                    kw = input("Ключевые слова (через пробел): ").strip()
+                    if not kw:
+                        continue
+                    period = _ask_int("Период в днях", 7)
+                    out = input("Файл для сохранения (Enter = stdout): ").strip()
+                    self.cmd_search(NS(keywords=kw.split(), repos=[], token="", max_repos=8, max_files=30, period=period, output=out))
+                elif choice == "2":
+                    urls = input("URL подписок (через пробел): ").strip().split()
+                    if not urls:
+                        continue
+                    out = input("Файл для сохранения (Enter = stdout): ").strip()
+                    self.cmd_fetch(NS(urls=urls, output=out, clean=True))
+                elif choice == "3":
+                    host = input("Хост: ").strip()
+                    if not host:
+                        continue
+                    port = _ask_int("Порт", 0)
+                    if port:
+                        self.cmd_test(NS(host=host, port=port))
+                elif choice == "4":
+                    path = input("Путь к файлу: ").strip()
+                    if not path:
+                        continue
+                    deep = input("Глубокий тест sing-box? (y/N): ").strip().lower() == "y"
+                    rkn = input("RKN-тест? (y/N): ").strip().lower() == "y"
+                    out = input("Файл для сохранения (Enter = stdout): ").strip()
+                    self.cmd_test_file(NS(file=path, deep=deep, rkn=rkn, output=out, clean=True))
+                elif choice == "5":
+                    kw = input("Ключевые слова (через пробел): ").strip()
+                    if not kw:
+                        continue
+                    period = _ask_int("Период в днях", 7)
+                    deep = input("Глубокий тест sing-box? (y/N): ").strip().lower() == "y"
+                    rkn = input("RKN-тест? (y/N): ").strip().lower() == "y"
+                    out = input("Файл для сохранения (Enter = stdout): ").strip()
+                    self.cmd_pipeline(NS(keywords=kw.split(), repos=[], token="", max_repos=8, max_files=30, period=period, deep=deep, rkn=rkn, output=out, clean=True, verbose=False))
+                elif choice == "6":
+                    srcs = input("Файлы или URL (через пробел): ").strip().split()
+                    if not srcs:
+                        continue
+                    fmt = input("Формат (raw/v2rayn/singbox/clash/hiddify) [raw]: ").strip() or "raw"
+                    out = input("Файл для сохранения (Enter = stdout): ").strip()
+                    self.cmd_export(NS(sources=srcs, format=fmt, clean_names=False, title="VPN Config", output=out))
+                else:
+                    print(f"{_c('red')}Неизвестный пункт: {choice}{_c('reset')}")
+            except KeyboardInterrupt:
+                print(f"\n{_c('yellow')}Отменено.{_c('reset')}")
+                continue
+            except Exception as ex:
+                print(f"{_c('red')}Ошибка: {ex}{_c('reset')}")
+
 
 def build_parser(runner: CliRunner):
     p = argparse.ArgumentParser(description="Поиск, тестирование и экспорт прокси")
@@ -400,6 +587,8 @@ def build_parser(runner: CliRunner):
     pex.add_argument("--title", default="VPN Config", help="Hiddify: заголовок подписки")
     pex.add_argument("--output", "-o", default="", help="Файл для сохранения (иначе вывод в stdout)")
 
+    pm = sub.add_parser("menu", help="Интерактивное меню (баннер + выбор действий)")
+
     pp = sub.add_parser("pipeline", help="Полный конвейер: поиск → тест → сохранение",
         epilog="Пресеты: vless subscription, vmess subscription, trojan subscription, "
                "shadowsocks subscription, v2ray config, v2ray subscription, "
@@ -438,6 +627,9 @@ def main_gui():
 def main_cli(args):
     app = QCoreApplication(sys.argv)
     runner = CliRunner()
+    if args.command == "menu":
+        runner.run_menu()
+        return
     cmd = args.command.replace("-", "_")
     getattr(runner, f"cmd_{cmd}")(args)
 
