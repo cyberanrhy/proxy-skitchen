@@ -2861,8 +2861,6 @@ class SettingsDialog(QDialog):
         self.tokens_edit.setPlaceholderText(_("settings.input.tokens.placeholder"))
         self.tokens_edit.setFixedHeight(80)
         tokens = _get_tokens()
-        if not tokens:
-            tokens = _env_tokens()
         self.tokens_edit.setPlainText("\n".join(tokens))
         gh_layout.addWidget(self.tokens_edit)
 
