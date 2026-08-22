@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=64"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "proxy-skitchen"
@@ -17,3 +17,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/cyberanrhy/proxy-skitchen"
 Repository = "https://github.com/cyberanrhy/proxy-skitchen"
+
+[project.scripts]
+proxy-skitchen = "proxy_skitchen.__main__:main"
+
+[tool.setuptools]
+packages = ["proxy_skitchen"]
