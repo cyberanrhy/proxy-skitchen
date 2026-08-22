@@ -1,4 +1,4 @@
-name: Build EXE
+name: Build
 
 on:
   push:
@@ -8,7 +8,18 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    name: Build ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: proxy-skitchen-linux
+          - os: windows-latest
+            artifact: proxy-skitchen-windows
+          - os: macos-latest
+            artifact: proxy-skitchen-macos
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -17,19 +28,44 @@ jobs:
           python-version: '3.13'
           cache: pip
 
-      - run: pip install -r requirements.txt pyinstaller
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1 libxkbcommon-x11-0 libdbus-1-3 \
+            libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-cursor0
 
-      - run: pyinstaller proxy-skitchen.spec --noconfirm
-      - run: pyinstaller proxy-skitchen-cli.spec --noconfirm
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
 
-      - uses: actions/upload-artifact@v4
+      - name: Build binaries
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: bash
+        run: |
+          pyinstaller proxy-skitchen.spec --noconfirm
+          pyinstaller proxy-skitchen-cli.spec --noconfirm
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            mv proxy-skitchen.exe proxy-skitchen-windows.exe
+            mv proxy-skitchen-cli.exe proxy-skitchen-cli-windows.exe
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            mv proxy-skitchen proxy-skitchen-macos
+            mv proxy-skitchen-cli proxy-skitchen-cli-macos
+          else
+            mv proxy-skitchen proxy-skitchen-linux
+            mv proxy-skitchen-cli proxy-skitchen-cli-linux
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: proxy-skitchen-windows
-          path: |
-            dist/proxy-skitchen.exe
-            dist/proxy-skitchen-cli.exe
+          name: ${{ matrix.artifact }}
+          path: dist/
 
   release:
+    name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
@@ -38,11 +74,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: proxy-skitchen-windows
+          path: artifacts
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            proxy-skitchen.exe
-            proxy-skitchen-cli.exe
+          files: artifacts/**/*
           generate_release_notes: true
