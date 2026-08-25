@@ -55,7 +55,7 @@ def format_v2rayn(entries: list[ProxyEntry], include_failed: bool = False, clean
     return base64.b64encode(raw.encode()).decode()
 
 
-def format_singbox(entries: list[ProxyEntry], include_failed: bool = False) -> str:
+def format_singbox(entries: list[ProxyEntry], include_failed: bool = False, dns=None) -> str:
     outbounds = []
     for e in entries:
         if not _is_valid_entry(e):
@@ -75,10 +75,17 @@ def format_singbox(entries: list[ProxyEntry], include_failed: bool = False) -> s
         "outbounds": outbounds,
         "route": {"rules": [], "final": "proxy-0" if outbounds else "direct"},
     }
+    if dns is not None:
+        servers = [{"address": u, "tag": f"dns{i}"} for i, u in enumerate(_parse_dns_list(dns))]
+        config["dns"] = {
+            "servers": servers,
+            "final": "dns0",
+            "independent_cache": True,
+        }
     return json.dumps(config, indent=2, ensure_ascii=False) + "\n"
 
 
-def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_names: bool = False) -> str:
+def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_names: bool = False, dns=None) -> str:
     proxies = []
     for i, e in enumerate(entries):
         if not _is_valid_entry(e):
@@ -90,7 +97,23 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_
             proxies.append(p)
     if not proxies:
         return "proxies: []\n"
-    lines = ["proxies:"]
+    lines = []
+    if dns is not None:
+        servers = _parse_dns_list(dns)
+        lines.append("dns:")
+        lines.append("  enable: true")
+        lines.append("  ipv6: false")
+        lines.append("  default-nameserver:")
+        for s in servers:
+            lines.append(f"    - {s}")
+        lines.append("  nameserver:")
+        for s in servers:
+            lines.append(f"    - {s}")
+        lines.append("  fallback:")
+        for s in servers:
+            lines.append(f"    - {s}")
+        lines.append("")
+    lines.append("proxies:")
     for p in proxies:
         lines.append(f"  - name: {json.dumps(p['name'], ensure_ascii=False)}")
         lines.append(f"    type: {p['type']}")
@@ -429,6 +452,71 @@ def _extract_user(uri: str) -> str:
             except Exception:
                 pass
             return ""
+
+
+# Default DNS endpoints — encrypted (DoH) foreign resolvers that survive
+# Russian DNS poisoning / port-53 blocking. Plain IPs (1.1.1.1) are NOT safe here.
+DEFAULT_DOH = [
+    "https://1.1.1.1/dns-query",
+    "https://8.8.8.8/dns-query",
+    "https://dns.adguard-dns.com/dns-query",
+]
+
+
+def _parse_dns_list(value) -> list[str]:
+    """Normalize a DNS spec: None -> built-in DoH, str "a,b" -> [a,b], list passthrough."""
+    if not value:
+        return list(DEFAULT_DOH)
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _looks_like_ip(s: str) -> bool:
+    """Return True if the DNS spec is a bare IP (wg-quick DNS= needs this)."""
+    s = s.strip()
+    if "://" in s or s.startswith("https") or s.startswith("tls"):
+        return False
+    import re as _re
+    return bool(_re.match(r"^\d{1,3}(\.\d{1,3}){3}$", s)) or (":" in s and not s.startswith("["))
+
+
+def _doh_server_spec(url: str, idx: int) -> dict:
+    """Xray/v2ray DoH server object."""
+    return {"address": url, "port": 443, "tag": f"doh-{idx}"}
+
+
+def rewrite_dns(text: str, dns=None) -> str:
+    """Replace the DNS block of an Xray/v2ray or sing-box config with DoH endpoints.
+
+    Returns pretty-printed JSON. Raises ValueError if the config format is unknown.
+    """
+    cfg = json.loads(text)
+    if not isinstance(cfg, dict):
+        raise ValueError("config root is not an object")
+    dns_list = _parse_dns_list(dns)
+    outbounds = cfg.get("outbounds", [])
+    if not isinstance(outbounds, list):
+        raise ValueError("no outbounds array")
+    is_singbox = any(isinstance(o, dict) and o.get("type") for o in outbounds)
+    is_xray = any(isinstance(o, dict) and o.get("protocol") for o in outbounds)
+    if is_singbox:
+        servers = [{"address": u, "tag": f"dns{i}"} for i, u in enumerate(dns_list)]
+        cfg["dns"] = {
+            "servers": servers,
+            "final": "dns0",
+            "independent_cache": True,
+        }
+    elif is_xray:
+        servers = [_doh_server_spec(u, i) for i, u in enumerate(dns_list)]
+        dns_block = cfg.get("dns", {})
+        if not isinstance(dns_block, dict):
+            dns_block = {}
+        dns_block["servers"] = servers
+        cfg["dns"] = dns_block
+    else:
+        raise ValueError("cannot detect config format (no recognizable outbounds)")
+    return json.dumps(cfg, indent=2, ensure_ascii=False)
     u = urlparse(uri)
     if u.username:
         return unquote(u.username)
@@ -492,7 +580,7 @@ def _parse_wireguard_uri(uri: str) -> Optional[dict]:
     }
 
 
-def format_amnezia(entries: list[ProxyEntry], include_failed: bool = False) -> str:
+def format_amnezia(entries: list[ProxyEntry], include_failed: bool = False, dns=None) -> str:
     """Concatenated WireGuard .conf blocks for Amnezia import (preview only)."""
     blocks = []
     for i, e in enumerate(entries, 1):
@@ -500,24 +588,30 @@ def format_amnezia(entries: list[ProxyEntry], include_failed: bool = False) -> s
             continue
         if not include_failed and not _entry_ok(e):
             continue
-        conf = wireguard_conf_from_entry(e)
+        conf = wireguard_conf_from_entry(e, dns=dns)
         if conf:
             blocks.append(f"# {i} — {e.host}:{e.port}\n{conf}")
     return "\n".join(blocks) + "\n"
 
 
-def wireguard_conf_from_entry(e: ProxyEntry) -> Optional[str]:
+def wireguard_conf_from_entry(e: ProxyEntry, dns=None) -> Optional[str]:
     """Build a single WireGuard .conf block from a ProxyEntry's wireguard:// URI."""
     if not (e.uri and e.uri.startswith("wireguard://")):
         return None
     p = _parse_wireguard_uri(e.uri)
     if not p:
         return None
+    if dns is not None:
+        # wg-quick only accepts plain IP addresses in the DNS= line.
+        ips = [s for s in _parse_dns_list(dns) if _looks_like_ip(s)]
+        dns_line = "DNS = " + (", ".join(ips) if ips else "1.1.1.1, 1.0.0.1")
+    else:
+        dns_line = "DNS = 1.1.1.1, 1.0.0.1"
     lines = [
         "[Interface]",
         f"PrivateKey = {p['private_key']}",
         f"Address = {p['address']}",
-        "DNS = 1.1.1.1, 1.0.0.1",
+        dns_line,
         f"MTU = {p['mtu']}",
         "",
         "[Peer]",

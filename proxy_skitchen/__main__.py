@@ -39,7 +39,8 @@ from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CR
 from .models import ProxyEntry, _auth_data, _get_tokens, _settings_data, current_theme
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
 from .exporters import (format_raw, format_v2rayn, format_singbox, format_clash,
-                        format_hiddify, validate_content, _clean_uri, _is_valid_entry)
+                        format_hiddify, validate_content, _clean_uri, _is_valid_entry,
+                        rewrite_dns, _parse_dns_list, DEFAULT_DOH)
 from .tester import test_tcp, test_tls, SingBoxTester
 from .workers import GitHubSearchWorker
 from .i18n import current_lang
@@ -243,6 +244,7 @@ class CliRunner:
         if fmt not in formatters:
             self._json_out({"status": "error", "message": f"unknown format: {fmt}"})
             return
+        dns = _parse_dns_list(args.dns) if args.dns else None
 
         raw_uris = []
         for src in args.sources:
@@ -296,6 +298,8 @@ class CliRunner:
             kwargs["clean_names"] = args.clean_names
         if fmt == "hiddify":
             kwargs["title"] = args.title
+        if fmt in ("singbox", "clash") and dns is not None:
+            kwargs["dns"] = dns
         content = formatters[fmt](entries, include_failed=True, **kwargs)
         valid, broken = validate_content(content, fmt)
         self._ok(f"валидация: {valid} ок, {broken} битых")
@@ -474,6 +478,33 @@ class CliRunner:
             out["output"] = out_path
         self._json_out(out)
 
+    def cmd_fix_dns(self, args):
+        self._status(f"читаю конфиг: {args.input}")
+        try:
+            with open(args.input, encoding="utf-8") as f:
+                text = f.read().lstrip('\ufeff')
+        except Exception as e:
+            self._json_out({"status": "error", "message": str(e)})
+            return
+        dns = _parse_dns_list(args.dns) if args.dns else DEFAULT_DOH
+        try:
+            out = rewrite_dns(text, dns)
+        except Exception as e:
+            self._json_out({"status": "error", "message": str(e)})
+            return
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(out)
+            out_path = os.path.abspath(args.output)
+            self._ok(f"сохранено: {out_path}")
+        else:
+            try:
+                sys.stdout.buffer.write((out + "\n").encode(sys.stdout.encoding or "utf-8", errors="replace"))
+            except Exception:
+                print(out.encode("ascii", "replace").decode())
+        self._ok(f"DNS заменён на DoH: {len(dns)} серверов")
+        self._json_out({"status": "ok", "dns": dns})
+
     def _pacman(self) -> str:
         return (
             "     .--.\n"
@@ -629,6 +660,12 @@ def build_parser(runner: CliRunner):
     pex.add_argument("--clean-names", action="store_true", help="Clash: простые имена без эмодзи")
     pex.add_argument("--title", default="VPN Config", help="Hiddify: заголовок подписки")
     pex.add_argument("--output", "-o", default="", help="Файл для сохранения (иначе вывод в stdout)")
+    pex.add_argument("--dns", default="", help="DoH-серверы через запятую (по умолчанию встроенный список)")
+
+    pfd = sub.add_parser("fix-dns", help="Заменить DNS-серверы в готовом конфиге на DoH")
+    pfd.add_argument("input", help="Путь к конфигу (Xray/v2ray или sing-box JSON)")
+    pfd.add_argument("--output", "-o", default="", help="Файл для сохранения (иначе вывод в stdout)")
+    pfd.add_argument("--dns", default="", help="DoH-серверы через запятую (по умолчанию встроенный список)")
 
     pm = sub.add_parser("menu", help="Интерактивное меню (баннер + выбор действий)")
 
@@ -672,6 +709,9 @@ def main_cli(args):
     runner = CliRunner()
     if args.command == "menu":
         runner.run_menu()
+        return
+    if args.command == "fix-dns":
+        runner.cmd_fix_dns(args)
         return
     cmd = args.command.replace("-", "_")
     getattr(runner, f"cmd_{cmd}")(args)
