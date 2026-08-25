@@ -17,7 +17,8 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
     if not e.host or e.port is None or e.port == 0:
         return False
     from .parsers import uri_has_insecure, uri_sni_messy
-    if uri_has_insecure(e.uri):
+    # hysteria2 handles `insecure` natively (tls.insecure / skip-cert-verify)
+    if e.protocol not in ('HYSTERIA2', 'HY2') and uri_has_insecure(e.uri):
         return False
     if e.protocol not in ('WIREGUARD', 'WG') and uri_sni_messy(e.uri):
         return False
@@ -147,6 +148,10 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_
                 lines.append(f"      {k}: {v}")
         if p.get('skip-cert-verify', False):
             lines.append("    skip-cert-verify: true")
+        if p.get('obfs'):
+            lines.append(f"    obfs: {p['obfs']}")
+        if p.get('obfs-password'):
+            lines.append(f"    obfs-password: {p['obfs-password']}")
         if p.get('type') == 'wireguard':
             for key in ('private-key', 'peer-public-key', 'pre-shared-key', 'ip', 'mtu', 'persistent-keepalive', 'udp'):
                 if p.get(key) is not None:
@@ -358,6 +363,12 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
             return None
         out["password"] = pw
         out["tls"] = {"enabled": True, "server_name": e.sni or e.host}
+        if _query_param(e.uri, 'insecure') == '1':
+            out["tls"]["insecure"] = True
+        obfs = _query_param(e.uri, 'obfs')
+        obfs_pw = _query_param(e.uri, 'obfs-password')
+        if obfs == 'salamander' and obfs_pw:
+            out["obfs"] = {"type": "salamander", "password": obfs_pw}
 
     return out
 
@@ -439,6 +450,14 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
         p["password"] = pw
         if e.sni:
             p["servername"] = e.sni
+        obfs = _query_param(e.uri, 'obfs')
+        if obfs == 'salamander':
+            p["obfs"] = "salamander"
+            obfs_pw = _query_param(e.uri, 'obfs-password')
+            if obfs_pw:
+                p["obfs-password"] = obfs_pw
+        if _query_param(e.uri, 'insecure') == '1':
+            p["skip-cert-verify"] = True
         return p
     if proto == 'socks5':
         p["type"] = "socks5"
@@ -492,6 +511,11 @@ def _extract_user(uri: str) -> str:
             except Exception:
                 pass
             return ""
+    # vless / trojan / hysteria2 / etc.: auth is the userinfo before '@'
+    if '@' in uri:
+        userinfo = uri.split('://', 1)[-1].split('@', 1)[0]
+        return unquote(userinfo)
+    return ""
 
 
 # Default DNS endpoints — encrypted (DoH) foreign resolvers that survive
