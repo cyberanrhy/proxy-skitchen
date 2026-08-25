@@ -136,12 +136,18 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_
             lines.append(f"    servername: {p['servername']}")
         if p.get('client-fingerprint'):
             lines.append(f"    client-fingerprint: {p['client-fingerprint']}")
-        if p.get('ws-path'):
-            lines.append(f"    ws-path: {p['ws-path']}")
-        if p.get('ws-headers'):
-            lines.append("    ws-headers:")
-            for k, v in p['ws-headers'].items():
-                lines.append(f"      {k}: {v}")
+        if p.get('ws-opts'):
+            lines.append("    ws-opts:")
+            if p['ws-opts'].get('path'):
+                lines.append(f"      path: {p['ws-opts']['path']}")
+            if p['ws-opts'].get('headers'):
+                lines.append("      headers:")
+                for k, v in p['ws-opts']['headers'].items():
+                    lines.append(f"        {k}: {v}")
+        if p.get('grpc-opts'):
+            lines.append("    grpc-opts:")
+            if p['grpc-opts'].get('grpc-service-name'):
+                lines.append(f"      grpc-service-name: {p['grpc-opts']['grpc-service-name']}")
         if p.get('reality-opts'):
             lines.append("    reality-opts:")
             for k, v in p['reality-opts'].items():
@@ -310,7 +316,8 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
             return None
         return {
             "type": "wireguard", "server": p['host'], "server_port": p['port'],
-            "local_address": [p['address']], "private_key": p['private_key'],
+            "local_address": [a.strip() for a in p['address'].split(',') if a.strip()],
+            "private_key": p['private_key'],
             "peer_public_key": p['public_key'], "mtu": int(p.get('mtu') or 1280),
         }
 
@@ -348,13 +355,19 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
         if not uuid:
             return None
         out["uuid"] = uuid
-        path = _query_param(e.uri, 'path') or _query_param(e.uri, 'ws-path')
-        host = _query_param(e.uri, 'host')
-        if path or host:
+        data = _vmess_data(e.uri) or {}
+        net = (data.get('net') or 'tcp').lower()
+        path = data.get('path') or data.get('ws-path')
+        host_h = data.get('host') or data.get('ws-header') or data.get('ws-headers')
+        if net in ('ws', 'websocket') and (path or host_h):
             tr = {"type": "ws", "path": path or "/"}
-            if host:
-                tr["headers"] = {"Host": host}
+            if host_h:
+                tr["headers"] = {"Host": host_h}
             out["transport"] = tr
+        elif net == 'grpc':
+            svc = data.get('path') or data.get('serviceName')
+            if svc:
+                out["transport"] = {"type": "grpc", "service_name": svc}
         if e.sni:
             out["tls"] = {"enabled": True, "server_name": e.sni}
     elif proto in ('hy2', 'hysteria2'):
@@ -402,10 +415,12 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
         host = _query_param(e.uri, 'host')
         if path or host:
             p["network"] = "ws"
+            opts = {}
             if path:
-                p["ws-path"] = path
+                opts["path"] = path
             if host:
-                p["ws-headers"] = {"Host": host}
+                opts["headers"] = {"Host": host}
+            p["ws-opts"] = opts
         return p
     if proto == 'trojan':
         pw = _extract_user(e.uri)
@@ -423,14 +438,23 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
             return None
         p["type"] = "vmess"
         p["uuid"] = uuid
-        path = _query_param(e.uri, 'path') or _query_param(e.uri, 'ws-path')
-        host = _query_param(e.uri, 'host')
-        if path or host:
+        data = _vmess_data(e.uri) or {}
+        net = (data.get('net') or 'tcp').lower()
+        path = data.get('path') or data.get('ws-path')
+        host_h = data.get('host') or data.get('ws-header') or data.get('ws-headers')
+        if net in ('ws', 'websocket') and (path or host_h):
             p["network"] = "ws"
+            opts = {}
             if path:
-                p["ws-path"] = path
-            if host:
-                p["ws-headers"] = {"Host": host}
+                opts["path"] = path
+            if host_h:
+                opts["headers"] = {"Host": host_h}
+            p["ws-opts"] = opts
+        elif net == 'grpc':
+            svc = data.get('path') or data.get('serviceName')
+            if svc:
+                p["network"] = "grpc"
+                p["grpc-opts"] = {"grpc-service-name": svc}
         if e.security and e.security.lower() != 'none':
             p["tls"] = True
         return p
@@ -494,6 +518,20 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
         p["udp"] = True
         return p
     return None
+
+
+def _vmess_data(uri: str) -> Optional[dict]:
+    """Decode a vmess:// base64 JSON body; None for other protocols / bad input."""
+    if not (uri.startswith('vmess://') or uri.startswith('VMESS://')):
+        return None
+    try:
+        b64 = uri.split('://', 1)[-1].split('#')[0].split('?')[0]
+        pad = 4 - len(b64) % 4
+        if pad != 4:
+            b64 += '=' * pad
+        return json.loads(base64.b64decode(b64).decode('utf-8', errors='ignore'))
+    except Exception:
+        return None
 
 
 def _extract_user(uri: str) -> str:
@@ -581,10 +619,6 @@ def rewrite_dns(text: str, dns=None) -> str:
     else:
         raise ValueError("cannot detect config format (no recognizable outbounds)")
     return json.dumps(cfg, indent=2, ensure_ascii=False)
-    u = urlparse(uri)
-    if u.username:
-        return unquote(u.username)
-    return ""
 
 
 def _extract_ss_pass(uri: str) -> str:
