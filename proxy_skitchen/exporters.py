@@ -147,6 +147,15 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_
                 lines.append(f"      {k}: {v}")
         if p.get('skip-cert-verify', False):
             lines.append("    skip-cert-verify: true")
+        if p.get('type') == 'wireguard':
+            for key in ('private-key', 'peer-public-key', 'pre-shared-key', 'ip', 'mtu', 'persistent-keepalive', 'udp'):
+                if p.get(key) is not None:
+                    val = "true" if key == 'udp' else p[key]
+                    lines.append(f"    {key}: {val}")
+            if p.get('ipv6') is not None:
+                lines.append(f'    ipv6: "{p["ipv6"]}"')
+            if p.get('reserved') is not None:
+                lines.append("    reserved: [" + ", ".join(str(x) for x in p['reserved']) + "]")
     return "\n".join(lines) + "\n"
 
 
@@ -434,6 +443,37 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
     if proto == 'socks5':
         p["type"] = "socks5"
         return p
+    if proto in ('wireguard', 'wg'):
+        wg = _parse_wireguard_uri(e.uri)
+        if not wg or not wg.get("public_key") or not wg.get("private_key") or not wg.get("address"):
+            return None
+        p["type"] = "wireguard"
+        p["private-key"] = wg["private_key"]
+        p["peer-public-key"] = wg["public_key"]
+        if wg.get("preshared_key"):
+            p["pre-shared-key"] = wg["preshared_key"]
+        addrs = [a.strip() for a in wg["address"].split(",") if a.strip()]
+        v4 = next((a for a in addrs if ":" not in a), None)
+        v6 = next((a for a in addrs if ":" in a), None)
+        if v4:
+            p["ip"] = v4
+        if v6:
+            p["ipv6"] = v6
+        if wg.get("reserved"):
+            try:
+                p["reserved"] = [int(x) for x in wg["reserved"].split(",") if x.strip()]
+            except ValueError:
+                pass
+        try:
+            p["mtu"] = int(wg["mtu"])
+        except (ValueError, TypeError):
+            p["mtu"] = 1280
+        try:
+            p["persistent-keepalive"] = int(wg["keepalive"])
+        except (ValueError, TypeError):
+            p["persistent-keepalive"] = 25
+        p["udp"] = True
+        return p
     return None
 
 
@@ -575,6 +615,8 @@ def _parse_wireguard_uri(uri: str) -> Optional[dict]:
         "port": port,
         "address": unquote(_v("address")),
         "public_key": unquote(_v("publickey", _v("pubkey"))),
+        "preshared_key": unquote(_v("presharedkey")),
+        "reserved": _v("reserved"),
         "mtu": _v("mtu", "1280"),
         "keepalive": _v("keepalive", "25"),
     }
