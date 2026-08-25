@@ -13,7 +13,7 @@ from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_server_port, get_protocol
-from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, format_amnezia, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri, wireguard_conf_from_entry, validate_content
+from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, format_amnezia, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri, wireguard_conf_from_entry, validate_content, DEFAULT_DOH
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
 
@@ -2378,6 +2378,19 @@ class ExportPage(WizardPage):
             opt_l.addWidget(chk)
         fmt_opts.addLayout(opt_l)
 
+        dns_l = QHBoxLayout()
+        dns_l.setSpacing(8)
+        self.chk_dns_hook = QCheckBox(_("export.chk.dns_hook"))
+        self.chk_dns_hook.setToolTip("Вшить шифрованный DNS (DoH) в конфиг для обхода отравления DNS в РФ")
+        self.chk_dns_hook.toggled.connect(self._update_preview)
+        dns_l.addWidget(self.chk_dns_hook)
+        self.dns_input = QLineEdit(", ".join(DEFAULT_DOH))
+        self.dns_input.setPlaceholderText("https://1.1.1.1/dns-query, https://8.8.8.8/dns-query")
+        self.dns_input.setEnabled(False)
+        self.chk_dns_hook.toggled.connect(lambda on: self.dns_input.setEnabled(on))
+        dns_l.addWidget(self.dns_input, 1)
+        fmt_opts.addLayout(dns_l)
+
         fmt_opts.addStretch()
         root.addLayout(fmt_opts)
 
@@ -2563,6 +2576,10 @@ class ExportPage(WizardPage):
         fmt = self._get_format_func()
         clean_names = self.chk_clean_names.isChecked()
         clean = self.chk_clean_uris.isChecked()
+        dns = None
+        if self.chk_dns_hook.isChecked():
+            from .exporters import _parse_dns_list
+            dns = _parse_dns_list(self.dns_input.text())
         if (self.chk_smart_names.isChecked() or clean_names) and self.fmt_raw.isChecked():
             lines = []
             idx = 0
@@ -2578,13 +2595,16 @@ class ExportPage(WizardPage):
                 lines.append(f"{uri}#{name}")
             return "\n".join(lines) + "\n"
         if self.fmt_clash.isChecked():
-            return fmt(entries, include_failed=self.chk_failed.isChecked(), clean_names=clean_names)
+            return fmt(entries, include_failed=self.chk_failed.isChecked(), clean_names=clean_names, dns=dns)
         if self.fmt_hiddify.isChecked():
             title = self.sub_title_input.text().strip() or "My Subscription"
             return fmt(entries, include_failed=self.chk_failed.isChecked(), title=title, clean=clean)
         if self.fmt_amnezia.isChecked():
-            return fmt(entries, include_failed=self.chk_failed.isChecked())
-        body = fmt(entries, include_failed=self.chk_failed.isChecked(), clean=clean)
+            return fmt(entries, include_failed=self.chk_failed.isChecked(), dns=dns)
+        kwargs = {}
+        if fmt is format_singbox and dns is not None:
+            kwargs["dns"] = dns
+        body = fmt(entries, include_failed=self.chk_failed.isChecked(), clean=clean, **kwargs)
         return body
 
     def _update_preview(self):
@@ -2607,6 +2627,7 @@ class ExportPage(WizardPage):
         self.chk_failed.setText(_("export.chk.failed"))
         self.chk_smart_names.setText(_("export.chk.smart_names"))
         self.chk_clean_names.setText(_("export.chk.clean_names"))
+        self.chk_dns_hook.setText(_("export.chk.dns_hook"))
         self.btn_copy.setText(_("export.btn.copy"))
         self.btn_save.setText(_("export.btn.save"))
         self.btn_save_desk.setText(_("export.btn.save_desktop"))

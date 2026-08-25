@@ -694,7 +694,10 @@ class GitHubSearchWorker(QObject):
                     results.extend(found)
                     self.partial_result_signal.emit(list(results))
                     self.count_signal.emit(len(results))
-                return results
+                if results:
+                    return results
+                self.progress_signal.emit(
+                    f"  ↻ {keyword}: у владельца нет конфигов, ищу репозитории по запросу")
         query = urllib.parse.quote(keyword)
         if self.owner:
             query += f"+user:{self.owner}"
