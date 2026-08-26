@@ -2010,10 +2010,8 @@ class TestPage(WizardPage):
             e = self._entries[row]
             if ttype == 2:
                 kind = "RKN"
-                passed = sum(1 for r in e.rkn_results if r.get("ok")) if e.rkn_results else 0
-                total = len(e.rkn_results) if e.rkn_results else 0
                 mark = "🛡" if ok else "✗"
-                detail = f" ({passed}/{total} sites)"
+                detail = ""
             else:
                 kind = "TCP" if ttype == 0 else "DEEP"
                 mark = "✓" if ok else "✗"
