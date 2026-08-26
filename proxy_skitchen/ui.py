@@ -2373,8 +2373,8 @@ class ExportPage(WizardPage):
         self.chk_clean_uris.setChecked(_settings_data.get("clean_uris", True))
         self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
         self.chk_clean_uris.toggled.connect(self._update_preview)
-        self.chk_no_wg = QCheckBox("Исключать WireGuard и TUIC (для Happ)")
-        self.chk_no_wg.setToolTip("Happ не поддерживает WireGuard и TUIC — они вызывают «ошибку парсинга» при вставке из буфера")
+        self.chk_no_wg = QCheckBox("Happ-совместимо: без WG/TUIC, socks5→socks")
+        self.chk_no_wg.setToolTip("Для Happ: убрать WireGuard/TUIC (не поддерживаются) и привести socks5:// к socks://. socks4 исключается (менять на v5 нельзя, Happ его не понимает)")
         self.chk_no_wg.toggled.connect(self._update_preview)
         self.chk_smart_names.setChecked(True)
         self.chk_smart_names.toggled.connect(self._update_preview)
@@ -2580,7 +2580,19 @@ class ExportPage(WizardPage):
         if not entries:
             entries = tp._entries
         if self.chk_no_wg.isChecked():
-            entries = [e for e in entries if e.protocol not in ('WIREGUARD', 'WG', 'TUIC')]
+            kept = []
+            for e in entries:
+                if e.protocol in ('WIREGUARD', 'WG', 'TUIC'):
+                    continue
+                uri = e.uri
+                low = uri[:9].lower()
+                if low == 'socks4://':
+                    continue
+                if low == 'socks5://':
+                    uri = 'socks://' + uri[9:]
+                    e = ProxyEntry(uri)
+                kept.append(e)
+            entries = kept
         fmt = self._get_format_func()
         clean_names = self.chk_clean_names.isChecked()
         clean = self.chk_clean_uris.isChecked()
@@ -2638,7 +2650,7 @@ class ExportPage(WizardPage):
         self.chk_smart_names.setText(_("export.chk.smart_names"))
         self.chk_clean_names.setText(_("export.chk.clean_names"))
         self.chk_dns_hook.setText(_("export.chk.dns_hook"))
-        self.chk_no_wg.setText("Исключать WireGuard и TUIC (для Happ)")
+        self.chk_no_wg.setText("Happ-совместимо: без WG/TUIC, socks5→socks")
         self.btn_copy.setText(_("export.btn.copy"))
         self.btn_save.setText(_("export.btn.save"))
         self.btn_save_desk.setText(_("export.btn.save_desktop"))
