@@ -26,6 +26,10 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         return False
     if e.protocol == 'SS' and not _extract_ss_pass(e.uri):
         return False
+    if e.protocol in ('WIREGUARD', 'WG'):
+        p = _parse_wireguard_uri(e.uri)
+        if not p or not p.get('private_key') or not p.get('public_key') or not p.get('address'):
+            return False
     return True
 
 
