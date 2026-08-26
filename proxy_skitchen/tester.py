@@ -6,12 +6,70 @@ from datetime import datetime
 
 from .compat import TMP_DIR, HIDDIFY_PROXY, _write_log, DEBUG_LOG_PATHS, IS_WINDOWS, IS_MACOS, CREATE_NO_WINDOW
 from .parsers import get_protocol, get_server_port, is_ip
+from .exporters import DEFAULT_DOH
 
 def _debug(msg: str):
     _LOG = os.path.join(TMP_DIR, "tester.log")
     if _LOG not in DEBUG_LOG_PATHS:
         DEBUG_LOG_PATHS.append(_LOG)
     _write_log(_LOG, msg)
+
+
+def doh_resolve(host, doh_list=None, cache=None, timeout=5):
+    """Resolve host to IPv4 via DNS-over-HTTPS (hardcoded IP endpoints, no local DNS).
+    Falls back to system DNS. Returns IPv4 string or None."""
+    if is_ip(host):
+        return host
+    if cache is not None and host in cache:
+        return cache[host]
+    doh_list = doh_list or DEFAULT_DOH
+    result = None
+    for url in doh_list:
+        try:
+            req = urllib.request.Request(
+                f"{url}?name={urllib.parse.quote(host)}&type=A",
+                headers={"Accept": "application/dns-json"},
+            )
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                data = json.loads(r.read().decode())
+            for ans in data.get("Answer", []):
+                if ans.get("type") == 1:
+                    result = ans.get("data")
+                    break
+            if result:
+                break
+        except Exception:
+            continue
+    if result is None:
+        try:
+            addrs = socket.getaddrinfo(host, 80, socket.AF_INET, socket.SOCK_STREAM)
+            if addrs:
+                result = addrs[0][4][0]
+        except Exception:
+            result = None
+    if cache is not None and result:
+        cache[host] = result
+    return result
+
+
+def _harden_dns(outbound, doh_list, cache, kind):
+    """Replace a domain server with its DoH-resolved IP, keeping SNI/Host intact."""
+    if kind == 'sb':
+        srv = outbound.get('server')
+        if srv and not is_ip(srv):
+            ip = doh_resolve(srv, doh_list, cache)
+            if ip:
+                outbound['server'] = ip
+    else:
+        vnext = outbound.get('settings', {}).get('vnext')
+        if vnext:
+            srv = vnext[0].get('address')
+            if srv and not is_ip(srv):
+                ip = doh_resolve(srv, doh_list, cache)
+                if ip:
+                    vnext[0]['address'] = ip
+
 
 if IS_WINDOWS:
     SING_BOX = os.path.expandvars("%LOCALAPPDATA%\\sing-box\\sing-box.exe")
@@ -158,6 +216,11 @@ def test_via_socks(host: str, port: int, target_host: str = TEST_HOST, target_po
 
 
 class SingBoxTester:
+    def __init__(self, use_doh: bool = False, doh_list=None):
+        self.use_doh = use_doh
+        self.doh_list = doh_list
+        self._doh_cache = {}
+
     def test(self, uri: str, port: int) -> tuple[bool, float, str]:
         config = self._make_config(uri, port)
         if config is None:
@@ -205,13 +268,27 @@ class SingBoxTester:
                 except Exception:
                     pass
 
+    def _probe(self, proxy_url: str, domain: str) -> tuple[bool, int, float]:
+        try:
+            url = "https://" + domain
+            start = time.time()
+            handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
+            opener = urllib.request.build_opener(handler)
+            opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
+            resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
+            code = resp.getcode()
+            elapsed = (time.time() - start) * 1000
+            ok = code in (200, 301, 302, 304)
+            return ok, code, elapsed
+        except Exception:
+            return False, 0, 0.0
+
     def test_rkn_bypass(self, uri: str, port: int) -> tuple[bool, float, str, list[dict]]:
         config = self._make_config(uri, port)
         if config is None:
             return False, 0, "unsupported protocol", []
         proc = None
         results = []
-        result = (False, 0.0, "", results)
         try:
             with tempfile.TemporaryDirectory(prefix="sb_rkn_", dir=TMP_DIR) as tmp_dir:
                 config_path = os.path.join(tmp_dir, "config.json")
@@ -228,29 +305,23 @@ class SingBoxTester:
                     proxy_url = f"http://127.0.0.1:{port}"
                     basic_ok, basic_lat = test_http_proxy(proxy_url)
                     if not basic_ok:
-                        rkn_ok = False
-                        result = (False, 0, "proxy not working", results)
-                    else:
-                        domain, name = ("t.me", "Telegram")
+                        proc.kill()
                         try:
-                            url = f"https://{domain}/"
-                            start = time.time()
-                            handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
-                            opener = urllib.request.build_opener(handler)
-                            opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
-                            resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
-                            code = resp.getcode()
-                            elapsed = (time.time() - start) * 1000
-                            ok = code in (200, 301, 302, 304)
+                            proc.wait(1)
+                        except Exception:
+                            pass
+                        proc = None
+                        _debug(f"rkn_bypass: {uri[:60]} basic_ok={basic_ok} rkn_ok=False")
+                        return False, 0, "proxy not working", results
+                    tme_ok, tme_code, tme_lat = self._probe(proxy_url, "t.me")
+                    results.append({"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code})
+                    rkn_ok = tme_ok
+                    if rkn_ok:
+                        for domain, name in RKN_BLOCKED_DOMAINS:
+                            if domain == "t.me":
+                                continue
+                            ok, code, elapsed = self._probe(proxy_url, domain)
                             results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
-                        except Exception as ex:
-                            err_str = str(ex)[:60]
-                            results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
-                            ok = False
-                            elapsed = 0
-                        rkn_ok = ok
-                        avg_lat = elapsed if ok else 0
-                        result = (rkn_ok, avg_lat, "", results)
                     proc.kill()
                     try:
                         proc.wait(1)
@@ -258,7 +329,7 @@ class SingBoxTester:
                         pass
                     proc = None
                 _debug(f"rkn_bypass: {uri[:60]} basic_ok={basic_ok} rkn_ok={rkn_ok}")
-                return result
+                return rkn_ok, tme_lat if rkn_ok else 0, "", results
         except Exception as e:
             return False, 0, str(e), results
         finally:
@@ -274,6 +345,8 @@ class SingBoxTester:
         outbound = self._parse(uri)
         if outbound is None:
             return None
+        if self.use_doh:
+            _harden_dns(outbound, self.doh_list, self._doh_cache, 'sb')
         outbound["tag"] = "proxy"
         return {
             "log": {"level": "error", "output": "nul" if IS_WINDOWS else "/dev/null"},
@@ -623,6 +696,26 @@ class SingBoxTester:
 class XrayTester:
     XRAY_SEMAPHORE = threading.Semaphore(2)
 
+    def __init__(self, use_doh: bool = False, doh_list=None):
+        self.use_doh = use_doh
+        self.doh_list = doh_list
+        self._doh_cache = {}
+
+    def _probe(self, proxy_url: str, domain: str) -> tuple[bool, int, float]:
+        try:
+            url = "https://" + domain
+            start = time.time()
+            handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
+            opener = urllib.request.build_opener(handler)
+            opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
+            resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
+            code = resp.getcode()
+            elapsed = (time.time() - start) * 1000
+            ok = code in (200, 301, 302, 304)
+            return ok, code, elapsed
+        except Exception:
+            return False, 0, 0.0
+
     def test_rkn(self, uri: str, port: int) -> tuple[bool, float, str, list]:
         config = self._make_config(uri, port)
         if config is None:
@@ -654,23 +747,16 @@ class XrayTester:
                     basic_ok, basic_lat = test_http_proxy(proxy_url, timeout=5)
                     if not basic_ok:
                         return False, basic_lat, "proxy not working", []
-                    domain, name = ("t.me", "Telegram")
-                    try:
-                        url = f"https://{domain}/"
-                        start = time.time()
-                        handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
-                        opener = urllib.request.build_opener(handler)
-                        opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
-                        resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
-                        code = resp.getcode()
-                        elapsed = (time.time() - start) * 1000
-                        ok = code in (200, 301, 302, 304)
-                        results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
-                    except Exception as ex:
-                        err_str = str(ex)[:60]
-                        results.append({"domain": domain, "name": name, "ok": False, "latency": 0, "status": 0, "error": err_str})
-                        ok = False
-                        elapsed = 0
+                    tme_ok, tme_code, tme_lat = self._probe(proxy_url, "t.me")
+                    results.append({"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code})
+                    ok = tme_ok
+                    elapsed = tme_lat if ok else 0
+                    if ok:
+                        for domain, name in RKN_BLOCKED_DOMAINS:
+                            if domain == "t.me":
+                                continue
+                            p_ok, p_code, p_el = self._probe(proxy_url, domain)
+                            results.append({"domain": domain, "name": name, "ok": p_ok, "latency": p_el, "status": p_code})
                     proc.kill()
                     try:
                         proc.wait(1)
@@ -678,7 +764,7 @@ class XrayTester:
                         pass
                     proc = None
                 _debug(f"xr_rkn: {uri[:60]} basic_ok={basic_ok} ok={ok}")
-                return ok, elapsed if ok else 0, "", results
+                return ok, elapsed, "", results
         except Exception as e:
             return False, 0, str(e), results
         finally:
@@ -742,6 +828,8 @@ class XrayTester:
         outbound = self._parse_vless(uri)
         if outbound is None:
             return None
+        if self.use_doh:
+            _harden_dns(outbound, self.doh_list, self._doh_cache, 'xray')
         return {
             "log": {"loglevel": "warning"},
             "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "http", "settings": {}}],

@@ -236,11 +236,13 @@ class TesterWorker(QObject):
     count_signal = Signal(int)
     geo_signal = Signal(int, str)
 
-    def __init__(self, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2):
+    def __init__(self, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2, use_doh: bool = False, dns_list=None):
         super().__init__()
         self._rkn = rkn
         self._test_threads = test_threads
         self._deep_threads = deep_threads
+        self._use_doh = use_doh
+        self._doh_list = dns_list
         self._stop = False
         self._sb_tester = None
         self._xr_tester = None
@@ -339,14 +341,14 @@ class TesterWorker(QObject):
         if use_xray:
             if not self._xr_tester:
                 from .tester import XrayTester
-                self._xr_tester = XrayTester()
+                self._xr_tester = XrayTester(use_doh=self._use_doh, doh_list=self._doh_list)
             result = self._xr_tester.test(entry.uri, port)
             if result[0]:
                 _debug(f"_deep_test: {entry.host}:{entry.port} xray ok={result}")
                 return result
         if not self._sb_tester:
             from .tester import SingBoxTester
-            self._sb_tester = SingBoxTester()
+            self._sb_tester = SingBoxTester(use_doh=self._use_doh, doh_list=self._doh_list)
         result = self._sb_tester.test(entry.uri, port)
         _debug(f"_deep_test: {entry.host}:{entry.port} result={result}")
         return result
@@ -357,14 +359,14 @@ class TesterWorker(QObject):
         if use_xray:
             if not self._xr_tester:
                 from .tester import XrayTester
-                self._xr_tester = XrayTester()
+                self._xr_tester = XrayTester(use_doh=self._use_doh, doh_list=self._doh_list)
             ok, lat, err, results = self._xr_tester.test_rkn(entry.uri, port)
             if ok:
                 _debug(f"_rkn_test: {entry.host}:{entry.port} xray ok={ok}")
                 return ok, lat, err, results
         if not self._sb_tester:
             from .tester import SingBoxTester
-            self._sb_tester = SingBoxTester()
+            self._sb_tester = SingBoxTester(use_doh=self._use_doh, doh_list=self._doh_list)
         return self._sb_tester.test_rkn_bypass(entry.uri, port)
 
 
