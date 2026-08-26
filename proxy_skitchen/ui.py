@@ -2373,11 +2373,14 @@ class ExportPage(WizardPage):
         self.chk_clean_uris.setChecked(_settings_data.get("clean_uris", True))
         self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
         self.chk_clean_uris.toggled.connect(self._update_preview)
+        self.chk_no_wg = QCheckBox("Исключать WireGuard и TUIC (для Happ)")
+        self.chk_no_wg.setToolTip("Happ не поддерживает WireGuard и TUIC — они вызывают «ошибку парсинга» при вставке из буфера")
+        self.chk_no_wg.toggled.connect(self._update_preview)
         self.chk_smart_names.setChecked(True)
         self.chk_smart_names.toggled.connect(self._update_preview)
         self.chk_clean_names.toggled.connect(self._update_preview)
         self.chk_failed.toggled.connect(self._update_preview)
-        for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed, self.chk_clean_uris):
+        for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed, self.chk_clean_uris, self.chk_no_wg):
             opt_l.addWidget(chk)
         fmt_opts.addLayout(opt_l)
 
@@ -2576,6 +2579,8 @@ class ExportPage(WizardPage):
         entries = tp.get_entries()
         if not entries:
             entries = tp._entries
+        if self.chk_no_wg.isChecked():
+            entries = [e for e in entries if e.protocol not in ('WIREGUARD', 'WG', 'TUIC')]
         fmt = self._get_format_func()
         clean_names = self.chk_clean_names.isChecked()
         clean = self.chk_clean_uris.isChecked()
@@ -2633,6 +2638,7 @@ class ExportPage(WizardPage):
         self.chk_smart_names.setText(_("export.chk.smart_names"))
         self.chk_clean_names.setText(_("export.chk.clean_names"))
         self.chk_dns_hook.setText(_("export.chk.dns_hook"))
+        self.chk_no_wg.setText("Исключать WireGuard и TUIC (для Happ)")
         self.btn_copy.setText(_("export.btn.copy"))
         self.btn_save.setText(_("export.btn.save"))
         self.btn_save_desk.setText(_("export.btn.save_desktop"))
