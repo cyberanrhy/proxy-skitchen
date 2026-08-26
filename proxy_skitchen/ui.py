@@ -2342,9 +2342,9 @@ class ExportPage(WizardPage):
         self.stats_lbl = QLabel("")
         root.addWidget(self.stats_lbl)
 
-        # ── Format + Options row ──
-        fmt_opts = QHBoxLayout()
-        fmt_opts.setSpacing(12)
+        # ── Format (top row) + Options (bottom row) ──
+        fmt_opts = QVBoxLayout()
+        fmt_opts.setSpacing(8)
 
         fmt_l = QHBoxLayout()
         fmt_l.setSpacing(8)
@@ -2360,8 +2360,6 @@ class ExportPage(WizardPage):
             fmt_l.addWidget(rb)
             rb.toggled.connect(self._update_preview)
         fmt_opts.addLayout(fmt_l)
-
-        fmt_opts.addSpacing(20)
 
         opt_l = QHBoxLayout()
         opt_l.setSpacing(8)
