@@ -1616,6 +1616,11 @@ class TestPage(WizardPage):
         self.spin_max_latency.valueChanged.connect(self._on_max_latency_changed)
         actions.addWidget(self.spin_max_latency)
 
+        self.chk_test_doh = QCheckBox("DoH для дозвона (защита от отравленного DNS)")
+        self.chk_test_doh.setToolTip("Резолвить адрес сервера прокси через DoH (1.1.1.1 / 8.8.8.8) вместо системного DNS — защита от отравления DNS в РФ")
+        self.chk_test_doh.setChecked(True)
+        actions.addWidget(self.chk_test_doh)
+
         actions.addStretch()
 
         self.lbl_threads = QLabel(_("test.threads"))
@@ -1953,7 +1958,7 @@ class TestPage(WizardPage):
         self._stats_dirty = False
         self._lbl_style_set = False
 
-        self._tester = TesterWorker(rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2))
+        self._tester = TesterWorker(rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2), use_doh=self.chk_test_doh.isChecked(), dns_list=DEFAULT_DOH)
         self._tester.result_signal.connect(self._on_test_result)
         self._tester.testing_signal.connect(self._on_testing_start)
         self._tester.progress_signal.connect(self._on_test_progress)

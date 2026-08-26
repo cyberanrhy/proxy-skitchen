@@ -339,7 +339,7 @@ class CliRunner:
         self._status(f"файл: {total} прокси, отброшено: {dropped}")
         tcp_ok = deep_ok = rkn_ok = 0
         ok_uris = []
-        sb_tester = SingBoxTester() if args.deep or args.rkn else None
+        sb_tester = SingBoxTester(use_doh=getattr(args, 'test_doh', False), doh_list=DEFAULT_DOH) if args.deep or args.rkn else None
         for i, uri in enumerate(uris):
             host, port = get_server_port(uri)
             if not host or not port:
@@ -445,7 +445,7 @@ class CliRunner:
 
         deep_ok = 0
         rkn_ok = 0
-        sb_tester = SingBoxTester() if args.deep or args.rkn else None
+        sb_tester = SingBoxTester(use_doh=getattr(args, 'test_doh', False), doh_list=DEFAULT_DOH) if args.deep or args.rkn else None
         if args.rkn and sb_tester:
             for i, u in enumerate(ok_uris):
                 self._status(f"rkn [{i + 1}/{len(ok_uris)}]")
@@ -645,6 +645,7 @@ def build_parser(runner: CliRunner):
     ptf.add_argument("file")
     ptf.add_argument("--deep", action="store_true")
     ptf.add_argument("--rkn", action="store_true", help="RKN bypass тест")
+    ptf.add_argument("--test-doh", action="store_true", help="Резолвить адрес сервера прокси через DoH (защита от отравленного DNS)")
     ptf.add_argument("--output", "-o", default="")
     ptf.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")
     ptf.add_argument("--no-clean", dest="clean", action="store_false", help="Сохранять оригинальные URI с #fragment")
@@ -682,6 +683,7 @@ def build_parser(runner: CliRunner):
     pp.add_argument("--period", type=int, default=7, help="Фильтр по дням (по умолчанию 7)")
     pp.add_argument("--deep", action="store_true")
     pp.add_argument("--rkn", action="store_true", help="RKN bypass тест (проверка доступа к заблокированным сайтам)")
+    pp.add_argument("--test-doh", action="store_true", help="Резолвить адрес сервера прокси через DoH (защита от отравленного DNS)")
     pp.add_argument("--output", "-o", default="")
     pp.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")
     pp.add_argument("--no-clean", dest="clean", action="store_false", help="Сохранять оригинальные URI с #fragment")
