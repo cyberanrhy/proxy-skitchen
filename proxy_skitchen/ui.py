@@ -2604,7 +2604,9 @@ class ExportPage(WizardPage):
         kwargs = {}
         if fmt is format_singbox and dns is not None:
             kwargs["dns"] = dns
-        body = fmt(entries, include_failed=self.chk_failed.isChecked(), clean=clean, **kwargs)
+        if fmt in (format_raw, format_v2rayn):
+            kwargs["clean"] = clean
+        body = fmt(entries, include_failed=self.chk_failed.isChecked(), **kwargs)
         return body
 
     def _update_preview(self):
