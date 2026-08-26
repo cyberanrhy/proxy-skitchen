@@ -97,16 +97,6 @@ TCP_TIMEOUT = 8
 SB_TIMEOUT = 8
 SB_SEMAPHORE = threading.Semaphore(3)
 
-RKN_BLOCKED_DOMAINS = [
-    ("www.bbc.com/russian", "BBC Russian"),
-    ("meduza.io", "Медуза"),
-    ("kinozal.tv", "Kinozal"),
-    ("rutor.info", "Rutor"),
-    ("lurkmore.to", "Lurkmore"),
-    ("nnmclub.to", "NNM-Club"),
-    ("t.me", "Telegram"),
-]
-
 RKN_TEST_TIMEOUT = 8
 
 
@@ -322,25 +312,18 @@ class SingBoxTester:
                         except Exception:
                             pass
                         proc = None
-                        _debug(f"rkn_bypass: {uri[:60]} basic_ok={basic_ok} rkn_ok=False")
-                        return False, 0, "proxy not working", results
+                        _debug(f"rkn_bypass: {uri[:60]} basic_ok={basic_ok}")
+                        return False, 0, "proxy not working", []
                     tme_ok, tme_code, tme_lat = self._probe(proxy_url, "t.me")
-                    results.append({"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code})
-                    rkn_ok = tme_ok
-                    if rkn_ok:
-                        for domain, name in RKN_BLOCKED_DOMAINS:
-                            if domain == "t.me":
-                                continue
-                            ok, code, elapsed = self._probe(proxy_url, domain)
-                            results.append({"domain": domain, "name": name, "ok": ok, "latency": elapsed, "status": code})
+                    results = [{"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code}]
                     proc.kill()
                     try:
                         proc.wait(1)
                     except Exception:
                         pass
                     proc = None
-                _debug(f"rkn_bypass: {uri[:60]} basic_ok={basic_ok} rkn_ok={rkn_ok}")
-                return rkn_ok, tme_lat if rkn_ok else 0, "", results
+                _debug(f"rkn_bypass: {uri[:60]} tme_ok={tme_ok}")
+                return tme_ok, tme_lat, "", results
         except Exception as e:
             return False, 0, str(e), results
         finally:
@@ -757,17 +740,18 @@ class XrayTester:
                     proxy_url = f"http://127.0.0.1:{port}"
                     basic_ok, basic_lat = test_http_proxy(proxy_url, timeout=5)
                     if not basic_ok:
+                        proc.kill()
+                        try:
+                            proc.wait(1)
+                        except Exception:
+                            pass
+                        proc = None
+                        _debug(f"xr_rkn: {uri[:60]} basic_ok={basic_ok}")
                         return False, basic_lat, "proxy not working", []
                     tme_ok, tme_code, tme_lat = self._probe(proxy_url, "t.me")
-                    results.append({"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code})
+                    results = [{"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code}]
                     ok = tme_ok
                     elapsed = tme_lat if ok else 0
-                    if ok:
-                        for domain, name in RKN_BLOCKED_DOMAINS:
-                            if domain == "t.me":
-                                continue
-                            p_ok, p_code, p_el = self._probe(proxy_url, domain)
-                            results.append({"domain": domain, "name": name, "ok": p_ok, "latency": p_el, "status": p_code})
                     proc.kill()
                     try:
                         proc.wait(1)
