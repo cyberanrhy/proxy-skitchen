@@ -1617,8 +1617,8 @@ class TestPage(WizardPage):
         actions.addWidget(self.spin_max_latency)
 
         self.chk_test_doh = QCheckBox("DoH для дозвона (защита от отравленного DNS)")
-        self.chk_test_doh.setToolTip("Резолвить адрес сервера прокси через DoH (1.1.1.1 / 8.8.8.8) вместо системного DNS — защита от отравления DNS в РФ")
-        self.chk_test_doh.setChecked(True)
+        self.chk_test_doh.setToolTip("Резолвить адрес сервера прокси через DoH (1.1.1.1 / 8.8.8.8) только если локальный DNS не может резолвить домен (NXDOMAIN). Не переопределяет рабочий локальный резолв, чтобы не ломать прокси.")
+        self.chk_test_doh.setChecked(False)
         actions.addWidget(self.chk_test_doh)
 
         actions.addStretch()
