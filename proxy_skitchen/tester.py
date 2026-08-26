@@ -53,11 +53,22 @@ def doh_resolve(host, doh_list=None, cache=None, timeout=5):
     return result
 
 
+def _system_resolves(host):
+    try:
+        return bool(socket.getaddrinfo(host, 80, socket.AF_INET, socket.SOCK_STREAM))
+    except Exception:
+        return False
+
+
 def _harden_dns(outbound, doh_list, cache, kind):
-    """Replace a domain server with its DoH-resolved IP, keeping SNI/Host intact."""
+    """Keep the system-resolved server when the local DNS already works (safe).
+    Only fall back to DoH when the local resolver fails (e.g. NXDOMAIN from
+    poisoned/blocked DNS). Blindly overriding a working local resolution with a
+    public DoH result breaks many proxies whose backend IP differs from the
+    CDN/geo IP that public resolvers return."""
     if kind == 'sb':
         srv = outbound.get('server')
-        if srv and not is_ip(srv):
+        if srv and not is_ip(srv) and not _system_resolves(srv):
             ip = doh_resolve(srv, doh_list, cache)
             if ip:
                 outbound['server'] = ip
@@ -65,7 +76,7 @@ def _harden_dns(outbound, doh_list, cache, kind):
         vnext = outbound.get('settings', {}).get('vnext')
         if vnext:
             srv = vnext[0].get('address')
-            if srv and not is_ip(srv):
+            if srv and not is_ip(srv) and not _system_resolves(srv):
                 ip = doh_resolve(srv, doh_list, cache)
                 if ip:
                     vnext[0]['address'] = ip
