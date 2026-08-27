@@ -304,6 +304,34 @@ def _query_param(uri: str, key: str) -> str:
         return ""
 
 
+def _vless_transport(e: ProxyEntry) -> dict:
+    """Build sing-box transport block for a VLESS entry (grpc/ws/xhttp). Empty for tcp."""
+    net = (_query_param(e.uri, 'type') or 'tcp').lower()
+    uri = e.uri
+    if net in ('grpc',):
+        svc = _query_param(uri, 'serviceName') or _query_param(uri, 'service-name')
+        tr = {"type": "grpc"}
+        if svc:
+            tr["service_name"] = svc
+        return {"transport": tr}
+    if net in ('ws', 'websocket'):
+        path = _query_param(uri, 'path') or '/'
+        host = _query_param(uri, 'host')
+        tr = {"type": "ws", "path": path}
+        if host:
+            tr["headers"] = {"Host": host}
+        return {"transport": tr}
+    if net == 'xhttp':
+        mode = _query_param(uri, 'mode') or 'auto'
+        path = _query_param(uri, 'path') or '/'
+        host = _query_param(uri, 'host') or e.sni
+        tr = {"type": "xhttp", "mode": mode, "path": path}
+        if host:
+            tr["host"] = host
+        return {"transport": tr}
+    return {}
+
+
 def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
     """Build a valid sing-box outbound; return None for unsupported/incomplete entries."""
     proto = e.protocol.lower()
@@ -313,7 +341,7 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
         pw = _extract_ss_pass(e.uri)
         if not method or not pw:
             return None
-        return {"type": "ss", "server": e.host, "server_port": e.port,
+        return {"type": "shadowsocks", "server": e.host, "server_port": e.port,
                 "method": method, "password": pw}
 
     if proto == 'tuic':
@@ -347,16 +375,25 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
         flow = _query_param(e.uri, 'flow')
         if flow:
             out["flow"] = flow
+        fp = _query_param(e.uri, 'fp')
         security = (e.security or "").lower()
         pbk = _query_param(e.uri, 'pbk')
         sid = _query_param(e.uri, 'sid')
+        tls = None
         if security == 'reality' and pbk:
-            out["tls"] = {
-                "enabled": True, "server_name": e.sni or e.host,
-                "reality": {"enabled": True, "public_key": pbk, "short_id": sid or ""},
-            }
-        elif e.sni:
-            out["tls"] = {"enabled": True, "server_name": e.sni}
+            tls = {"enabled": True, "server_name": e.sni or e.host,
+                   "reality": {"enabled": True, "public_key": pbk}}
+            if sid:
+                tls["reality"]["short_id"] = sid
+        elif (e.sni and security != 'none') or security == 'tls':
+            tls = {"enabled": True, "server_name": e.sni or e.host}
+        if tls is not None:
+            if fp:
+                tls["utls"] = {"enabled": True, "fingerprint": fp}
+            out["tls"] = tls
+        tr = _vless_transport(e)
+        if tr:
+            out.update(tr)
     elif proto == 'trojan':
         pw = _extract_user(e.uri)
         if not pw:
@@ -381,6 +418,10 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
             svc = data.get('path') or data.get('serviceName')
             if svc:
                 out["transport"] = {"type": "grpc", "service_name": svc}
+        try:
+            out["alter_id"] = int(data.get('aid') or 0)
+        except (ValueError, TypeError):
+            out["alter_id"] = 0
         if e.sni:
             out["tls"] = {"enabled": True, "server_name": e.sni}
     elif proto in ('hy2', 'hysteria2'):
@@ -395,6 +436,21 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
         obfs_pw = _query_param(e.uri, 'obfs-password')
         if obfs == 'salamander' and obfs_pw:
             out["obfs"] = {"type": "salamander", "password": obfs_pw}
+
+    if proto in ('socks5', 'http', 'https'):
+        up = _extract_user(e.uri)
+        username = password = None
+        if up and ':' in up:
+            username, password = up.split(':', 1)
+        out = {"type": "socks" if proto == 'socks5' else "http",
+               "server": e.host, "server_port": e.port}
+        if username:
+            out["username"] = username
+        if password:
+            out["password"] = password
+        if proto == 'https':
+            out["tls"] = {"enabled": True}
+        return out
 
     return out
 
@@ -424,9 +480,14 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
             p["reality-opts"] = {"public-key": pbk, "short-id": sid or ""}
         elif e.security and e.security.lower() != 'none':
             p["tls"] = True
+        net = (_query_param(e.uri, 'type') or 'tcp').lower()
         path = _query_param(e.uri, 'path')
         host = _query_param(e.uri, 'host')
-        if path or host:
+        svc = _query_param(e.uri, 'serviceName')
+        if net in ('grpc',) and svc:
+            p["network"] = "grpc"
+            p["grpc-opts"] = {"grpc-service-name": svc}
+        elif net in ('ws', 'websocket') and (path or host):
             p["network"] = "ws"
             opts = {}
             if path:
@@ -470,6 +531,11 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
                 p["grpc-opts"] = {"grpc-service-name": svc}
         if e.security and e.security.lower() != 'none':
             p["tls"] = True
+        p["cipher"] = data.get('scy') or 'aes-128-gcm'
+        try:
+            p["alterId"] = int(data.get('aid', 0))
+        except (ValueError, TypeError):
+            p["alterId"] = 0
         return p
     if proto == 'ss':
         pw = _extract_ss_pass(e.uri)
@@ -496,8 +562,15 @@ def _entry_to_clash(e: ProxyEntry, idx: int = 0, clean_names: bool = False) -> O
         if _query_param(e.uri, 'insecure') == '1':
             p["skip-cert-verify"] = True
         return p
-    if proto == 'socks5':
-        p["type"] = "socks5"
+    if proto in ('socks5', 'http', 'https'):
+        p["type"] = "socks5" if proto == 'socks5' else "http"
+        up = _extract_user(e.uri)
+        if up and ':' in up:
+            u, pw = up.split(':', 1)
+            p["username"] = u
+            p["password"] = pw
+        if proto == 'https':
+            p["tls"] = True
         return p
     if proto in ('wireguard', 'wg'):
         wg = _parse_wireguard_uri(e.uri)
