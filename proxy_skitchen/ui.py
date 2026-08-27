@@ -1636,6 +1636,11 @@ class TestPage(WizardPage):
         self.btn_delete_dead.clicked.connect(self._on_delete_dead)
         self.btn_delete_dead.setEnabled(False)
         actions.addWidget(self.btn_delete_dead)
+
+        self.btn_delete_untested = QPushButton(_("test.btn.delete_untested"))
+        self.btn_delete_untested.clicked.connect(self._on_delete_untested)
+        self.btn_delete_untested.setEnabled(False)
+        actions.addWidget(self.btn_delete_untested)
         layout.addLayout(actions)
 
         # ── Progress ──
@@ -1740,6 +1745,7 @@ class TestPage(WizardPage):
 
         del_d = f"QPushButton {{ background: {bad_bg}; border: 1px solid {bad_bd}; color: {bad}; padding: 3px 10px; border-radius: 4px; }} QPushButton:hover {{ background: rgba(227,98,98,0.2); }} QPushButton:disabled {{ color: {m}; border-color: {bd}; background: transparent; }}"
         self.btn_delete_dead.setStyleSheet(del_d)
+        self.btn_delete_untested.setStyleSheet(del_d)
 
         self.lbl_threads.setStyleSheet(f"font-size: 11px; color: {mf};")
         self.spin_threads.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
@@ -1852,6 +1858,11 @@ class TestPage(WizardPage):
             return sum(1 for e in self._entries if not e.rkn_tested)
         return sum(1 for e in self._entries if not e.deep_tested)
 
+    def _count_untested_all(self) -> int:
+        return sum(1 for e in self._entries
+                   if e.protocol not in ('WIREGUARD', 'WG')
+                   and not (e.tcp_tested or e.deep_tested or e.rkn_tested))
+
     def _on_continue(self):
         if not self._test_type or not self._entries:
             return
@@ -1889,6 +1900,9 @@ class TestPage(WizardPage):
         self._run_test(rkn=True, subset=filtered, subset_indices=indices)
 
     def _on_delete_dead(self):
+        if self._phase == self.PHASE_TEST:
+            QMessageBox.information(self, _("msg.info"), _("test.delete_need_stop"))
+            return
         if self._dead_cnt == 0:
             QMessageBox.information(self, _("msg.info"), _("log.no_dead"))
             return
@@ -1911,6 +1925,33 @@ class TestPage(WizardPage):
         self.btn_delete_dead.setEnabled(False)
         self.btn_rkn.setEnabled(len(self._entries) > 0)
         self._log(_("log.deleted_dead", count=removed))
+
+    def _on_delete_untested(self):
+        if self._phase == self.PHASE_TEST:
+            QMessageBox.information(self, _("msg.info"), _("test.delete_need_stop"))
+            return
+        kept = [
+            e for e in self._entries
+            if e.protocol in ('WIREGUARD', 'WG')
+            or (e.tcp_tested or e.deep_tested or e.rkn_tested)
+        ]
+        removed = len(self._entries) - len(kept)
+        if removed == 0:
+            QMessageBox.information(self, _("msg.info"), _("log.no_untested_to_delete"))
+            return
+        self._entries = kept
+        self._valid_cnt = sum(1 for e in kept if e.tcp_ok or e.deep_ok or e.rkn_ok)
+        self._dead_cnt = sum(1 for e in kept
+                             if (e.tcp_tested or e.deep_tested or e.rkn_tested)
+                             and not (e.tcp_ok or e.deep_ok or e.rkn_ok))
+        self.model.clear()
+        self.model.add_proxies(self._entries)
+        self._update_stats()
+        self.btn_delete_dead.setEnabled(self._dead_cnt > 0)
+        self.btn_delete_untested.setEnabled(self._count_untested_all() > 0)
+        self.btn_rkn.setEnabled(len(self._entries) > 0)
+        self.btn_export.setEnabled(self._valid_cnt > 0)
+        self._log(_("log.deleted_untested", count=removed))
 
     def _on_threads_changed(self, value):
         if self._phase != self.PHASE_TEST or not self._tester or not self._test_type:
@@ -2233,6 +2274,8 @@ class TestPage(WizardPage):
             self.lbl_rkn.setVisible(True)
         else:
             self.lbl_rkn.setVisible(False)
+        self.btn_delete_untested.setEnabled(
+            self._phase != self.PHASE_TEST and self._count_untested_all() > 0)
 
     def _on_table_context(self, pos):
         idx = self.proxy_table.indexAt(pos)
@@ -2282,6 +2325,7 @@ class TestPage(WizardPage):
         self.btn_rkn.setText(_("test.btn.rkn"))
         self.btn_continue.setText(_("test.btn.continue"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))
+        self.btn_delete_untested.setText(_("test.btn.delete_untested"))
         self.btn_export.setText(_("test.btn.export"))
         self.chk_max_latency.setText(_("test.max_latency"))
         self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, self.model.columnCount() - 1)
