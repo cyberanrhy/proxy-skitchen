@@ -131,6 +131,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "test.btn.rkn": "🛡 RKN обход",
         "test.btn.continue": "▶ Продолжить",
         "test.btn.delete_dead": "🗑 Удалить мёртвые",
+        "test.btn.delete_untested": "🗑 Удалить не тестированные",
+        "test.delete_need_stop": "Сначала остановите тест (кнопка «Стоп»).",
         "test.btn.export": "▶ Экспорт →",
         "test.threads": "Потоков:",
         "test.max_latency": "Max задержка (мс):",
@@ -162,6 +164,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "log.deleted_dead": "🗑 Удалено {count} мёртвых прокси",
         "log.no_dead": "Мёртвых прокси нет.",
         "log.no_dead_to_delete": "Нет мёртвых прокси для удаления.",
+        "log.deleted_untested": "🗑 Удалено {count} не тестированных прокси",
+        "log.no_untested": "Не тестированных прокси нет.",
+        "log.no_untested_to_delete": "Нет не тестированных прокси для удаления.",
 
         # ── ExportPage ──
         "export.title": "📤 <b>Шаг 3: Экспорт</b>",
@@ -395,6 +400,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "test.btn.rkn": "🛡 RKN Bypass",
         "test.btn.continue": "▶ Continue",
         "test.btn.delete_dead": "🗑 Delete Dead",
+        "test.btn.delete_untested": "🗑 Delete Untested",
+        "test.delete_need_stop": "Stop the test first (Stop button).",
         "test.btn.export": "▶ Export →",
         "test.threads": "Threads:",
         "test.max_latency": "Max latency (ms):",
@@ -426,6 +433,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "log.deleted_dead": "🗑 Deleted {count} dead proxies",
         "log.no_dead": "No dead proxies.",
         "log.no_dead_to_delete": "No dead proxies to delete.",
+        "log.deleted_untested": "🗑 Deleted {count} untested proxies",
+        "log.no_untested": "No untested proxies.",
+        "log.no_untested_to_delete": "No untested proxies to delete.",
 
         # ── ExportPage ──
         "export.title": "📤 <b>Step 3: Export</b>",
