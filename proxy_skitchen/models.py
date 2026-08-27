@@ -116,6 +116,71 @@ def set_theme(theme: str):
         _settings_data["theme"] = theme
         _save_settings(_settings_data)
 
+_VALID_NETWORKS = {
+    'tcp', 'ws', 'websocket', 'grpc', 'http', 'kcp', 'quic', 'xhttp',
+}
+
+
+def sanitize_network(uri: str) -> str:
+    """Repair invalid network types so Xray/Sing-box cores accept the config.
+
+    Both cores reject unknown network types (e.g. 'raw', 'none') with a core
+    error on load. We map 'websocket' -> 'ws' and any other invalid value ->
+    'tcp' (always valid), so the config at least loads; the connection is then
+    re-validated by the app's own tester.
+    """
+    low = uri.lower()
+    if low.startswith('vmess://'):
+        try:
+            b64 = uri[8:]
+            pad = 4 - len(b64) % 4
+            if pad != 4:
+                b64 += '=' * pad
+            data = json.loads(base64.b64decode(b64).decode('utf-8', errors='ignore'))
+            if not isinstance(data, dict):
+                return uri
+            net = (data.get('net') or '').strip().lower()
+            if net and net not in _VALID_NETWORKS:
+                data['net'] = 'ws' if net == 'websocket' else 'tcp'
+                new_b64 = base64.b64encode(
+                    json.dumps(data, ensure_ascii=True).encode('utf-8')
+                ).decode('ascii')
+                return 'vmess://' + new_b64
+        except Exception:
+            return uri
+        return uri
+
+    if '://' not in uri:
+        return uri
+    scheme, rest = uri.split('://', 1)
+    if scheme.lower() not in ('vless', 'trojan', 'hysteria2', 'hy2',
+                              'tuic', 'socks5', 'socks4', 'socks'):
+        return uri
+    frag = ''
+    if '#' in rest:
+        rest, frag = rest.split('#', 1)
+    if '?' not in rest:
+        return uri
+    base, q = rest.split('?', 1)
+    params = urllib.parse.parse_qsl(q, keep_blank_values=True)
+    changed = False
+    out_params = []
+    for k, v in params:
+        if k.lower() == 'type':
+            nv = (v or '').strip().lower()
+            if nv and nv not in _VALID_NETWORKS:
+                v = 'ws' if nv == 'websocket' else 'tcp'
+                changed = True
+        out_params.append((k, v))
+    if not changed:
+        return uri
+    new_q = urllib.parse.urlencode(out_params)
+    result = f"{scheme}://{base}?{new_q}"
+    if frag:
+        result += '#' + frag
+    return result
+
+
 class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
                  'tcp_ok', 'deep_ok', 'rkn_ok', 'latency_ms', 'deep_error', 'is_embedded',
@@ -124,7 +189,7 @@ class ProxyEntry:
 
     def __init__(self, uri: str, source: str = ""):
         from .parsers import normalize_uri
-        self.uri = normalize_uri(uri)
+        self.uri = sanitize_network(normalize_uri(uri))
         self.protocol = ""
         self.host = ""
         self.port = 0
