@@ -30,6 +30,15 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         p = _parse_wireguard_uri(e.uri)
         if not p or not p.get('private_key') or not p.get('public_key') or not p.get('address'):
             return False
+    if e.protocol == 'VMESS':
+        try:
+            b = e.uri[8:]
+            b += '=' * ((4 - len(b) % 4) % 4)
+            d = json.loads(base64.b64decode(b).decode('utf-8', errors='ignore'))
+            if not isinstance(d, dict) or not d.get('id'):
+                return False
+        except Exception:
+            return False
     return True
 
 

@@ -136,16 +136,16 @@ def sanitize_network(uri: str) -> str:
             pad = 4 - len(b64) % 4
             if pad != 4:
                 b64 += '=' * pad
-            data = json.loads(base64.b64decode(b64).decode('utf-8', errors='ignore'))
+            data = json.loads(base64.b64decode(b64, validate=False).decode('utf-8', errors='ignore'))
             if not isinstance(data, dict):
                 return uri
             net = (data.get('net') or '').strip().lower()
             if net and net not in _VALID_NETWORKS:
                 data['net'] = 'ws' if net == 'websocket' else 'tcp'
-                new_b64 = base64.b64encode(
-                    json.dumps(data, ensure_ascii=True).encode('utf-8')
-                ).decode('ascii')
-                return 'vmess://' + new_b64
+            new_b64 = base64.b64encode(
+                json.dumps(data, ensure_ascii=True).encode('utf-8')
+            ).decode('ascii')
+            return 'vmess://' + new_b64
         except Exception:
             return uri
         return uri
