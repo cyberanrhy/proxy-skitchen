@@ -164,14 +164,27 @@ def sanitize_network(uri: str) -> str:
     base, q = rest.split('?', 1)
     params = urllib.parse.parse_qsl(q, keep_blank_values=True)
     changed = False
+    has_fp = False
     out_params = []
     for k, v in params:
-        if k.lower() == 'type':
+        kl = k.lower()
+        if kl == 'type':
             nv = (v or '').strip().lower()
             if nv and nv not in _VALID_NETWORKS:
                 v = 'ws' if nv == 'websocket' else 'tcp'
                 changed = True
+        elif kl == 'fp':
+            has_fp = True
+            nv = (v or '').strip().lower()
+            if nv and nv not in ('chrome', 'firefox', 'edge'):
+                v = 'chrome'
+                changed = True
         out_params.append((k, v))
+    if scheme.lower() == 'vless':
+        sec = dict((k.lower(), val) for k, val in params).get('security', '').lower()
+        if sec == 'reality' and not has_fp:
+            out_params.append(('fp', 'chrome'))
+            changed = True
     if not changed:
         return uri
     new_q = urllib.parse.urlencode(out_params)
