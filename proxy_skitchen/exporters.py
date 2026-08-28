@@ -34,9 +34,12 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
             return False
         if _sec == 'reality' and not _pbk:
             return False
+        # Only keep transport/security values the Sing-box core actually knows.
+        # Unknown ones (e.g. xhttp) make Hiddify's parser panic -> core won't start.
+        if _sec and _sec not in ('none', 'tls', 'reality'):
+            return False
         _net = (_query_param(e.uri, 'type') or 'tcp').lower()
-        # xhttp transport is often absent in iOS Sing-box builds -> core won't start
-        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'kcp'):
+        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic'):
             return False
     if e.protocol == 'SS':
         _m = _extract_ss_cipher(e.uri)
@@ -46,12 +49,30 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         p = _parse_wireguard_uri(e.uri)
         if not p or not p.get('private_key') or not p.get('public_key') or not p.get('address'):
             return False
+    if e.protocol in ('VLESS', 'TROJAN', 'HYSTERIA2', 'HY2'):
+        # Drop entries carrying corrupted / unexpected query params that crash
+        # some client parsers (e.g. "Telegram=...", "spx=/", or absurdly long values).
+        from urllib.parse import urlparse, parse_qs
+        _q = urlparse(e.uri).query
+        if _q:
+            for _k, _vl in parse_qs(_q).items():
+                if _k.lower() in ('telegram', 'spx'):
+                    return False
+                for _v in _vl:
+                    if len(_v) > 256:
+                        return False
     if e.protocol == 'VMESS':
         try:
             b = e.uri[8:]
             b += '=' * ((4 - len(b) % 4) % 4)
             d = json.loads(base64.b64decode(b).decode('utf-8', errors='ignore'))
             if not isinstance(d, dict) or not d.get('id'):
+                return False
+            _net = (d.get('net') or 'tcp').lower()
+            if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic'):
+                return False
+            _scy = (d.get('scy') or '').lower()
+            if _scy not in ('aes-128-gcm', 'aes-256-gcm', 'chacha20-poly1305'):
                 return False
         except Exception:
             return False
