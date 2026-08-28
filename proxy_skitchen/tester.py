@@ -97,7 +97,7 @@ TCP_TIMEOUT = 8
 SB_TIMEOUT = 8
 SB_SEMAPHORE = threading.Semaphore(3)
 
-RKN_TEST_TIMEOUT = 8
+RKN_TEST_TIMEOUT = 10
 
 
 def find_free_port() -> int:
@@ -180,8 +180,11 @@ def test_http_proxy(proxy_url: str, url: str = TEST_URL, timeout: float = SB_TIM
         handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
         opener = urllib.request.build_opener(handler)
         resp = opener.open(url, timeout=timeout)
+        code = resp.getcode()
+        body = resp.read(1024)
         elapsed = (time.time() - start) * 1000
-        return resp.status < 400, elapsed
+        ok = code in (200, 204, 301, 302, 303, 307, 308) and len(body) > 0
+        return ok, elapsed
     except Exception:
         return False, (time.time() - start) * 1000
 
@@ -269,19 +272,27 @@ class SingBoxTester:
                 except Exception:
                     pass
 
-    def _probe(self, proxy_url: str, domain: str) -> tuple[bool, int, float]:
+    def _probe(self, proxy_url: str, domain: str, marker: str | None = None, expect_code: int = 200) -> tuple[bool, int, float]:
+        url = "https://" + domain
         try:
-            url = "https://" + domain
             start = time.time()
             handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
             opener = urllib.request.build_opener(handler)
             opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
             resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
             code = resp.getcode()
+            body = resp.read(8192).decode("utf-8", errors="ignore") if expect_code == 200 else ""
             elapsed = (time.time() - start) * 1000
-            ok = code in (200, 301, 302, 304)
+            if expect_code == 204:
+                ok = code == 204
+            else:
+                ok = code == 200 and len(body) > 500
+                if marker and ok:
+                    ok = marker in body.lower()
+            _debug(f"_probe {domain}: code={code} ok={ok}")
             return ok, code, elapsed
-        except Exception:
+        except Exception as e:
+            _debug(f"_probe {domain}: exc {e}")
             return False, 0, 0.0
 
     def test_rkn_bypass(self, uri: str, port: int) -> tuple[bool, float, str, list[dict]]:
@@ -304,26 +315,46 @@ class SingBoxTester:
                     )
                     time.sleep(0.5)
                     proxy_url = f"http://127.0.0.1:{port}"
-                    basic_ok, basic_lat = test_http_proxy(proxy_url)
-                    if not basic_ok:
+                    # Liveness gate (Hiddify url-test): must reach the open internet
+                    live_ok, live_code, live_lat = self._probe(proxy_url, "www.gstatic.com/generate_204", None, 204)
+                    if not live_ok:
                         proc.kill()
                         try:
                             proc.wait(1)
                         except Exception:
                             pass
                         proc = None
-                        _debug(f"rkn_bypass: {uri[:60]} basic_ok={basic_ok}")
+                        _debug(f"rkn_bypass: {uri[:60]} live_ok={live_ok} code={live_code}")
                         return False, 0, "proxy not working", []
-                    tme_ok, tme_code, tme_lat = self._probe(proxy_url, "t.me")
-                    results = [{"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code}]
+                    # RKN bypass: at least one blocked-in-RU site must really open
+                    targets = [("t.me", "Telegram", "telegram"),
+                               ("instagram.com", "Instagram", "instagram"),
+                               ("youtube.com", "YouTube", "youtube"),
+                               ("twitter.com", "Twitter", "twitter")]
+                    any_open = False
+                    best_lat = live_lat
+                    with ThreadPoolExecutor(max_workers=4) as ex:
+                        futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n) for d, n, mk in targets}
+                        for fut in as_completed(futs):
+                            d, n = futs[fut]
+                            try:
+                                ok, code, lat = fut.result()
+                            except Exception:
+                                ok, code, lat = False, 0, 0.0
+                            results.append({"domain": d, "name": n, "ok": ok, "latency": lat, "status": code})
+                            if ok and lat > 0:
+                                any_open = True
+                                best_lat = min(best_lat, lat)
+                            _debug(f"rkn_bypass: {uri[:60]} {d} ok={ok} code={code}")
                     proc.kill()
                     try:
                         proc.wait(1)
                     except Exception:
                         pass
                     proc = None
-                _debug(f"rkn_bypass: {uri[:60]} tme_ok={tme_ok}")
-                return tme_ok, tme_lat, "", results
+                ok = any_open
+                _debug(f"rkn_bypass: {uri[:60]} live_ok={live_ok} any_open={any_open} ok={ok}")
+                return ok, best_lat, "" if ok else "не открывает заблокированные", results
         except Exception as e:
             return False, 0, str(e), results
         finally:
@@ -695,19 +726,27 @@ class XrayTester:
         self.doh_list = doh_list
         self._doh_cache = {}
 
-    def _probe(self, proxy_url: str, domain: str) -> tuple[bool, int, float]:
+    def _probe(self, proxy_url: str, domain: str, marker: str | None = None, expect_code: int = 200) -> tuple[bool, int, float]:
+        url = "https://" + domain
         try:
-            url = "https://" + domain
             start = time.time()
             handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
             opener = urllib.request.build_opener(handler)
             opener.addheaders = [("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")]
             resp = opener.open(url, timeout=RKN_TEST_TIMEOUT)
             code = resp.getcode()
+            body = resp.read(8192).decode("utf-8", errors="ignore") if expect_code == 200 else ""
             elapsed = (time.time() - start) * 1000
-            ok = code in (200, 301, 302, 304)
+            if expect_code == 204:
+                ok = code == 204
+            else:
+                ok = code == 200 and len(body) > 500
+                if marker and ok:
+                    ok = marker in body.lower()
+            _debug(f"_probe {domain}: code={code} ok={ok}")
             return ok, code, elapsed
-        except Exception:
+        except Exception as e:
+            _debug(f"_probe {domain}: exc {e}")
             return False, 0, 0.0
 
     def test_rkn(self, uri: str, port: int) -> tuple[bool, float, str, list]:
@@ -738,28 +777,46 @@ class XrayTester:
                             pass
                         return False, 0, f"xray err: {err}" if err else "xray failed to start", []
                     proxy_url = f"http://127.0.0.1:{port}"
-                    basic_ok, basic_lat = test_http_proxy(proxy_url, timeout=5)
-                    if not basic_ok:
+                    # Liveness gate (Hiddify url-test): must reach the open internet
+                    live_ok, live_code, live_lat = self._probe(proxy_url, "www.gstatic.com/generate_204", None, 204)
+                    if not live_ok:
                         proc.kill()
                         try:
                             proc.wait(1)
                         except Exception:
                             pass
                         proc = None
-                        _debug(f"xr_rkn: {uri[:60]} basic_ok={basic_ok}")
-                        return False, basic_lat, "proxy not working", []
-                    tme_ok, tme_code, tme_lat = self._probe(proxy_url, "t.me")
-                    results = [{"domain": "t.me", "name": "Telegram", "ok": tme_ok, "latency": tme_lat, "status": tme_code}]
-                    ok = tme_ok
-                    elapsed = tme_lat if ok else 0
+                        _debug(f"xr_rkn: {uri[:60]} live_ok={live_ok} code={live_code}")
+                        return False, 0, "proxy not working", []
+                    # RKN bypass: at least one blocked-in-RU site must really open
+                    targets = [("t.me", "Telegram", "telegram"),
+                               ("instagram.com", "Instagram", "instagram"),
+                               ("youtube.com", "YouTube", "youtube"),
+                               ("twitter.com", "Twitter", "twitter")]
+                    any_open = False
+                    best_lat = live_lat
+                    with ThreadPoolExecutor(max_workers=4) as ex:
+                        futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n) for d, n, mk in targets}
+                        for fut in as_completed(futs):
+                            d, n = futs[fut]
+                            try:
+                                ok, code, lat = fut.result()
+                            except Exception:
+                                ok, code, lat = False, 0, 0.0
+                            results.append({"domain": d, "name": n, "ok": ok, "latency": lat, "status": code})
+                            if ok and lat > 0:
+                                any_open = True
+                                best_lat = min(best_lat, lat)
+                            _debug(f"xr_rkn: {uri[:60]} {d} ok={ok} code={code}")
                     proc.kill()
                     try:
                         proc.wait(1)
                     except Exception:
                         pass
                     proc = None
-                _debug(f"xr_rkn: {uri[:60]} basic_ok={basic_ok} ok={ok}")
-                return ok, elapsed, "", results
+                ok = any_open
+                _debug(f"xr_rkn: {uri[:60]} live_ok={live_ok} any_open={any_open} ok={ok}")
+                return ok, best_lat, "" if ok else "не открывает заблокированные", results
         except Exception as e:
             return False, 0, str(e), results
         finally:
