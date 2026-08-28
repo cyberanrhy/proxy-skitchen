@@ -35,7 +35,12 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         if _sec == 'reality' and not _pbk:
             return False
         _net = (_query_param(e.uri, 'type') or 'tcp').lower()
-        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'xhttp', 'quic', 'kcp'):
+        # xhttp transport is often absent in iOS Sing-box builds -> core won't start
+        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'kcp'):
+            return False
+    if e.protocol == 'SS':
+        _m = _extract_ss_cipher(e.uri)
+        if not _m or _m.lower() not in _SAFE_SS:
             return False
     if e.protocol in ('WIREGUARD', 'WG'):
         p = _parse_wireguard_uri(e.uri)
@@ -51,6 +56,15 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         except Exception:
             return False
     return True
+
+
+# Shadowsocks ciphers supported by Sing-box core (used by Hiddify on iOS/desktop).
+# Legacy stream ciphers (CFB/CTR/RC4/CAMELLIA/...) are rejected and break the core.
+_SAFE_SS = {
+    '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm',
+    '2022-blake3-chacha20-poly1305', 'aes-128-gcm', 'aes-256-gcm',
+    'chacha20-ietf-poly1305', 'chacha20', 'xchacha20', 'none',
+}
 
 
 def _entry_ok(e: ProxyEntry) -> bool:
