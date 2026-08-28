@@ -2196,6 +2196,23 @@ class TestPage(WizardPage):
             f"Файл: {path}\n\n"
             f"Импортируй в Hiddify: Меню → Подписки → (+) → Выбери файл")
 
+    def _purge_jsdelivr_cdn(self, repo: str, file_path: str) -> bool:
+        """Best-effort purge of jsDelivr CDN cache so subscribers get the fresh file.
+
+        GitHub is blocked in RU, so distribution goes through the jsDelivr CDN,
+        which caches GitHub content for ~12h. Call this after a successful push.
+        """
+        if not repo or not file_path:
+            return False
+        import urllib.request
+        url = f"https://purge.jsdelivr.net/gh/{repo}@main/{file_path}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen"})
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except Exception:
+            return False
+
     def _do_github_push(self, content: str, repo: str, file_path: str, token: str) -> tuple[bool, str]:
         import urllib.request, urllib.error, base64, json
         api_base = f"https://api.github.com/repos/{repo}/contents/{file_path}"
@@ -2226,6 +2243,7 @@ class TestPage(WizardPage):
             data_bytes = json.dumps(body).encode("utf-8")
             req = urllib.request.Request(api_base, data=data_bytes, headers=headers, method="PUT")
             resp = urllib.request.urlopen(req, timeout=15)
+            self._purge_jsdelivr_cdn(repo, file_path)
             return True, ""
         except Exception as e:
             return False, str(e)[:60]
@@ -2512,6 +2530,20 @@ class ExportPage(WizardPage):
         g3.addWidget(self.btn_gh_push)
         gh_l.addLayout(g3)
 
+        g4 = QHBoxLayout()
+        self.lbl_gh_cdn = QLabel(_("export.label.cdn_url"))
+        g4.addWidget(self.lbl_gh_cdn)
+        self.cdn_url_input = QLineEdit()
+        self.cdn_url_input.setReadOnly(True)
+        g4.addWidget(self.cdn_url_input, 1)
+        self.btn_gh_cdn_copy = QPushButton(_("export.btn.cdn_copy"))
+        self.btn_gh_cdn_copy.clicked.connect(self._on_cdn_copy)
+        g4.addWidget(self.btn_gh_cdn_copy)
+        gh_l.addLayout(g4)
+        self.gh_repo_input.textChanged.connect(lambda t: self._update_cdn_url())
+        self.gh_file_input.textChanged.connect(lambda t: self._update_cdn_url())
+        self._update_cdn_url()
+
         root.addWidget(self.gh_group)
 
         self._apply_export_theme()
@@ -2702,6 +2734,22 @@ class ExportPage(WizardPage):
         self.sub_title_input.setToolTip(_("export.label.sub_title_tt"))
         self.gh_group.setTitle(_("export.group.github"))
         self.btn_gh_push.setText(_("export.btn.github_push"))
+        self.lbl_gh_cdn.setText(_("export.label.cdn_url"))
+        self.btn_gh_cdn_copy.setText(_("export.btn.cdn_copy"))
+
+    def _update_cdn_url(self):
+        repo = self.gh_repo_input.text().strip()
+        fp = self.gh_file_input.text().strip()
+        if repo and fp:
+            self.cdn_url_input.setText(f"https://cdn.jsdelivr.net/gh/{repo}@main/{fp}")
+        else:
+            self.cdn_url_input.setText("")
+
+    def _on_cdn_copy(self):
+        url = self.cdn_url_input.text().strip()
+        if url:
+            QApplication.clipboard().setText(url)
+            self.gh_status_label.setText(_("export.github.cdn_copied"))
 
     def _on_copy(self):
         content = self._get_content_with_header()
@@ -2870,6 +2918,7 @@ class ExportPage(WizardPage):
                 data_bytes = json.dumps(body).encode("utf-8")
                 req = urllib.request.Request(api_base, data=data_bytes, headers=headers, method="PUT")
                 resp = urllib.request.urlopen(req, timeout=15)
+                self._purge_jsdelivr_cdn(repo, file_path)
                 return True, ""
             except Exception as e:
                 return False, str(e)[:60]
