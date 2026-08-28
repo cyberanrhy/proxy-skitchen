@@ -129,69 +129,10 @@ def sanitize_network(uri: str) -> str:
     'tcp' (always valid), so the config at least loads; the connection is then
     re-validated by the app's own tester.
     """
-    low = uri.lower()
-    if low.startswith('vmess://'):
-        try:
-            b64 = uri[8:]
-            pad = 4 - len(b64) % 4
-            if pad != 4:
-                b64 += '=' * pad
-            data = json.loads(base64.b64decode(b64, validate=False).decode('utf-8', errors='ignore'))
-            if not isinstance(data, dict):
-                return uri
-            net = (data.get('net') or '').strip().lower()
-            if net and net not in _VALID_NETWORKS:
-                data['net'] = 'ws' if net == 'websocket' else 'tcp'
-            new_b64 = base64.b64encode(
-                json.dumps(data, ensure_ascii=True).encode('utf-8')
-            ).decode('ascii')
-            return 'vmess://' + new_b64
-        except Exception:
-            return uri
-        return uri
-
-    if '://' not in uri:
-        return uri
-    scheme, rest = uri.split('://', 1)
-    if scheme.lower() not in ('vless', 'trojan', 'hysteria2', 'hy2',
-                              'tuic', 'socks5', 'socks4', 'socks'):
-        return uri
-    frag = ''
-    if '#' in rest:
-        rest, frag = rest.split('#', 1)
-    if '?' not in rest:
-        return uri
-    base, q = rest.split('?', 1)
-    params = urllib.parse.parse_qsl(q, keep_blank_values=True)
-    changed = False
-    has_fp = False
-    out_params = []
-    for k, v in params:
-        kl = k.lower()
-        if kl == 'type':
-            nv = (v or '').strip().lower()
-            if nv and nv not in _VALID_NETWORKS:
-                v = 'ws' if nv == 'websocket' else 'tcp'
-                changed = True
-        elif kl == 'fp':
-            has_fp = True
-            nv = (v or '').strip().lower()
-            if nv and nv not in ('chrome', 'firefox', 'edge'):
-                v = 'chrome'
-                changed = True
-        out_params.append((k, v))
-    if scheme.lower() == 'vless':
-        sec = dict((k.lower(), val) for k, val in params).get('security', '').lower()
-        if sec == 'reality' and not has_fp:
-            out_params.append(('fp', 'chrome'))
-            changed = True
-    if not changed:
-        return uri
-    new_q = urllib.parse.urlencode(out_params)
-    result = f"{scheme}://{base}?{new_q}"
-    if frag:
-        result += '#' + frag
-    return result
+    # We intentionally do NOT repair broken/incompatible entries here: a
+    # half-fixed entry can still be rejected by a client core (Hiddify even
+    # panics on unknown values). The exporter's validator drops such entries.
+    return uri
 
 
 class ProxyEntry:
