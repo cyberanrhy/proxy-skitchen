@@ -26,6 +26,17 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         return False
     if e.protocol == 'SS' and not _extract_ss_pass(e.uri):
         return False
+    if e.protocol == 'VLESS':
+        _sec = (_query_param(e.uri, 'security') or '').lower()
+        _pbk = _query_param(e.uri, 'pbk')
+        _flow = _query_param(e.uri, 'flow')
+        if _flow and (_sec != 'reality' or not _pbk):
+            return False
+        if _sec == 'reality' and not _pbk:
+            return False
+        _net = (_query_param(e.uri, 'type') or 'tcp').lower()
+        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'xhttp', 'quic', 'kcp'):
+            return False
     if e.protocol in ('WIREGUARD', 'WG'):
         p = _parse_wireguard_uri(e.uri)
         if not p or not p.get('private_key') or not p.get('public_key') or not p.get('address'):
