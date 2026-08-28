@@ -156,6 +156,8 @@ class NetworkWorker(QObject):
             except Exception:
                 data = None
         if data is None:
+            data = self._github_raw_to_api(url)
+        if data is None:
             return None
         proxies = []
         for line in data.splitlines():
@@ -223,6 +225,53 @@ class NetworkWorker(QObject):
                 _debug(f"_http_get: error {e}")
             if self._stop:
                 return None
+        return None
+
+    def _github_raw_to_api(self, url: str) -> Optional[str]:
+        m = re.match(r'https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)', url)
+        if not m:
+            return None
+        full_name = f"{m.group(1)}/{m.group(2)}"
+        branch = m.group(3)
+        path = m.group(4)
+        api_url = f"https://api.github.com/repos/{full_name}/contents/{quote(path, safe='/')}?ref={branch}"
+        tokens = list(_auth_data.get("github_tokens", []))
+        attempts = max(1, len(tokens) + 1)
+        for i in range(attempts):
+            if self._stop:
+                return None
+            token = tokens[i % len(tokens)] if tokens else None
+            cmd = ["curl", "-s", "--connect-timeout", "8", "--max-time", "25",
+                   "-H", "Accept: application/vnd.github.v3+json",
+                   "-H", "User-Agent: proxy-skitchen/2.0"]
+            if token:
+                cmd.extend(["-H", f"Authorization: token {token}"])
+            cmd.append(api_url)
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=CREATE_NO_WINDOW)
+                with self._procs_lock:
+                    self._procs.append(proc)
+                try:
+                    out, _ = proc.communicate(timeout=30)
+                    if self._stop:
+                        return None
+                    if proc.returncode != 0:
+                        continue
+                    try:
+                        data = json.loads(out)
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict) or not data.get("content"):
+                        continue
+                    body = base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
+                    _debug(f"_github_raw_to_api: OK {url[:60]} {len(body)} bytes")
+                    return body
+                finally:
+                    with self._procs_lock:
+                        if proc in self._procs:
+                            self._procs.remove(proc)
+            except Exception as e:
+                _debug(f"_github_raw_to_api: error {e}")
         return None
 
 
