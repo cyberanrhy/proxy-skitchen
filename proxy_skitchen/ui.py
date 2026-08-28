@@ -2429,6 +2429,9 @@ class ExportPage(WizardPage):
         self.chk_smart_names = QCheckBox(_("export.chk.smart_names"))
         self.chk_clean_names = QCheckBox(_("export.chk.clean_names"))
         self.chk_failed = QCheckBox(_("export.chk.failed"))
+        self.chk_failed.setChecked(_settings_data.get("include_failed", True))
+        self.chk_failed.toggled.connect(self._on_include_failed_changed)
+        self.chk_failed.toggled.connect(self._update_preview)
         self.chk_clean_uris = QCheckBox(_("export.chk.clean_uris"))
         self.chk_clean_uris.setChecked(_settings_data.get("clean_uris", True))
         self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
@@ -2598,6 +2601,11 @@ class ExportPage(WizardPage):
         _save_settings(_settings_data)
         self._update_preview()
 
+    def _on_include_failed_changed(self, checked: bool):
+        _settings_data["include_failed"] = checked
+        _save_settings(_settings_data)
+        self._update_preview()
+
     def _on_clean_uris_changed(self, checked: bool):
         _settings_data["clean_uris"] = checked
         _save_settings(_settings_data)
@@ -2703,7 +2711,7 @@ class ExportPage(WizardPage):
         body = fmt(entries, include_failed=self.chk_failed.isChecked(), **kwargs)
         return body
 
-    def _update_preview(self):
+    def _update_preview(self, *args):
         content = self._get_content()
         lines = content.splitlines()
         if len(lines) > 20:

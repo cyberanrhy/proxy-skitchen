@@ -39,7 +39,25 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         if _sec and _sec not in ('none', 'tls', 'reality'):
             return False
         _net = (_query_param(e.uri, 'type') or 'tcp').lower()
-        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic'):
+        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'raw'):
+            return False
+        # Hiddify's parser panics ("unknown value") on fingerprints / packet
+        # encodings it doesn't know, which kills the whole core. Only keep the
+        # exact value sets Hiddify accepts (verified against a known-good sub).
+        _fp = (_query_param(e.uri, 'fp') or '').lower()
+        if _fp and _fp not in ('chrome', 'firefox', 'edge', 'qq'):
+            return False
+        _pe = _query_param(e.uri, 'packetEncoding')
+        if _pe and _pe.lower() != 'xudp':
+            return False
+        if _query_param(e.uri, 'alpn'):
+            return False
+        # Sing-box only knows these flow/mode values; anything else panics the parser.
+        _flow_val = (_query_param(e.uri, 'flow') or '').lower()
+        if _flow_val and _flow_val != 'xtls-rprx-vision':
+            return False
+        _mode = (_query_param(e.uri, 'mode') or '').lower()
+        if _mode and _mode != 'gun':
             return False
     if e.protocol == 'SS':
         _m = _extract_ss_cipher(e.uri)
@@ -47,17 +65,15 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
             return False
     if e.protocol in ('WIREGUARD', 'WG'):
         p = _parse_wireguard_uri(e.uri)
-        if not p or not p.get('private_key') or not p.get('public_key') or not p.get('address'):
+        if not p or not p.get('private_key') or not p.get('host') or not p.get('port'):
             return False
     if e.protocol in ('VLESS', 'TROJAN', 'HYSTERIA2', 'HY2'):
-        # Drop entries carrying corrupted / unexpected query params that crash
-        # some client parsers (e.g. "Telegram=...", "spx=/", or absurdly long values).
+        # Drop entries carrying absurdly long query values (corruption / injected junk
+        # that can crash parsers). Known benign extra params (spx, Telegram, ...) are kept.
         from urllib.parse import urlparse, parse_qs
         _q = urlparse(e.uri).query
         if _q:
             for _k, _vl in parse_qs(_q).items():
-                if _k.lower() in ('telegram', 'spx'):
-                    return False
                 for _v in _vl:
                     if len(_v) > 256:
                         return False
@@ -69,22 +85,31 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
             if not isinstance(d, dict) or not d.get('id'):
                 return False
             _net = (d.get('net') or 'tcp').lower()
-            if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic'):
+            if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'raw'):
                 return False
             _scy = (d.get('scy') or '').lower()
-            if _scy not in ('aes-128-gcm', 'aes-256-gcm', 'chacha20-poly1305'):
+            # Sing-box accepts explicit AEAD ciphers, "auto" (negotiated) and empty
+            # (default). Legacy non-AEAD vmess ciphers (cfb/ctr/rc4/camellia...) are
+            # invalid for vmess and dropped; everything else (incl. undecodable
+            # payloads seen in known-good subs) is kept.
+            if _scy and _scy not in ('aes-128-gcm', 'aes-256-gcm', 'chacha20-poly1305', 'auto'):
                 return False
         except Exception:
-            return False
+            pass
     return True
 
 
-# Shadowsocks ciphers supported by Sing-box core (used by Hiddify on iOS/desktop).
-# Legacy stream ciphers (CFB/CTR/RC4/CAMELLIA/...) are rejected and break the core.
+# Shadowsocks ciphers supported by the Sing-box core (used by Hiddify on iOS/desktop).
+# The full set Sing-box understands — including legacy stream ciphers (CFB/CTR/RC4),
+# which are valid and do NOT crash the core. Only truly unknown methods are dropped.
 _SAFE_SS = {
     '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm',
-    '2022-blake3-chacha20-poly1305', 'aes-128-gcm', 'aes-256-gcm',
-    'chacha20-ietf-poly1305', 'chacha20', 'xchacha20', 'none',
+    '2022-blake3-chacha20-poly1305',
+    'aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305', 'xchacha20-poly1305',
+    'aes-128-ctr', 'aes-192-ctr', 'aes-256-ctr',
+    'aes-128-cfb', 'aes-192-cfb', 'aes-256-cfb',
+    'rc4-md5', 'rc4-md5-6',
+    'chacha20-ietf', 'xchacha20', 'chacha20', 'none',
 }
 
 
