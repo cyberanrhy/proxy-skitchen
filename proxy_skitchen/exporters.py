@@ -39,18 +39,15 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         if _sec and _sec not in ('none', 'tls', 'reality'):
             return False
         _net = (_query_param(e.uri, 'type') or 'tcp').lower()
-        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'raw'):
+        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'raw', 'xhttp'):
             return False
-        # Hiddify's parser panics ("unknown value") on fingerprints / packet
-        # encodings it doesn't know, which kills the whole core. Only keep the
-        # exact value sets Hiddify accepts (verified against a known-good sub).
+        # Keep only fingerprints/encodings sing-box actually knows. `ios` panics
+        # Hiddify; the other standard utls fingerprints are fine. udp/xudp both valid.
         _fp = (_query_param(e.uri, 'fp') or '').lower()
-        if _fp and _fp not in ('chrome', 'firefox', 'edge', 'qq'):
+        if _fp and _fp not in ('chrome', 'firefox', 'edge', 'qq', 'safari', 'android', 'random'):
             return False
         _pe = _query_param(e.uri, 'packetEncoding')
-        if _pe and _pe.lower() != 'xudp':
-            return False
-        if _query_param(e.uri, 'alpn'):
+        if _pe and _pe.lower() not in ('xudp', 'udp'):
             return False
         # Sing-box only knows these flow/mode values; anything else panics the parser.
         _flow_val = (_query_param(e.uri, 'flow') or '').lower()
@@ -493,8 +490,8 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
             out["alter_id"] = int(data.get('aid') or 0)
         except (ValueError, TypeError):
             out["alter_id"] = 0
-        if e.sni:
-            out["tls"] = {"enabled": True, "server_name": e.sni}
+        if e.security == 'tls':
+            out["tls"] = {"enabled": True, "server_name": e.sni or e.host}
     elif proto in ('hy2', 'hysteria2'):
         pw = _extract_user(e.uri)
         if not pw:
