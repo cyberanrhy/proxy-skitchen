@@ -91,7 +91,7 @@ elif IS_MACOS:
 else:
     SING_BOX = "/usr/local/bin/sing-box"
     XRAY = "/usr/local/bin/xray"
-TEST_URL = "http://cp.cloudflare.com"
+TEST_URL = "https://www.gstatic.com/generate_204"
 TEST_HOST = "cp.cloudflare.com"
 TCP_TIMEOUT = 8
 SB_TIMEOUT = 8
@@ -183,7 +183,7 @@ def test_http_proxy(proxy_url: str, url: str = TEST_URL, timeout: float = SB_TIM
         code = resp.getcode()
         body = resp.read(1024)
         elapsed = (time.time() - start) * 1000
-        ok = code in (200, 204, 301, 302, 303, 307, 308) and len(body) > 0
+        ok = (code == 204) or (code in (200, 301, 302, 303, 307, 308) and len(body) > 0)
         return ok, elapsed
     except Exception:
         return False, (time.time() - start) * 1000
@@ -315,24 +315,13 @@ class SingBoxTester:
                     )
                     time.sleep(0.5)
                     proxy_url = f"http://127.0.0.1:{port}"
-                    # Liveness gate (Hiddify url-test): must reach the open internet
-                    live_ok, live_code, live_lat = self._probe(proxy_url, "www.gstatic.com/generate_204", None, 204)
-                    if not live_ok:
-                        proc.kill()
-                        try:
-                            proc.wait(1)
-                        except Exception:
-                            pass
-                        proc = None
-                        _debug(f"rkn_bypass: {uri[:60]} live_ok={live_ok} code={live_code}")
-                        return False, 0, "proxy not working", []
                     # RKN bypass: at least one blocked-in-RU site must really open
                     targets = [("t.me", "Telegram", "telegram"),
                                ("instagram.com", "Instagram", "instagram"),
                                ("youtube.com", "YouTube", "youtube"),
                                ("twitter.com", "Twitter", "twitter")]
                     any_open = False
-                    best_lat = live_lat
+                    best_lat = 0.0
                     with ThreadPoolExecutor(max_workers=4) as ex:
                         futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n) for d, n, mk in targets}
                         for fut in as_completed(futs):
@@ -344,7 +333,7 @@ class SingBoxTester:
                             results.append({"domain": d, "name": n, "ok": ok, "latency": lat, "status": code})
                             if ok and lat > 0:
                                 any_open = True
-                                best_lat = min(best_lat, lat)
+                                best_lat = lat if best_lat <= 0 else min(best_lat, lat)
                             _debug(f"rkn_bypass: {uri[:60]} {d} ok={ok} code={code}")
                     proc.kill()
                     try:
@@ -353,7 +342,7 @@ class SingBoxTester:
                         pass
                     proc = None
                 ok = any_open
-                _debug(f"rkn_bypass: {uri[:60]} live_ok={live_ok} any_open={any_open} ok={ok}")
+                _debug(f"rkn_bypass: {uri[:60]} any_open={any_open} ok={ok}")
                 return ok, best_lat, "" if ok else "не открывает заблокированные", results
         except Exception as e:
             return False, 0, str(e), results
@@ -408,7 +397,11 @@ class SingBoxTester:
         qm = uri.find('?')
         if qm == -1:
             return {}
-        return urllib.parse.parse_qs(uri[qm + 1:])
+        rest = uri[qm + 1:]
+        h = rest.find('#')
+        if h != -1:
+            rest = rest[:h]
+        return urllib.parse.parse_qs(rest)
 
     def _qv(self, q: dict, key: str, default=""):
         vals = q.get(key, [])
@@ -777,24 +770,13 @@ class XrayTester:
                             pass
                         return False, 0, f"xray err: {err}" if err else "xray failed to start", []
                     proxy_url = f"http://127.0.0.1:{port}"
-                    # Liveness gate (Hiddify url-test): must reach the open internet
-                    live_ok, live_code, live_lat = self._probe(proxy_url, "www.gstatic.com/generate_204", None, 204)
-                    if not live_ok:
-                        proc.kill()
-                        try:
-                            proc.wait(1)
-                        except Exception:
-                            pass
-                        proc = None
-                        _debug(f"xr_rkn: {uri[:60]} live_ok={live_ok} code={live_code}")
-                        return False, 0, "proxy not working", []
                     # RKN bypass: at least one blocked-in-RU site must really open
                     targets = [("t.me", "Telegram", "telegram"),
                                ("instagram.com", "Instagram", "instagram"),
                                ("youtube.com", "YouTube", "youtube"),
                                ("twitter.com", "Twitter", "twitter")]
                     any_open = False
-                    best_lat = live_lat
+                    best_lat = 0.0
                     with ThreadPoolExecutor(max_workers=4) as ex:
                         futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n) for d, n, mk in targets}
                         for fut in as_completed(futs):
@@ -806,7 +788,7 @@ class XrayTester:
                             results.append({"domain": d, "name": n, "ok": ok, "latency": lat, "status": code})
                             if ok and lat > 0:
                                 any_open = True
-                                best_lat = min(best_lat, lat)
+                                best_lat = lat if best_lat <= 0 else min(best_lat, lat)
                             _debug(f"xr_rkn: {uri[:60]} {d} ok={ok} code={code}")
                     proc.kill()
                     try:
@@ -815,7 +797,7 @@ class XrayTester:
                         pass
                     proc = None
                 ok = any_open
-                _debug(f"xr_rkn: {uri[:60]} live_ok={live_ok} any_open={any_open} ok={ok}")
+                _debug(f"xr_rkn: {uri[:60]} any_open={any_open} ok={ok}")
                 return ok, best_lat, "" if ok else "не открывает заблокированные", results
         except Exception as e:
             return False, 0, str(e), results
@@ -970,7 +952,11 @@ class XrayTester:
         qm = uri.find('?')
         if qm == -1:
             return {}
-        return urllib.parse.parse_qs(uri[qm + 1:])
+        rest = uri[qm + 1:]
+        h = rest.find('#')
+        if h != -1:
+            rest = rest[:h]
+        return urllib.parse.parse_qs(rest)
 
     def _qv(self, q: dict, key: str, default=""):
         vals = q.get(key, [])
