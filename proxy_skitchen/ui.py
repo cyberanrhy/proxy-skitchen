@@ -217,6 +217,23 @@ class WizardPage(QWidget):
     def on_leave(self):
         pass
 
+    def _purge_jsdelivr_cdn(self, repo: str, file_path: str) -> bool:
+        """Best-effort purge of jsDelivr CDN cache so subscribers get the fresh file.
+
+        GitHub is blocked in RU, so distribution goes through the jsDelivr CDN,
+        which caches GitHub content for ~12h. Call this after a successful push.
+        """
+        if not repo or not file_path:
+            return False
+        import urllib.request
+        url = f"https://purge.jsdelivr.net/gh/{repo}@main/{file_path}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen"})
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except Exception:
+            return False
+
 
 class SourcesPage(WizardPage):
     def __init__(self, main):
@@ -2195,23 +2212,6 @@ class TestPage(WizardPage):
             f"✅ Готово!\n\n"
             f"Файл: {path}\n\n"
             f"Импортируй в Hiddify: Меню → Подписки → (+) → Выбери файл")
-
-    def _purge_jsdelivr_cdn(self, repo: str, file_path: str) -> bool:
-        """Best-effort purge of jsDelivr CDN cache so subscribers get the fresh file.
-
-        GitHub is blocked in RU, so distribution goes through the jsDelivr CDN,
-        which caches GitHub content for ~12h. Call this after a successful push.
-        """
-        if not repo or not file_path:
-            return False
-        import urllib.request
-        url = f"https://purge.jsdelivr.net/gh/{repo}@main/{file_path}"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen"})
-            urllib.request.urlopen(req, timeout=10)
-            return True
-        except Exception:
-            return False
 
     def _do_github_push(self, content: str, repo: str, file_path: str, token: str) -> tuple[bool, str]:
         import urllib.request, urllib.error, base64, json
