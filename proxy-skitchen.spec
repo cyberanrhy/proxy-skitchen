@@ -1,5 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
+
+# Windows accepts only .ico (unless Pillow is available); other platforms
+# take the PNG.  A committed .ico keeps CI from depending on Pillow.
+ICON = 'proxy_skitchen/icon.ico' if sys.platform == 'win32' else 'proxy_skitchen/icon.png'
+
 
 a = Analysis(
     ['run_proxy_skitchen.py'],
@@ -35,5 +41,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['proxy_skitchen\\icon.png'],
+    icon=[ICON],
 )
