@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     name: Build ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -59,29 +61,21 @@ jobs:
           fi
 
       - name: Upload artifact
-        # Artifacts eat the 500 MB Actions storage quota: keep them for
-        # releases and manual runs, not for every push to master.
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        # Artifact storage is capped at 500 MB; keep this for manual runs and
+        # never let a quota error fail the build itself.
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/
-          retention-days: 5
+          retention-days: 3
 
-  release:
-    name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
+      - name: Publish release assets
+        # Release assets are not billed as Actions storage, so tagged builds
+        # reach the Releases page even when the artifact quota is full.
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          path: artifacts
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/**/*
+          files: dist/proxy-skitchen-*
           generate_release_notes: true
