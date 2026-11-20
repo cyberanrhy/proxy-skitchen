@@ -1,4 +1,4 @@
-import os, sys, json, re, base64, time, socket, urllib.request, urllib.error, concurrent.futures, html, subprocess, threading
+import os, sys, json, re, base64, time, socket, urllib.request, urllib.error, concurrent.futures, html, subprocess, threading, queue
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, TimeoutError as FUTURE_TIMEOUT
 from typing import Optional
 from urllib.parse import quote
@@ -22,6 +22,25 @@ def _debug(msg: str):
     if _WRK_LOG not in DEBUG_LOG_PATHS:
         DEBUG_LOG_PATHS.append(_WRK_LOG)
     _write_log(_WRK_LOG, msg)
+
+
+def geo_candidates(entries, rkn_mode: bool = False):
+    """Return ``(index, entry)`` pairs that deserve a geo lookup.
+
+    A deep run marks ``deep_ok``; an RKN-only run marks ``rkn_ok`` and never
+    ``deep_ok``.  Filtering by ``deep_ok`` alone silently disabled GEO for
+    standalone RKN tests, so both liveness flags count here.
+    """
+    selected = []
+    for i, entry in enumerate(entries):
+        host = getattr(entry, "host", "")
+        if not is_ip(host):
+            continue
+        if getattr(entry, "country", ""):
+            continue
+        if getattr(entry, "deep_ok", False) or getattr(entry, "rkn_ok", False):
+            selected.append((i, entry))
+    return selected
 
 
 class NetworkWorker(QObject):
@@ -145,16 +164,19 @@ class NetworkWorker(QObject):
         dir_fut = self._inner_pool.submit(self._http_get, url, False, 10)
         if proxy_enabled:
             prx_fut = self._inner_pool.submit(self._http_get, url, True, 20)
-        for f in as_completed([dir_fut] + ([prx_fut] if prx_fut else [])):
+        futures = [dir_fut] + ([prx_fut] if prx_fut else [])
+        data = None
+        for fut in as_completed(futures):
             try:
-                data = f.result()
-                if data is not None:
-                    dir_fut.cancel()
-                    if prx_fut:
-                        prx_fut.cancel()
-                    break
+                result = fut.result()
             except Exception:
-                data = None
+                continue
+            if result is not None:
+                data = result
+                for other in futures:
+                    if other is not fut:
+                        other.cancel()
+                break
         if data is None:
             data = self._github_raw_to_api(url)
         if data is None:
@@ -285,20 +307,30 @@ class TesterWorker(QObject):
     count_signal = Signal(int)
     geo_signal = Signal(int, str)
 
-    def __init__(self, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2, use_doh: bool = False, dns_list=None):
+    def __init__(self, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2, use_doh: bool = False, dns_list=None, rkn_quorum: int = 1, fair_attempts: int = 2):
         super().__init__()
         self._rkn = rkn
         self._test_threads = test_threads
         self._deep_threads = deep_threads
         self._use_doh = use_doh
         self._doh_list = dns_list
+        self._rkn_quorum = max(1, int(rkn_quorum))
+        self._fair_attempts = max(1, min(3, int(fair_attempts)))
         self._stop = False
         self._sb_tester = None
         self._xr_tester = None
+        self._tester_lock = threading.Lock()
 
     def stop(self):
         _debug(f"TesterWorker.stop() called, was_stop={self._stop}")
         self._stop = True
+        # Kill sing-box/xray processes that are already running: the worker
+        # only flags itself otherwise, and the cores would outlive the app.
+        try:
+            from .tester import kill_all_procs
+            kill_all_procs()
+        except Exception as exc:
+            _debug(f"TesterWorker.stop(): kill_all_procs failed: {exc}")
 
     @Slot()
     def test_batch(self, entries: list[ProxyEntry], indices: list[int] | None = None):
@@ -340,7 +372,7 @@ class TesterWorker(QObject):
                     self.progress_signal.emit(done_count, total, threads, "rkn" if self._rkn else "deep")
             # Geo for live IP hosts only
             if not self._stop:
-                geo_alive = [(i, e) for i, e in enumerate(entries) if is_ip(e.host) and not e.country and e.deep_ok]
+                geo_alive = geo_candidates(entries, self._rkn)
                 if geo_alive:
                     unique_ips = list({e.host for _, e in geo_alive})
                     self.log_signal.emit(f"geo: {len(geo_alive)} live, {len(unique_ips)} unique IPs...")
@@ -368,7 +400,7 @@ class TesterWorker(QObject):
             _debug("test_batch: emitting finished")
             self.finished.emit()
 
-    def _test_one(self, entry: ProxyEntry, _resolved: dict = {}) -> tuple[bool, float, str, int]:
+    def _test_one(self, entry: ProxyEntry, _resolved: dict | None = None) -> tuple[bool, float, str, int]:
         host = entry.host
         port = entry.port
         _debug(f"_test_one: host={host!r} port={port!r} proto={entry.protocol} rkn={self._rkn}")
@@ -381,42 +413,66 @@ class TesterWorker(QObject):
             entry.rkn_results = rkn_results
             return rkn_ok, rkn_lat, rkn_err, 2
         deep_ok, deep_lat, deep_err = self._deep_test(entry)
+        entry.probe_reason = "" if deep_ok else deep_err
         return deep_ok, deep_lat, deep_err, 1
 
-    def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
-        port = 19999 + (hash(entry.uri) % 10000)
-        use_xray = entry.protocol == 'VLESS' and 'reality' in entry.uri.lower()
-        _debug(f"_deep_test: {entry.host}:{entry.port} use_xray={use_xray} port={port}")
-        if use_xray:
+    def _get_sb_tester(self):
+        with self._tester_lock:
+            if not self._sb_tester:
+                from .tester import SingBoxTester
+                self._sb_tester = SingBoxTester(use_doh=self._use_doh, doh_list=self._doh_list)
+            return self._sb_tester
+
+    def _get_xr_tester(self):
+        with self._tester_lock:
             if not self._xr_tester:
                 from .tester import XrayTester
                 self._xr_tester = XrayTester(use_doh=self._use_doh, doh_list=self._doh_list)
-            result = self._xr_tester.test(entry.uri, port)
-            if result[0]:
-                _debug(f"_deep_test: {entry.host}:{entry.port} xray ok={result}")
-                return result
-        if not self._sb_tester:
-            from .tester import SingBoxTester
-            self._sb_tester = SingBoxTester(use_doh=self._use_doh, doh_list=self._doh_list)
-        result = self._sb_tester.test(entry.uri, port)
-        _debug(f"_deep_test: {entry.host}:{entry.port} result={result}")
-        return result
+            return self._xr_tester
+
+    def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
+        from .tester import (allocate_port, release_port, prefer_xray,
+                             singbox_supports_uri, tcp_probe, CONTROL_TARGETS)
+        # Fast, fair prefilter: a TCP-based protocol cannot work if its port is
+        # unreachable.  UDP protocols (Hysteria2/TUIC) are tested by the core.
+        timeout = 4.0
+        if entry.protocol in ('VLESS', 'VMESS', 'TROJAN', 'SS', 'SOCKS', 'HTTP'):
+            reachable, rtt = tcp_probe(entry.host, entry.port, timeout=2.0)
+            if reachable is False:
+                return False, 0, "tcp_unreachable"
+            if reachable:
+                timeout = max(3.0, min(6.0, (rtt / 1000.0) * 4))
+        port = allocate_port()
+        use_xray = prefer_xray(entry.uri)
+        fair = {"attempts": self._fair_attempts, "targets": CONTROL_TARGETS, "timeout": timeout}
+        _debug(f"_deep_test: {entry.host}:{entry.port} use_xray={use_xray} port={port} fair={self._fair_attempts} timeout={timeout:.1f}")
+        try:
+            if use_xray:
+                result = self._get_xr_tester().test(entry.uri, port, **fair)
+                if result[0] or not singbox_supports_uri(entry.uri):
+                    _debug(f"_deep_test: {entry.host}:{entry.port} xray result={result}")
+                    return result
+            result = self._get_sb_tester().test(entry.uri, port, **fair)
+            _debug(f"_deep_test: {entry.host}:{entry.port} result={result}")
+            return result
+        finally:
+            release_port(port)
 
     def _rkn_test(self, entry: ProxyEntry) -> tuple[bool, float, str, list]:
-        port = 29999 + (hash(entry.uri) % 10000)
-        use_xray = entry.protocol == 'VLESS' and 'reality' in entry.uri.lower()
-        if use_xray:
-            if not self._xr_tester:
-                from .tester import XrayTester
-                self._xr_tester = XrayTester(use_doh=self._use_doh, doh_list=self._doh_list)
-            ok, lat, err, results = self._xr_tester.test_rkn(entry.uri, port)
-            if ok:
-                _debug(f"_rkn_test: {entry.host}:{entry.port} xray ok={ok}")
-                return ok, lat, err, results
-        if not self._sb_tester:
-            from .tester import SingBoxTester
-            self._sb_tester = SingBoxTester(use_doh=self._use_doh, doh_list=self._doh_list)
-        return self._sb_tester.test_rkn_bypass(entry.uri, port)
+        from .tester import allocate_port, release_port, prefer_xray
+        port = allocate_port()
+        use_xray = prefer_xray(entry.uri)
+        try:
+            if use_xray:
+                ok, lat, err, results = self._get_xr_tester().test_rkn(
+                    entry.uri, port, quorum=self._rkn_quorum)
+                if ok:
+                    _debug(f"_rkn_test: {entry.host}:{entry.port} xray ok={ok}")
+                    return ok, lat, err, results
+            return self._get_sb_tester().test_rkn_bypass(
+                entry.uri, port, quorum=self._rkn_quorum)
+        finally:
+            release_port(port)
 
 
 class GitHubSearchWorker(QObject):
@@ -1156,3 +1212,115 @@ class GeoWorker(QObject):
                 time.sleep(1.5)
         _debug(f"geo_batch: done {done}/{total}")
         self.finished.emit()
+
+
+class StrategyWorker(QObject):
+    """Find a working bypass profile for proxies that failed a test.
+
+    Runs candidates from :mod:`strategies` (fragment, browser disguise, port)
+    and reports the first one that makes a real HTTP request work.
+    """
+
+    trial_signal = Signal(int, str, str)          # row, host, strategy name
+    found_signal = Signal(int, str, object, float)  # row, strategy name, overrides, latency
+    failed_signal = Signal(int, str)              # row, host
+    finished = Signal()
+
+    def __init__(self, items, max_candidates: int = 3, max_workers: int = 2,
+                 use_doh: bool = False, dns_list=None):
+        super().__init__()
+        self._items = list(items)
+        self._max_candidates = max(1, int(max_candidates))
+        self._max_workers = max(1, int(max_workers))
+        self._use_doh = use_doh
+        self._dns_list = dns_list
+        self._stop = False
+        self._trial_q = queue.Queue()
+
+    def stop(self):
+        self._stop = True
+        try:
+            from .tester import kill_all_procs
+            kill_all_procs()
+        except Exception:
+            pass
+
+    @Slot()
+    def run(self):
+        self._stop = False
+        from .tester import (
+            SingBoxTester, XrayTester, allocate_port, release_port, prefer_xray,
+            CONTROL_TARGETS,
+        )
+        from .strategies import candidates_for_failed_entry
+
+        sb = SingBoxTester(use_doh=self._use_doh, doh_list=self._dns_list)
+        xr = XrayTester(use_doh=self._use_doh, doh_list=self._dns_list)
+
+        def pick(row, entry):
+            for cand in candidates_for_failed_entry(entry, limit=self._max_candidates):
+                if self._stop:
+                    return None
+                self._trial_q.put((row, getattr(entry, "host", ""), cand.name))
+                port = allocate_port()
+                try:
+                    tester = xr if prefer_xray(entry.uri) else sb
+                    ok, lat, err = tester.test(entry.uri, port, cand.overrides, timeout=4.0)
+                except Exception as exc:
+                    _debug(f"strategy: {entry.uri[:40]} {cand.name} exc {exc}")
+                    ok, lat = False, 0.0
+                finally:
+                    release_port(port)
+                if ok:
+                    # Quick trial passed; confirm fairly before declaring victory.
+                    confirm_port = allocate_port()
+                    try:
+                        ok2, lat2, err2 = tester.test(
+                            entry.uri, confirm_port, cand.overrides,
+                            attempts=2, targets=CONTROL_TARGETS, timeout=4.0,
+                        )
+                    except Exception as exc:
+                        _debug(f"strategy: confirm {cand.name} exc {exc}")
+                        ok2, lat2 = False, 0.0
+                    finally:
+                        release_port(confirm_port)
+                    if ok2:
+                        return cand, float(lat2 or lat)
+                    continue
+            return None
+
+        try:
+            pool = ThreadPoolExecutor(max_workers=self._max_workers)
+            futs = {pool.submit(pick, row, entry): (row, entry)
+                    for row, entry in self._items}
+            pending = set(futs)
+            while pending and not self._stop:
+                done, pending = wait(pending, timeout=0.5)
+                while not self._trial_q.empty():
+                    try:
+                        self.trial_signal.emit(*self._trial_q.get_nowait())
+                    except queue.Empty:
+                        break
+                for fut in done:
+                    row, entry = futs[fut]
+                    try:
+                        result = fut.result()
+                    except Exception as exc:
+                        _debug(f"strategy: future {row} raised {exc}")
+                        result = None
+                    if result is None:
+                        self.failed_signal.emit(row, getattr(entry, "host", ""))
+                    else:
+                        cand, lat = result
+                        self.found_signal.emit(row, cand.name, dict(cand.overrides), lat)
+            while not self._trial_q.empty():
+                try:
+                    self.trial_signal.emit(*self._trial_q.get_nowait())
+                except queue.Empty:
+                    break
+            for fut in futs:
+                fut.cancel()
+            pool.shutdown(wait=False)
+        finally:
+            _debug("strategy: finished")
+            self.finished.emit()

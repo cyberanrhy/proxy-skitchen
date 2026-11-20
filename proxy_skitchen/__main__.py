@@ -700,8 +700,16 @@ def main_gui():
             pass
     app = QApplication(sys.argv)
     app.setApplicationName("Proxy Skitchen")
+    # Only one copy may run: a second launch wakes the existing window instead
+    # of leaving another process without a visible window.
+    from .single_instance import SingleInstance, activate_existing
+    guard = SingleInstance()
+    if not guard.acquire():
+        activate_existing(guard.name)
+        return
     from .ui import MainWindow
     w = MainWindow()
+    guard.activated.connect(w.show_window)
     w.show()
     sys.exit(app.exec())
 

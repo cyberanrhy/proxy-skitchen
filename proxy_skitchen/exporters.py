@@ -35,11 +35,13 @@ def _is_valid_entry(e: ProxyEntry) -> bool:
         if _sec == 'reality' and not _pbk:
             return False
         # Only keep transport/security values the Sing-box core actually knows.
-        # Unknown ones (e.g. xhttp) make Hiddify's parser panic -> core won't start.
+        # Unknown ones make Hiddify's parser panic -> core won't start.
+        # xhttp is deliberately rejected: it was dropped in 4728c65 because
+        # Hiddify cannot load it, and its `mode` values are not grpc's `gun`.
         if _sec and _sec not in ('none', 'tls', 'reality'):
             return False
         _net = (_query_param(e.uri, 'type') or 'tcp').lower()
-        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'raw', 'xhttp'):
+        if _net not in ('tcp', 'ws', 'websocket', 'grpc', 'h2', 'quic', 'raw'):
             return False
         # Keep only fingerprints/encodings sing-box actually knows. `ios` panics
         # Hiddify; the other standard utls fingerprints are fine. udp/xudp both valid.

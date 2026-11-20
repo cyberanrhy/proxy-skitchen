@@ -105,6 +105,7 @@ DEFAULT_SETTINGS = {
     "proxy_cache": [],
     "clean_uris": True,
     "sub_title": "My Subscription",
+    "rkn_quorum": 1,
 }
 
 def current_theme() -> str:
@@ -122,16 +123,12 @@ _VALID_NETWORKS = {
 
 
 def sanitize_network(uri: str) -> str:
-    """Repair invalid network types so Xray/Sing-box cores accept the config.
+    """Pass-through: network types are not repaired in-place.
 
-    Both cores reject unknown network types (e.g. 'raw', 'none') with a core
-    error on load. We map 'websocket' -> 'ws' and any other invalid value ->
-    'tcp' (always valid), so the config at least loads; the connection is then
-    re-validated by the app's own tester.
+    A half-fixed entry can still be rejected by a client core (Hiddify panics
+    on unknown values), so validation happens in the exporter
+    (``exporters._is_valid_entry``), which drops incompatible entries instead.
     """
-    # We intentionally do NOT repair broken/incompatible entries here: a
-    # half-fixed entry can still be rejected by a client core (Hiddify even
-    # panics on unknown values). The exporter's validator drops such entries.
     return uri
 
 
@@ -139,7 +136,8 @@ class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
                  'tcp_ok', 'deep_ok', 'rkn_ok', 'latency_ms', 'deep_error', 'is_embedded',
                  'tcp_tested', 'deep_tested', 'rkn_tested', 'geo_tested', 'rkn_results',
-                 'security', '_clean_uri')
+                 'security', '_clean_uri', 'strategy_name', 'strategy_overrides',
+                 'block_type', 'probe_reason')
 
     def __init__(self, uri: str, source: str = ""):
         from .parsers import normalize_uri
@@ -163,6 +161,12 @@ class ProxyEntry:
         self.rkn_results = []
         self.security = ""
         self._clean_uri = ""
+        # Filled by StrategyWorker: raw strategy name and overrides for export.
+        self.strategy_name = ""
+        self.strategy_overrides = None
+        self.block_type = ""
+        # Human-readable reason from the fair deep test (timeout/reset/...).
+        self.probe_reason = ""
         self._parse()
 
     def _parse(self):
@@ -292,11 +296,57 @@ class ProxyEntry:
         return f"<{self.status_emoji()} {self.display_protocol()} {self.host}:{self.port}>"
 
 
+def _coerce_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+    return default
+
+
+def _coerce_int(value, default: int, lo: int, hi: int) -> int:
+    try:
+        result = int(str(value).strip()) if not isinstance(value, (int, float)) else int(value)
+    except (TypeError, ValueError):
+        result = default
+    return max(lo, min(hi, result))
+
+
+def _normalize_settings(data) -> dict:
+    """Make settings.json values safe for the widgets that consume them.
+
+    The file is user-editable, and older builds wrote strings. A string port
+    used to raise ``TypeError`` in ``QSpinBox.setValue`` — which surfaced as
+    "Настройки не открываются" on Windows.
+    """
+    if not isinstance(data, dict):
+        data = {}
+    normalized = dict(DEFAULT_SETTINGS)
+    normalized.update(data)
+    for key in ("proxy_enabled", "clean_uris", "include_failed", "max_latency_enabled"):
+        if key in normalized:
+            normalized[key] = _coerce_bool(normalized[key], bool(DEFAULT_SETTINGS.get(key, True)))
+    normalized["proxy_port"] = _coerce_int(normalized.get("proxy_port", 12334), 12334, 1, 65535)
+    normalized["max_latency_ms"] = _coerce_int(normalized.get("max_latency_ms", 3100), 3100, 100, 30000)
+    normalized["rkn_quorum"] = _coerce_int(normalized.get("rkn_quorum", 1), 1, 1, 4)
+    for key in ("proxy_type", "proxy_host", "language", "theme", "gh_repo",
+                "gh_file", "gh_branch", "sub_title", "default_repo", "perf_mode"):
+        if key in normalized and normalized[key] is not None:
+            normalized[key] = str(normalized[key])
+    return normalized
+
+
 def _load_settings() -> dict:
     try:
         if os.path.exists(SETTINGS_FILE):
             with open(SETTINGS_FILE) as f:
-                return json.load(f)
+                return _normalize_settings(json.load(f))
     except Exception:
         pass
     return dict(DEFAULT_SETTINGS)
@@ -362,7 +412,7 @@ def _get_tokens() -> list[str]:
 
 
 class ProxyTableModel(QAbstractTableModel):
-    HEADERS = ["Статус", "Протокол", "Хост", "Порт", "Страна", "Пинг"]
+    HEADERS = ["Статус", "Протокол", "Хост", "Порт", "Страна", "Пинг", "Обход"]
 
     # Pre-allocated QColor objects for data() hot path (per-theme cache)
     _FG_PROTO: dict[str, QColor] = {}
@@ -379,6 +429,7 @@ class ProxyTableModel(QAbstractTableModel):
             _("table.header.status"), _("table.header.proto"),
             _("table.header.host"), _("table.header.port"),
             _("table.header.country"), _("table.header.ping"),
+            _("table.header.strategy"),
         ]
         # Build QColor cache for protocol foregrounds (once per class)
         if not ProxyTableModel._FG_PROTO:
@@ -433,6 +484,17 @@ class ProxyTableModel(QAbstractTableModel):
                 return self._headers[section]
         return None
 
+    def rebuild_headers(self):
+        """Refresh translated headers after a language switch."""
+        from .i18n import _
+        self._headers = [
+            _("table.header.status"), _("table.header.proto"),
+            _("table.header.host"), _("table.header.port"),
+            _("table.header.country"), _("table.header.ping"),
+            _("table.header.strategy"),
+        ]
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, len(self._headers) - 1)
+
     COUNTRY_FLAGS = {
         "Russia":"🇷🇺","Germany":"🇩🇪","France":"🇫🇷","Netherlands":"🇳🇱","UK":"🇬🇧",
         "USA":"🇺🇸","Canada":"🇨🇦","Japan":"🇯🇵","Singapore":"🇸🇬","Hong Kong":"🇭🇰",
@@ -461,7 +523,16 @@ class ProxyTableModel(QAbstractTableModel):
             parts.append("❌")
         if not parts:
             parts.append("⏳")
+        if p.strategy_name:
+            parts.append("🛠")
         return "".join(parts)
+
+    def _strategy_text(self, p: ProxyEntry) -> str:
+        if not p.strategy_name:
+            return ""
+        from .i18n import current_lang
+        from .strategies import strategy_label
+        return strategy_label(p.strategy_name, current_lang())
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
@@ -477,6 +548,7 @@ class ProxyTableModel(QAbstractTableModel):
                 flag = self.COUNTRY_FLAGS.get(p.country, "")
                 return f"{flag} {p.country}" if flag else (p.country or "")
             if col == 5: return f"{p.latency_ms:.0f}ms" if p.latency_ms else ""
+            if col == 6: return self._strategy_text(p)
         if role == Qt.ItemDataRole.ForegroundRole:
             tc = self._theme_colors()
             if col == 1:
@@ -489,6 +561,8 @@ class ProxyTableModel(QAbstractTableModel):
                 if ms < 300: return tc["ping_med"]
                 if ms < 500: return tc["ping_slow"]
                 return tc["ping_dead"]
+            if col == 6 and p.strategy_name:
+                return tc["ping_fast"]
             return None
         if role == Qt.ItemDataRole.BackgroundRole:
             tc = self._theme_colors()
@@ -500,12 +574,19 @@ class ProxyTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.ToolTipRole:
             country_display = p.country or "-"
             rkn_str = f"  RKN: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""
+            strategy = self._strategy_text(p) or "-"
+            reason = ""
+            if p.probe_reason and not p.deep_ok:
+                from .i18n import current_lang
+                from .dpi import probe_reason_label
+                reason = f"\nПричина: {probe_reason_label(p.probe_reason, current_lang())}"
             return (f"{p.display_protocol()} {p.host}:{p.port}\n"
                     f"SNI: {p.sni or '-'}\n"
                     f"Страна: {country_display}\n"
                     f"Источник: {p.source or '-'}\n"
+                    f"Обход: {strategy}\n"
                     f"Deep: {'⚡' if p.deep_ok else '❌'}{rkn_str}  "
-                    f"Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}")
+                    f"Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}{reason}")
         return None
 
     def add_proxies(self, entries: list[ProxyEntry]):

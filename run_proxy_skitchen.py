@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+"""Entry point for PyInstaller builds."""
+
 from proxy_skitchen.__main__ import main
-main()
+
+if __name__ == "__main__":
+    main()

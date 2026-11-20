@@ -1,4 +1,4 @@
-import os, sys, json, re, time, socket, base64, struct, concurrent.futures, subprocess, traceback, faulthandler, functools, urllib.request, urllib.parse, http.server, email.utils, itertools, html, platform
+import os, sys, json, re, time, socket, base64, struct, concurrent.futures, subprocess, traceback, faulthandler, functools, urllib.request, urllib.parse, http.server, email.utils, itertools, html, platform, threading
 from datetime import datetime
 from pathlib import Path
 
@@ -6,13 +6,39 @@ IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
 IS_MACOS = platform.system() == "Darwin"
 
+
+def bundle_dir() -> str:
+    """Directory that holds bundled data (PyInstaller temp dir when frozen)."""
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def resource_path(*parts: str) -> str:
+    """Locate a data file both in a source checkout and in a frozen build.
+
+    PyInstaller onefile unpacks data under ``sys._MEIPASS``; a module loaded
+    from the archive reports that path as its ``__file__``, so a plain
+    ``dirname(__file__)`` lookup silently fails unless the data is bundled.
+    """
+    candidates = [
+        os.path.join(bundle_dir(), "proxy_skitchen", *parts),
+        os.path.join(bundle_dir(), *parts),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), *parts),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[-1]
+
 try:
     from PySide6.QtCore import (
         Qt, Signal, QObject, QThread, QTimer, Slot, QUrl, QCoreApplication, QEvent,
         QSortFilterProxyModel, QEventLoop, QPropertyAnimation, QEasingCurve,
         QAbstractTableModel, QModelIndex,
     )
-    from PySide6.QtGui import QFont, QColor, QBrush, QDesktopServices, QAction, QIcon, QPalette
+    from PySide6.QtGui import (
+        QFont, QColor, QBrush, QDesktopServices, QAction, QIcon, QPalette,
+        QPixmap, QPainter,
+    )
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
         QSplitter, QTabWidget, QTableView, QTableWidget, QTableWidgetItem,
@@ -22,7 +48,10 @@ try:
         QHeaderView, QAbstractItemView, QMenu, QFileDialog, QInputDialog, QStatusBar, QToolBar,
         QToolButton, QFrame, QScrollArea, QSizePolicy, QSystemTrayIcon, QStackedWidget,
     )
-    from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+    from PySide6.QtNetwork import (
+        QNetworkAccessManager, QNetworkRequest, QNetworkReply,
+        QLocalServer, QLocalSocket,
+    )
     _QT6 = True
     _QT5 = False
 except ImportError:
@@ -31,7 +60,10 @@ except ImportError:
         QSortFilterProxyModel, QEventLoop, QPropertyAnimation, QEasingCurve,
         QAbstractTableModel, QModelIndex,
     )
-    from PySide2.QtGui import QFont, QColor, QBrush, QDesktopServices, QAction, QIcon, QPalette
+    from PySide2.QtGui import (
+        QFont, QColor, QBrush, QDesktopServices, QAction, QIcon, QPalette,
+        QPixmap, QPainter,
+    )
     from PySide2.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
         QSplitter, QTabWidget, QTableView, QTableWidget, QTableWidgetItem,
@@ -41,7 +73,10 @@ except ImportError:
         QHeaderView, QAbstractItemView, QMenu, QFileDialog, QInputDialog, QStatusBar, QToolBar,
         QToolButton, QFrame, QScrollArea, QSizePolicy, QSystemTrayIcon, QStackedWidget,
     )
-    from PySide2.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+    from PySide2.QtNetwork import (
+        QNetworkAccessManager, QNetworkRequest, QNetworkReply,
+        QLocalServer, QLocalSocket,
+    )
     _QT6 = False
     _QT5 = True
 
@@ -88,18 +123,20 @@ else:
 
 _LOG_LIMIT = 1024 * 1024       # 1 MB max
 _LOG_KEEP = 768 * 1024         # keep ~768 KB after truncation
+_LOG_LOCK = threading.Lock()
 
 def _write_log(path: str, msg: str):
     """Write to a debug log with built-in size limit. UTF-8, lossy-safe."""
     try:
-        if os.path.exists(path) and os.path.getsize(path) > _LOG_LIMIT:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                data = f.read()
-            tail = data[-_LOG_KEEP:]
-            with open(path, "w", encoding="utf-8", errors="replace") as f:
-                f.write(tail)
-        with open(path, "a", encoding="utf-8", errors="replace") as f:
-            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
+        with _LOG_LOCK:
+            if os.path.exists(path) and os.path.getsize(path) > _LOG_LIMIT:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    data = f.read()
+                tail = data[-_LOG_KEEP:]
+                with open(path, "w", encoding="utf-8", errors="replace") as f:
+                    f.write(tail)
+            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"[{datetime.now().isoformat()}] {msg}\n")
     except Exception:
         pass
 

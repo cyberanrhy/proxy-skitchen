@@ -14,8 +14,9 @@ from .compat import _write_log, DEBUG_LOG_PATHS
 from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens
 from .parsers import is_proxy_uri, extract_uris, get_server_port, get_protocol
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, format_amnezia, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri, wireguard_conf_from_entry, validate_content, DEFAULT_DOH
-from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker
+from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker, StrategyWorker
 from .i18n import _, LANGUAGES, current_lang, set_lang
+from .strategies import strategy_label, strategy_tooltip
 
 try:
     import subprocess
@@ -157,6 +158,44 @@ class ScanProgressBar(QProgressBar):
         p.end()
 
 
+def _as_bool(value, default: bool = True) -> bool:
+    """Coerce a settings value to bool without treating "false" as True."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+    return default
+
+
+def _as_int(value, default: int, lo: int | None = None, hi: int | None = None) -> int:
+    """Coerce a settings value to int.
+
+    settings.json is user-editable (and older builds wrote strings), so a
+    ``QSpinBox.setValue("1234")`` TypeError used to abort dialog creation.
+    """
+    try:
+        result = int(str(value).strip()) if not isinstance(value, (int, float)) else int(value)
+    except (TypeError, ValueError):
+        result = default
+    if lo is not None:
+        result = max(lo, result)
+    if hi is not None:
+        result = min(hi, result)
+    return result
+
+
+def _safe_filename_part(value: str, fallback: str = "host") -> str:
+    """Make a string safe for use inside a file name on Windows and POSIX."""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value or "").strip(" .")
+    return cleaned[:60] or fallback
+
+
 def _view_text_dialog(title: str, content: str, parent=None):
     """Show a read-only text dialog with the given content (cross-platform)."""
     dlg = QDialog(parent)
@@ -172,9 +211,45 @@ def _view_text_dialog(title: str, content: str, parent=None):
     btn = QPushButton("Close")
     btn.clicked.connect(dlg.accept)
     layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
-    dlg.exec_()
+    run = getattr(dlg, "exec", None) or dlg.exec_
+    run()
 
-def _cleanup_thread(thread, worker, wait_sec=3.0):
+_ZOMBIE: list = []
+
+
+def _prune_zombies():
+    """Drop finished zombie threads; deleted C++ wrappers raise RuntimeError."""
+    keep = []
+    for thread, worker in _ZOMBIE:
+        try:
+            if thread.isRunning():
+                keep.append((thread, worker))
+        except RuntimeError:
+            continue
+    _ZOMBIE[:] = keep
+
+
+def wait_zombies(timeout_ms: int = 2000):
+    """Wait briefly for stopped-but-not-yet-finished threads before exit."""
+    deadline = time.time() + max(0, timeout_ms) / 1000.0
+    for thread, _worker in list(_ZOMBIE):
+        try:
+            if thread.isRunning():
+                remaining = max(0, int((deadline - time.time()) * 1000))
+                thread.wait(remaining)
+        except RuntimeError:
+            continue
+    _prune_zombies()
+
+
+def _cleanup_thread(thread, worker, wait_sec=0.05):
+    """Stop a worker/thread pair without blocking the GUI.
+
+    A blocking ``thread.wait(15000)`` freezes the window for up to 15 s while a
+    stuck curl finishes. We stop the worker, ask the thread to quit, give it a
+    few milliseconds and then keep a reference until Qt reports it finished —
+    destroying a running QThread aborts the process.
+    """
     if thread is None and worker is None:
         return
     if worker is not None:
@@ -182,16 +257,123 @@ def _cleanup_thread(thread, worker, wait_sec=3.0):
             worker.stop()
         except Exception:
             pass
+    still_running = False
     if thread is not None:
         try:
             thread.quit()
+        except Exception:
+            pass
+        try:
             thread.wait(int(wait_sec * 1000))
         except Exception:
             pass
-    if worker is not None:
+        try:
+            still_running = thread.isRunning()
+        except RuntimeError:
+            still_running = False
+        if still_running:
+            try:
+                thread.finished.connect(thread.deleteLater)
+            except Exception:
+                pass
+            _ZOMBIE.append((thread, worker))
+            if len(_ZOMBIE) > 32:
+                _prune_zombies()
+    if worker is not None and not still_running:
         try:
             worker.deleteLater()
         except Exception:
+            pass
+
+
+class _BgCallWorker(QObject):
+    """Runs one blocking callable in a worker thread."""
+
+    finished = Signal(object, object)
+
+    def __init__(self, fn):
+        super().__init__()
+        self._fn = fn
+
+    @Slot()
+    def run(self):
+        try:
+            self.finished.emit(self._fn(), None)
+        except Exception as exc:
+            self.finished.emit(None, exc)
+
+
+_BG_CALLS: set = set()
+
+
+def wait_background_calls(timeout_ms: int = 1500):
+    """Give in-flight BackgroundCall threads a moment to stop before exit."""
+    deadline = time.time() + max(0, timeout_ms) / 1000.0
+    for call in list(_BG_CALLS):
+        remaining = max(0, int((deadline - time.time()) * 1000))
+        try:
+            call._thread.wait(remaining)
+        except (RuntimeError, AttributeError):
+            pass
+
+
+class BackgroundCall(QObject):
+    """Run a blocking callable off the GUI thread, deliver the result to it.
+
+    ``callback(result, error)`` runs in the GUI thread and may touch widgets.
+    This replaces ad-hoc ``ThreadPoolExecutor.add_done_callback`` usage: that
+    callback runs in the worker thread and mutating Qt widgets there crashes.
+
+    The object has no QObject parent on purpose: it must outlive the widget
+    that started it, otherwise closing a dialog while the request is in flight
+    destroys a running QThread and aborts the process.
+    """
+
+    def __init__(self, fn, callback, parent=None):
+        super().__init__(None)
+        self._callback = callback
+        self._thread = QThread()
+        self._worker = _BgCallWorker(fn)
+        self._worker.moveToThread(self._thread)
+        self._worker.finished.connect(self._on_finished)
+        self._thread.started.connect(self._worker.run, Qt.ConnectionType.DirectConnection)
+        self._thread.finished.connect(self._worker.deleteLater)
+        _BG_CALLS.add(self)
+        self._thread.start()
+
+    def _on_finished(self, result, error):
+        try:
+            # The owning widget may have been closed meanwhile: touching its
+            # deleted C++ object raises RuntimeError, which we swallow.
+            self._callback(result, error)
+        except RuntimeError:
+            pass
+        finally:
+            try:
+                self._thread.quit()
+                stopped = self._thread.wait(2000)
+            except RuntimeError:
+                stopped = True
+            if stopped:
+                _BG_CALLS.discard(self)
+                try:
+                    self.deleteLater()
+                except RuntimeError:
+                    pass
+            else:
+                # The callable is still blocking (e.g. a slow request). Keep
+                # this object alive until the thread really stops; deleting a
+                # running QThread aborts the process.
+                try:
+                    self._thread.finished.connect(self._finalize)
+                except RuntimeError:
+                    pass
+
+    def _finalize(self):
+        _BG_CALLS.discard(self)
+        try:
+            self.deleteLater()
+        except RuntimeError:
             pass
 
 
@@ -217,7 +399,7 @@ class WizardPage(QWidget):
     def on_leave(self):
         pass
 
-    def _purge_jsdelivr_cdn(self, repo: str, file_path: str) -> bool:
+    def _purge_jsdelivr_cdn(self, repo: str, file_path: str, branch: str = "") -> bool:
         """Best-effort purge of jsDelivr CDN cache so subscribers get the fresh file.
 
         GitHub is blocked in RU, so distribution goes through the jsDelivr CDN,
@@ -226,7 +408,8 @@ class WizardPage(QWidget):
         if not repo or not file_path:
             return False
         import urllib.request
-        url = f"https://purge.jsdelivr.net/gh/{repo}@main/{file_path}"
+        branch = (branch or _settings_data.get("gh_branch") or "main").strip()
+        url = f"https://purge.jsdelivr.net/gh/{repo}@{branch}/{file_path}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen"})
             urllib.request.urlopen(req, timeout=10)
@@ -243,7 +426,6 @@ class SourcesPage(WizardPage):
         self._gh_results = []
         self._gh_thread = None
         self._gh_worker = None
-        self._gh_zombie = None
 
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
@@ -527,22 +709,10 @@ class SourcesPage(WizardPage):
             # NOTE: no deleteLater() — pool threads may still hold self ref via
             # bound methods. Python GC cleans up when pool threads finish.
         if thread is not None:
-            thread.quit()
-            # Keep zombie reference to prevent GC while thread finishes.
-            # After thread finishes, pool threads are also done (shutdown
-            # completed), so worker becomes unreferenced and Python GC handles it.
-            if thread.isRunning():
-                self._gh_zombie = thread
-                thread.finished.connect(self._on_gh_zombie_done)
-
-    def _on_gh_zombie_done(self):
-        thread = self._gh_zombie
-        if thread is not None:
-            try:
-                thread.finished.disconnect(self._on_gh_zombie_done)
-            except (TypeError, RuntimeError):
-                pass
-            self._gh_zombie = None
+            # Shared cleanup keeps a zombie reference until the thread really
+            # stops; the old single-slot reference could be overwritten by a
+            # new search and destroy a running QThread.
+            _cleanup_thread(thread, worker)
 
     def _switch_lang(self, code: str):
         if code != current_lang():
@@ -608,10 +778,15 @@ class SourcesPage(WizardPage):
     def _on_settings(self):
         try:
             dlg = SettingsDialog(self._main)
-            dlg.exec_()
+            run = getattr(dlg, "exec", None) or dlg.exec_
+            run()
         except Exception as e:
             import traceback
-            QMessageBox.critical(self, _("sources.title"), f"Settings error: {e}\n\n{traceback.format_exc()}")
+            traceback.print_exc()
+            QMessageBox.critical(
+                self, _("sources.btn.settings.tooltip"),
+                f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}",
+            )
 
     def _on_preset(self, kw: str):
         current = self.kw_input.text().strip()
@@ -714,6 +889,8 @@ class SourcesPage(WizardPage):
         self._on_github_search(True, True)
 
     def _on_wg_uri(self, uri: str):
+        if self.sender() is not self._gh_worker:
+            return
         if not self.chk_wireguard.isChecked():
             return
         self.wg_results.appendPlainText(uri)
@@ -727,6 +904,8 @@ class SourcesPage(WizardPage):
             QApplication.clipboard().setText(text)
 
     def _on_gh_log(self, msg: str):
+        if self.sender() is not self._gh_worker:
+            return
         self.gh_log.appendPlainText(msg)
         if not self.gh_log.isVisible():
             self.gh_log.setVisible(True)
@@ -734,6 +913,8 @@ class SourcesPage(WizardPage):
         sb.setValue(sb.maximum())
 
     def _on_gh_progress(self, msg: str):
+        if self.sender() is not self._gh_worker:
+            return
         c = getattr(self, '_gh_count', 0)
         self.gh_found_label.setText(f"📄 {c}")
         stripped = msg.strip()
@@ -760,10 +941,14 @@ class SourcesPage(WizardPage):
             self.gh_status.setText(stripped)
 
     def _on_gh_count(self, count: int):
+        if self.sender() is not self._gh_worker:
+            return
         self._gh_count = count
         self.gh_found_label.setText(f"📄 {count}")
 
     def _on_gh_partial(self, results: list):
+        if self.sender() is not self._gh_worker:
+            return
         self._gh_results = results
         for r in results:
             url = r.get("file_url", "")
@@ -776,6 +961,8 @@ class SourcesPage(WizardPage):
         self._update_fetch_btn()
 
     def _on_gh_result(self, results: list):
+        if self.sender() is not self._gh_worker:
+            return
         self.gh_progress_bar.setVisible(False)
         self.btn_quick_search.setEnabled(True)
         self.btn_deep_search.setEnabled(True)
@@ -799,12 +986,14 @@ class SourcesPage(WizardPage):
         
         # Bright success indicator
         self._main._tab_btns[0].setStyleSheet("color: #74c7a0; font-weight: bold;")
-        self._main._tab_btns[0].setText("🔍 ✅ DONE")
-        QTimer.singleShot(3000, lambda: (self._main._tab_btns[0].setStyleSheet(""), self._main.update_status_bar()))
+        self._main._tab_btns[0].setText(f"{_('main.tab.sources')} ✅")
+        QTimer.singleShot(3000, self._reset_gh_tab_indicator)
         if self._main._pipeline_mode and self._sources:
             QTimer.singleShot(500, self._on_fetch)
 
     def _on_gh_error(self, err: str):
+        if self.sender() is not self._gh_worker:
+            return
         self.gh_progress_bar.setVisible(False)
         self.btn_quick_search.setEnabled(True)
         self.btn_deep_search.setEnabled(True)
@@ -816,8 +1005,16 @@ class SourcesPage(WizardPage):
         
         # Bright error indicator
         self._main._tab_btns[0].setStyleSheet("color: #e36262; font-weight: bold;")
-        self._main._tab_btns[0].setText("🔍 ❌ ERROR")
-        QTimer.singleShot(3000, lambda: (self._main._tab_btns[0].setStyleSheet(""), self._main.update_status_bar()))
+        self._main._tab_btns[0].setText(f"{_('main.tab.sources')} ❌")
+        QTimer.singleShot(3000, self._reset_gh_tab_indicator)
+
+    def _reset_gh_tab_indicator(self):
+        # A new search may have started while the 3 s indicator was pending —
+        # never overwrite its running state.
+        if self._gh_thread is not None:
+            return
+        self._main._tab_btns[0].setStyleSheet("")
+        self._main.update_status_bar()
 
     def _on_add_url(self):
         url = self.url_input.text().strip()
@@ -900,17 +1097,23 @@ class SourcesPage(WizardPage):
             content = "\n".join(uris)
             _view_text_dialog(title, content, self)
             return
-        try:
-            use_proxy = _settings_data.get("proxy_enabled", True)
+        use_proxy = _settings_data.get("proxy_enabled", True)
+
+        def _download():
             req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen/2.0"})
             if use_proxy:
                 req.set_proxy("socks5://127.0.0.1:12334", "http")
             resp = urllib.request.urlopen(req, timeout=15)
-            content = resp.read().decode("utf-8", errors="replace")
+            return resp.read().decode("utf-8", errors="replace")
+
+        def _show(content, error):
+            if error is not None:
+                QMessageBox.warning(self, _("msg.error"), f"Failed to load:\n{url}\n\n{error}")
+                return
             name = url.rsplit("/", 1)[-1] if "/" in url else url
             _view_text_dialog(name, content, self)
-        except Exception as e:
-            QMessageBox.warning(self, _("msg.error"), f"Failed to load:\n{url}\n\n{e}")
+
+        BackgroundCall(_download, _show, parent=self)
 
     def _on_clear(self):
         self.src_list.clear()
@@ -1084,6 +1287,7 @@ class DownloadPage(WizardPage):
         self._phase = self.PHASE_IDLE
         self._net_thread = None
         self._net_worker = None
+        self._net_run = 0
         self._stopped = False
         self._completed = False
         self._fetch_start_time = 0.0
@@ -1255,15 +1459,19 @@ class DownloadPage(WizardPage):
         sb.setValue(sb.maximum())
 
     def _cleanup_net(self):
-        _cleanup_thread(getattr(self, '_net_thread', None), getattr(self, '_net_worker', None), wait_sec=15)
+        # Short wait only: NetworkWorker.stop() cancels the pool and the thread
+        # quits on its own; a 15 s wait used to freeze the whole window.
+        _cleanup_thread(getattr(self, '_net_thread', None), getattr(self, '_net_worker', None))
         self._net_thread = None
         self._net_worker = None
 
     def _on_stop(self):
         _debug("DownloadPage._on_stop")
+        self._stopped = True
+        self._net_run += 1  # ignore everything still queued from this run
         self._cleanup_net()
-        self._log(_("log.fetch_stopped", count=len(self._entries)))
         self._set_phase(self.PHASE_IDLE)
+        self._log(_("log.fetch_stopped", count=len(self._entries)))
         self._main.update_status_bar()
         if self._entries:
             self.btn_next.setEnabled(True)
@@ -1306,6 +1514,10 @@ class DownloadPage(WizardPage):
         self._progress_timer.start()
         self.lbl_total.setText(_("download.stats.total", count=0))
 
+        # Run token: queued signals from a stopped worker must not touch the
+        # freshly reset table/entries of the next run.
+        self._net_run += 1
+        run_id = self._net_run
         self._net_worker = NetworkWorker()
         self._net_worker.proxy_parsed.connect(self._on_proxy_parsed)
         self._net_worker.log_signal.connect(self._log)
@@ -1314,12 +1526,18 @@ class DownloadPage(WizardPage):
         self._net_worker.progress_signal.connect(self._on_fetch_progress)
         self._net_worker.finished.connect(self._on_fetch_finished)
 
+        net_worker = self._net_worker
         self._net_thread = QThread()
-        self._net_worker.moveToThread(self._net_thread)
-        self._net_thread.started.connect(lambda: self._net_worker.fetch_all(sources), Qt.ConnectionType.DirectConnection)
+        net_worker.moveToThread(self._net_thread)
+        self._net_thread.started.connect(lambda: net_worker.fetch_all(sources), Qt.ConnectionType.DirectConnection)
         self._net_thread.start()
 
-    def _on_fetch_progress(self, done: int, total: int, name: str):
+    def _on_fetch_progress(self, done: int, total: int, name: str, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._net_worker:
+                return
+        elif run_id != self._net_run:
+            return
         self.progress_bar.setValue(done)
         self._progress_last_done = done
         elapsed = time.time() - self._fetch_start_time
@@ -1336,7 +1554,12 @@ class DownloadPage(WizardPage):
         dots = "." * ((self._progress_tick % 3) + 1)
         self.lbl_progress.setText(f"загрузка{dots} ({self._progress_last_done}/{self.progress_bar.maximum()}, {elapsed:.0f}s)")
 
-    def _on_proxy_parsed(self, entries: list[ProxyEntry]):
+    def _on_proxy_parsed(self, entries: list[ProxyEntry], run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._net_worker:
+                return
+        elif run_id != self._net_run:
+            return
         added = 0
         for e in entries:
             k = e.key()
@@ -1350,8 +1573,13 @@ class DownloadPage(WizardPage):
         if added:
             self.lbl_total.setText(_("download.stats.total", count=len(self._entries)))
 
-    def _on_source_started(self, name: str, idx: int):
-        row = self._source_rows.get(name[:60])
+    def _on_source_started(self, name: str, idx: int, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._net_worker:
+                return
+        elif run_id != self._net_run:
+            return
+        row = self._source_rows.get(name)
         if row is None:
             return
         icon_item = self.src_table.item(row, 0)
@@ -1373,11 +1601,16 @@ class DownloadPage(WizardPage):
         count_item = QTableWidgetItem("...")
         count_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         self.src_table.setItem(row, 2, count_item)
-        self._source_rows[name[:60]] = row
+        self._source_rows[name] = row
         self._sources_total += 1
 
-    def _update_source_row(self, name: str, ok: bool, count: int):
-        row = self._source_rows.get(name[:60])
+    def _update_source_row(self, name: str, ok: bool, count: int, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._net_worker:
+                return
+        elif run_id != self._net_run:
+            return
+        row = self._source_rows.get(name)
         if row is None:
             return
         icon_item = self.src_table.item(row, 0)
@@ -1409,20 +1642,25 @@ class DownloadPage(WizardPage):
             return
         url = item.data(Qt.ItemDataRole.UserRole)
         if url:
-            try:
-                use_proxy = _settings_data.get("proxy_enabled", True)
-                req = urllib.request.Request(url, headers={"User-Agent": "proxy-skitchen/2.0"})
-                if use_proxy:
-                    req.set_proxy("socks5://127.0.0.1:12334", "http")
-                resp = urllib.request.urlopen(req, timeout=15)
-                content = resp.read().decode("utf-8", errors="replace")
-                name = url.rsplit("/", 1)[-1] if "/" in url else url
-                _view_text_dialog(name, content, self)
-            except Exception as e:
-                QMessageBox.warning(self, _("msg.error"), f"Failed to load:\n{url}\n\n{e}")
+            self._main.source_page._fetch_and_view(url)
 
-    def _on_fetch_finished(self):
+    def _on_fetch_finished(self, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._net_worker:
+                return
+        elif run_id != self._net_run:
+            return
         self._cleanup_net()
+        if self._stopped:
+            # Stop was pressed: never auto-start the next pipeline stage.
+            self._stopped = False
+            self._set_phase(self.PHASE_IDLE)
+            self.src_group.hide()
+            self.btn_toggle_sources.show()
+            self.btn_toggle_sources.setText(_("download.show_sources", count=self.src_table.rowCount()))
+            self.btn_next.setEnabled(len(self._entries) > 0)
+            self._main.update_status_bar()
+            return
         self._log(_("log.fetch_done", count=len(self._entries)))
         self._set_phase(self.PHASE_IDLE)
         self.src_group.hide()
@@ -1536,6 +1774,12 @@ class TestPage(WizardPage):
         self._phase = self.PHASE_IDLE
         self._test_thread = None
         self._tester = None
+        self._test_run = 0
+        self._strategy_thread = None
+        self._strategy_worker = None
+        self._strategy_run = 0
+        self._strategy_total = 0
+        self._strategy_found = 0
         self._stopped = False
         self._completed = False
         self._test_type: str | None = None
@@ -1622,13 +1866,13 @@ class TestPage(WizardPage):
         actions.addWidget(self.security_combo)
 
         self.chk_max_latency = QCheckBox(_("test.max_latency"))
-        self.chk_max_latency.setChecked(_settings_data.get("max_latency_enabled", False))
+        self.chk_max_latency.setChecked(_as_bool(_settings_data.get("max_latency_enabled", False), False))
         self.chk_max_latency.toggled.connect(self._on_max_latency_toggled)
         actions.addWidget(self.chk_max_latency)
         self.spin_max_latency = QSpinBox()
         self.spin_max_latency.setRange(100, 30000)
         self.spin_max_latency.setSuffix(" ms")
-        self.spin_max_latency.setValue(_settings_data.get("max_latency_ms", 3100))
+        self.spin_max_latency.setValue(_as_int(_settings_data.get("max_latency_ms", 3100), 3100, 100, 30000))
         self.spin_max_latency.setFixedWidth(80)
         self.spin_max_latency.valueChanged.connect(self._on_max_latency_changed)
         actions.addWidget(self.spin_max_latency)
@@ -1660,6 +1904,33 @@ class TestPage(WizardPage):
         actions.addWidget(self.btn_delete_untested)
         layout.addLayout(actions)
 
+        # ── Bypass row: explained in plain language ──
+        aux = QHBoxLayout()
+        aux.setSpacing(6)
+        self.btn_auto_strategy = QPushButton(_("test.btn.auto_strategy"))
+        self.btn_auto_strategy.setToolTip(_("test.auto_strategy.tooltip"))
+        self.btn_auto_strategy.clicked.connect(self._on_auto_strategy)
+        aux.addWidget(self.btn_auto_strategy)
+
+        self.lbl_rkn_quorum = QLabel(_("test.rkn.quorum"))
+        aux.addWidget(self.lbl_rkn_quorum)
+        self.combo_rkn_quorum = QComboBox()
+        self.combo_rkn_quorum.addItems([
+            _("test.rkn.quorum.soft"),
+            _("test.rkn.quorum.medium"),
+            _("test.rkn.quorum.strict"),
+        ])
+        qidx = _as_int(_settings_data.get("rkn_quorum", 1), 1, 1, 4) - 1
+        self.combo_rkn_quorum.setCurrentIndex(min(qidx, 2))
+        self.combo_rkn_quorum.setToolTip(_("test.rkn.quorum.tooltip"))
+        self.combo_rkn_quorum.currentIndexChanged.connect(self._on_rkn_quorum_changed)
+        aux.addWidget(self.combo_rkn_quorum)
+
+        self.lbl_strategy_hint = QLabel(_("test.hint.bypass"))
+        self.lbl_strategy_hint.setWordWrap(True)
+        aux.addWidget(self.lbl_strategy_hint, 1)
+        layout.addLayout(aux)
+
         # ── Progress ──
         progress_row = QHBoxLayout()
         progress_row.setSpacing(6)
@@ -1689,6 +1960,7 @@ class TestPage(WizardPage):
         self.proxy_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.proxy_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.proxy_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.proxy_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self.proxy_table.setColumnWidth(0, 120)
         self.proxy_table.setColumnWidth(3, 60)
         self.proxy_table.setColumnWidth(5, 75)
@@ -1764,6 +2036,12 @@ class TestPage(WizardPage):
         self.btn_delete_dead.setStyleSheet(del_d)
         self.btn_delete_untested.setStyleSheet(del_d)
 
+        self.lbl_strategy_hint.setStyleSheet(f"font-size: 11px; color: {mf};")
+        self.btn_auto_strategy.setStyleSheet(
+            f"QPushButton {{ background: {ibg}; border: 1px solid {acc}; color: {acc}; "
+            f"padding: 3px 10px; border-radius: 4px; font-weight: bold; }} "
+            f"QPushButton:hover {{ background: rgba(91,141,239,0.15); }}"
+        )
         self.lbl_threads.setStyleSheet(f"font-size: 11px; color: {mf};")
         self.spin_threads.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
         self.spin_max_latency.setStyleSheet(f"QSpinBox {{ font-size: 11px; padding: 2px 4px; background: {ibg}; color: {fg}; border: 1px solid {bd}; border-radius: 3px; }}")
@@ -1789,6 +2067,9 @@ class TestPage(WizardPage):
         self.btn_export.setStyleSheet(exp_d)
 
     def load_entries(self, entries: list[ProxyEntry]):
+        if self._strategy_worker is not None:
+            self._cleanup_strategy()
+            self.btn_auto_strategy.setText(_("test.btn.auto_strategy"))
         seen_uris = set()
         seen_keys = {}
         deduped = []
@@ -1802,9 +2083,7 @@ class TestPage(WizardPage):
             seen_keys[k] = e
             deduped.append(e)
         self._entries = deduped
-        self.model.clear()
-        self.model.add_proxies(deduped)
-        self._update_stats()
+        self._test_run += 1  # any in-flight test now refers to old rows
         self._valid_cnt = 0
         self._dead_cnt = 0
         self.filter_combo.setCurrentIndex(0)
@@ -1858,7 +2137,9 @@ class TestPage(WizardPage):
         self._flush_stats()
         self._stats_timer.stop()
         self._stop_requested = True
+        self._test_run += 1  # drop results still queued from the stopped tester
         self._cleanup_test()
+        self._cleanup_strategy()
         self._log(_("log.test_stopped"))
         self.model.dedup_by_key()
         self._entries = self.model.proxies
@@ -1915,6 +2196,125 @@ class TestPage(WizardPage):
         self._dead_cnt = 0
         self._test_type = "rkn"
         self._run_test(rkn=True, subset=filtered, subset_indices=indices)
+
+    def _on_rkn_quorum_changed(self, idx: int):
+        _settings_data["rkn_quorum"] = max(1, min(4, idx + 1))
+        _save_settings(_settings_data)
+
+    def _cleanup_strategy(self):
+        self._strategy_run += 1  # ignore queued signals from the stopped worker
+        _cleanup_thread(self._strategy_thread, self._strategy_worker)
+        self._strategy_thread = None
+        self._strategy_worker = None
+
+    def _start_strategy(self, items):
+        self._strategy_run += 1
+        run_id = self._strategy_run
+        worker = StrategyWorker(
+            items,
+            max_candidates=3,
+            max_workers=max(1, min(3, self.spin_threads.value())),
+            use_doh=self.chk_test_doh.isChecked(),
+            dns_list=DEFAULT_DOH,
+        )
+        worker.trial_signal.connect(self._on_strategy_trial)
+        worker.found_signal.connect(self._on_strategy_found)
+        worker.failed_signal.connect(self._on_strategy_failed)
+        worker.finished.connect(self._on_strategy_finished)
+        self._strategy_worker = worker
+        self._strategy_thread = QThread()
+        worker.moveToThread(self._strategy_thread)
+        self._strategy_thread.started.connect(worker.run, Qt.ConnectionType.DirectConnection)
+        self._strategy_thread.start()
+        self._strategy_total = len(items)
+        self._strategy_found = 0
+        self.btn_auto_strategy.setText(_("test.btn.auto_strategy.stop"))
+        self._log(_("test.auto_strategy.started", count=len(items)))
+
+    def _on_auto_strategy(self):
+        if self._strategy_worker is not None:
+            self._log(_("test.auto_strategy.stopping"))
+            self._cleanup_strategy()
+            self.btn_auto_strategy.setText(_("test.btn.auto_strategy"))
+            return
+        if self._phase == self.PHASE_TEST:
+            QMessageBox.information(self, _("msg.info"), _("test.auto_strategy.wait"))
+            return
+        indices, entries = self.sort_proxy.getFilteredEntries()
+        items = [
+            (i, e) for i, e in zip(indices, entries)
+            if e.protocol not in ('WIREGUARD', 'WG')
+            and not (e.deep_ok or e.rkn_ok)
+            and not e.strategy_name
+            and (e.tcp_tested or e.deep_tested or e.rkn_tested or e.tcp_ok)
+        ]
+        if not items:
+            QMessageBox.information(self, _("msg.info"), _("test.auto_strategy.none"))
+            return
+        self._start_strategy(items[:300])
+
+    def _find_bypass_for_row(self, row: int):
+        if not (0 <= row < len(self._entries)):
+            return
+        entry = self._entries[row]
+        if entry.protocol in ('WIREGUARD', 'WG') or entry.deep_ok or entry.rkn_ok:
+            QMessageBox.information(self, _("msg.info"), _("test.auto_strategy.none"))
+            return
+        if self._strategy_worker is not None:
+            self._log(_("test.auto_strategy.stopping"))
+            self._cleanup_strategy()
+        self._start_strategy([(row, entry)])
+
+    def _on_strategy_trial(self, row, host, name, run_id=None):
+        if run_id is None:
+            if self.sender() is not self._strategy_worker:
+                return
+        elif run_id != self._strategy_run:
+            return
+        self._log(_("test.auto_strategy.trying",
+                    host=host or "?",
+                    strategy=strategy_label(name, current_lang())))
+
+    def _on_strategy_found(self, row, name, overrides, latency, run_id=None):
+        if run_id is None:
+            if self.sender() is not self._strategy_worker:
+                return
+        elif run_id != self._strategy_run:
+            return
+        host = "?"
+        if 0 <= row < len(self._entries):
+            entry = self._entries[row]
+            host = entry.host or host
+            entry.strategy_name = name
+            entry.strategy_overrides = overrides
+            if latency:
+                entry.latency_ms = latency
+            self.model.dataChanged.emit(self.model.index(row, 0), self.model.index(row, 6))
+        self._strategy_found += 1
+        self._log(_("test.auto_strategy.found",
+                    host=host,
+                    strategy=strategy_label(name, current_lang()),
+                    lat=int(latency or 0)))
+
+    def _on_strategy_failed(self, row, host, run_id=None):
+        if run_id is None:
+            if self.sender() is not self._strategy_worker:
+                return
+        elif run_id != self._strategy_run:
+            return
+        self._log(_("test.auto_strategy.not_found", host=host or "?"))
+
+    def _on_strategy_finished(self, run_id=None):
+        if run_id is None:
+            if self.sender() is not self._strategy_worker:
+                return
+        elif run_id != self._strategy_run:
+            return
+        self._log(_("test.auto_strategy.done",
+                    found=self._strategy_found, total=self._strategy_total))
+        self._cleanup_strategy()
+        self.btn_auto_strategy.setText(_("test.btn.auto_strategy"))
+        self._main.update_status_bar()
 
     def _on_delete_dead(self):
         if self._phase == self.PHASE_TEST:
@@ -1989,20 +2389,22 @@ class TestPage(WizardPage):
                        subset=list(entries), subset_indices=list(indices))
 
     def _run_test(self, rkn: bool = False, subset: list[ProxyEntry] | None = None, subset_indices: list[int] | None = None):
-        total = len(subset) if subset is not None else len(self._entries)
-        if subset is not None and subset_indices is not None:
-            filtered = [(i, e) for i, e in zip(subset_indices, subset) if e.protocol not in ('WIREGUARD', 'WG')]
-            if not filtered:
-                self._log("⚠ WireGuard не тестируется — нет подходящих entry")
-                return
-            subset_indices, target = zip(*filtered)
-            subset_indices, target = list(subset_indices), list(target)
-        else:
-            target = subset if subset is not None else self._entries
-            target = [e for e in target if e.protocol not in ('WIREGUARD', 'WG')]
-            if not target:
-                self._log("⚠ WireGuard не тестируется — нет подходящих entry")
-                return
+        if self._strategy_worker is not None:
+            self._cleanup_strategy()
+            self.btn_auto_strategy.setText(_("test.btn.auto_strategy"))
+        base = subset if subset is not None else self._entries
+        base_indices = subset_indices if subset_indices is not None else list(range(len(base)))
+        total = len(base)
+        # Always keep model-row indices paired with entries: the tester reports
+        # rows back, so dropping WireGuard entries without dropping their
+        # indices would mark the wrong proxies.
+        pairs = [(i, e) for i, e in zip(base_indices, base)
+                 if e.protocol not in ('WIREGUARD', 'WG')]
+        if not pairs:
+            self._log("⚠ WireGuard не тестируется — нет подходящих entry")
+            return
+        target_indices = [i for i, _ in pairs]
+        target = [e for _, e in pairs]
         skipped = total - len(target)
         if skipped:
             self._log(f"⚠ Пропущено WireGuard: {skipped}")
@@ -2016,7 +2418,14 @@ class TestPage(WizardPage):
         self._stats_dirty = False
         self._lbl_style_set = False
 
-        self._tester = TesterWorker(rkn=rkn, test_threads=self.spin_threads.value(), deep_threads=max(1, self.spin_threads.value() // 2), use_doh=self.chk_test_doh.isChecked(), dns_list=DEFAULT_DOH)
+        self._test_run += 1
+        run_id = self._test_run
+        threads = max(1, self.spin_threads.value())
+        self._tester = TesterWorker(rkn=rkn, test_threads=threads, deep_threads=threads,
+                                    use_doh=self.chk_test_doh.isChecked(), dns_list=DEFAULT_DOH,
+                                    rkn_quorum=self.combo_rkn_quorum.currentIndex() + 1)
+        # Run token: results from a stopped/superseded tester are dropped instead
+        # of being written into rows of the next run.
         self._tester.result_signal.connect(self._on_test_result)
         self._tester.testing_signal.connect(self._on_testing_start)
         self._tester.progress_signal.connect(self._on_test_progress)
@@ -2025,32 +2434,41 @@ class TestPage(WizardPage):
         self._tester.geo_signal.connect(self._on_geo_result)
         self._tester.finished.connect(self._on_test_finished)
 
+        tester = self._tester
         self._test_thread = QThread()
-        self._tester.moveToThread(self._test_thread)
-        if subset_indices is not None:
-            self._test_thread.started.connect(lambda: self._tester.test_batch(target, subset_indices), Qt.ConnectionType.DirectConnection)
-        else:
-            self._test_thread.started.connect(lambda: self._tester.test_batch(target), Qt.ConnectionType.DirectConnection)
+        tester.moveToThread(self._test_thread)
+        self._test_thread.started.connect(
+            lambda: tester.test_batch(target, target_indices),
+            Qt.ConnectionType.DirectConnection,
+        )
         self._test_thread.start()
 
-    def _on_testing_start(self, row: int, info: str):
+    def _on_testing_start(self, row: int, info: str, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._tester:
+                return
+        elif run_id != self._test_run:
+            return
         now = time.time()
         if now - self._last_scroll_time >= 0.2:
             proxy_idx = self.sort_proxy.mapFromSource(self.model.index(row, 0))
-            if self.proxy_table.visualRect(proxy_idx).isValid():
-                self.proxy_table.scrollTo(proxy_idx)
-            self.proxy_table.selectRow(row)
+            if proxy_idx.isValid():
+                if self.proxy_table.visualRect(proxy_idx).isValid():
+                    self.proxy_table.scrollTo(proxy_idx)
+                # Select the *proxy* row: with an active filter source row != view row.
+                self.proxy_table.selectRow(proxy_idx.row())
             self._last_scroll_time = now
 
-    def _on_test_result(self, row: int, ok: bool, latency: float, error: str, ttype: int):
-        filtered = False
-        if ok and _settings_data.get("max_latency_enabled") and latency > _settings_data.get("max_latency_ms", 3100):
+    def _on_test_result(self, row: int, ok: bool, latency: float, error: str, ttype: int, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._tester:
+                return
+        elif run_id != self._test_run:
+            return
+        if ok and _as_bool(_settings_data.get("max_latency_enabled"), False) \
+                and latency > _as_int(_settings_data.get("max_latency_ms", 3100), 3100, 100, 30000):
             ok = False
-            filtered = True
         self.model.update_entry(row, ok, latency, error, ttype)
-        if filtered and ttype == 1 and 0 <= row < len(self._entries):
-            self._entries[row].tcp_ok = False
-            self._entries[row].deep_ok = False
         if ok:
             self._valid_cnt += 1
         else:
@@ -2060,9 +2478,10 @@ class TestPage(WizardPage):
         now = time.time()
         if now - self._last_scroll_time >= 0.2:
             proxy_idx = self.sort_proxy.mapFromSource(self.model.index(row, 0))
-            if self.proxy_table.visualRect(proxy_idx).isValid():
-                self.proxy_table.scrollTo(proxy_idx)
-            self.proxy_table.selectRow(row)
+            if proxy_idx.isValid():
+                if self.proxy_table.visualRect(proxy_idx).isValid():
+                    self.proxy_table.scrollTo(proxy_idx)
+                self.proxy_table.selectRow(proxy_idx.row())
             self._last_scroll_time = now
         if 0 <= row < len(self._entries):
             e = self._entries[row]
@@ -2084,10 +2503,20 @@ class TestPage(WizardPage):
                 self.lbl_current.setStyleSheet(f"padding: 4px 10px; background: {t['input_bg']}; border: 1px solid {t['border']}; border-radius: 6px; color: {color}; font-size: 11px;")
                 self._lbl_style_set = True
 
-    def _on_test_count(self, c: int):
+    def _on_test_count(self, c: int, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._tester:
+                return
+        elif run_id != self._test_run:
+            return
         self.progress_bar.setValue(c)
 
-    def _on_test_progress(self, done: int, total: int, threads: int, mode: str):
+    def _on_test_progress(self, done: int, total: int, threads: int, mode: str, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._tester:
+                return
+        elif run_id != self._test_run:
+            return
         now = time.time()
         if now - self._last_log_time > 0.5:
             self._log(_("event.threads", mode=mode, done=done, total=total, threads=threads))
@@ -2122,11 +2551,21 @@ class TestPage(WizardPage):
         _settings_data["max_latency_ms"] = value
         _save_settings(_settings_data)
 
-    def _on_geo_result(self, row: int, country: str):
+    def _on_geo_result(self, row: int, country: str, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._tester:
+                return
+        elif run_id != self._test_run:
+            return
         idx = self.model.index(row, 4)
         self.model.dataChanged.emit(idx, idx)
 
-    def _on_test_finished(self):
+    def _on_test_finished(self, run_id: int | None = None):
+        if run_id is None:
+            if self.sender() is not self._tester:
+                return
+        elif run_id != self._test_run:
+            return
         self.sort_proxy.setDynamicSortFilter(True)
         self._flush_stats()
         self._stats_timer.stop()
@@ -2182,7 +2621,7 @@ class TestPage(WizardPage):
     def _save_pipeline_result(self):
         from .exporters import format_hiddify
         title = self._main.export_page.sub_title_input.text().strip() or "My Subscription"
-        clean = _settings_data.get("clean_uris", True)
+        clean = _as_bool(_settings_data.get("clean_uris", True))
         content = format_hiddify(self._entries, include_failed=False, title=title, clean=clean)
         if not content.strip():
             QMessageBox.information(self, _("msg.info"), _("msg.no_data_text"))
@@ -2193,27 +2632,53 @@ class TestPage(WizardPage):
             f.write(content)
         self._log(f"✅ Hiddify подпись сохранена: {path}")
         do_gh = self._main.source_page.chk_github_push.isChecked()
-        if do_gh:
-            self._log("📤 GitHub push...")
-            repo = _settings_data.get("gh_repo", "")
-            file_path = _settings_data.get("gh_file", "")
-            tokens = _get_tokens()
-            if not repo or not file_path:
-                self._log("❌ GitHub: не указан репозиторий или файл")
-            elif not tokens:
-                self._log("❌ GitHub: нет токена")
-            else:
-                ok, err = self._do_github_push(content, repo, file_path, tokens[0])
-                if ok:
-                    self._log(f"✅ GitHub: файл обновлён — {repo}/{file_path}")
-                else:
-                    self._log(f"❌ GitHub: {err}")
-        QMessageBox.information(self, _("msg.done"),
-            f"✅ Готово!\n\n"
-            f"Файл: {path}\n\n"
-            f"Импортируй в Hiddify: Меню → Подписки → (+) → Выбери файл")
+        repo = _settings_data.get("gh_repo", "")
+        file_path = _settings_data.get("gh_file", "")
+        tokens = _get_tokens()
 
-    def _do_github_push(self, content: str, repo: str, file_path: str, token: str) -> tuple[bool, str]:
+        def _show_done():
+            QMessageBox.information(self, _("msg.done"),
+                f"✅ Готово!\n\n"
+                f"Файл: {path}\n\n"
+                f"Импортируй в Hiddify: Меню → Подписки → (+) → Выбери файл")
+
+        if not do_gh:
+            _show_done()
+            return
+        self._log("📤 GitHub push...")
+        if not repo or not file_path:
+            self._log("❌ GitHub: не указан репозиторий или файл")
+            _show_done()
+            return
+        if not tokens:
+            self._log("❌ GitHub: нет токена")
+            _show_done()
+            return
+
+        def _push():
+            return self._do_github_push(content, repo, file_path, tokens[0])
+
+        def _pushed(result, error):
+            if error is not None:
+                self._log(f"❌ GitHub: {str(error)[:60]}")
+                _show_done()
+                return
+            ok, err, branch = result
+            if ok:
+                # Persist on the GUI thread only: the worker must not write
+                # settings.json concurrently with the UI.
+                _settings_data["gh_branch"] = branch
+                _save_settings(_settings_data)
+                self._log(f"✅ GitHub: файл обновлён — {repo}@{branch}/{file_path}")
+                if err:
+                    self._log(f"⚠ {err}")
+            else:
+                self._log(f"❌ GitHub: {err}")
+            _show_done()
+
+        BackgroundCall(_push, _pushed, parent=self)
+
+    def _do_github_push(self, content: str, repo: str, file_path: str, token: str) -> tuple[bool, str, str]:
         import urllib.request, urllib.error, base64, json
         api_base = f"https://api.github.com/repos/{repo}/contents/{file_path}"
         headers = {
@@ -2221,6 +2686,15 @@ class TestPage(WizardPage):
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "proxy-skitchen",
         }
+        # Write and advertise the repo's real default branch: hardcoding "main"
+        # produced dead jsDelivr links for master-based repos.
+        branch = (_settings_data.get("gh_branch") or "").strip()
+        try:
+            req = urllib.request.Request(f"https://api.github.com/repos/{repo}", headers=headers)
+            repo_info = json.loads(urllib.request.urlopen(req, timeout=10).read())
+            branch = repo_info.get("default_branch") or branch or "main"
+        except Exception:
+            branch = branch or "main"
         try:
             req = urllib.request.Request(api_base, headers=headers)
             resp = urllib.request.urlopen(req, timeout=10)
@@ -2230,23 +2704,25 @@ class TestPage(WizardPage):
             if e.code == 404:
                 sha = ""
             else:
-                return False, f"API error: {e.code}"
+                return False, f"API error: {e.code}", branch
         except Exception as e:
-            return False, str(e)[:60]
+            return False, str(e)[:60], branch
         body = {
             "message": f"Update subscription {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
         }
         if sha:
             body["sha"] = sha
+        if branch:
+            body["branch"] = branch
         try:
             data_bytes = json.dumps(body).encode("utf-8")
             req = urllib.request.Request(api_base, data=data_bytes, headers=headers, method="PUT")
             resp = urllib.request.urlopen(req, timeout=15)
-            self._purge_jsdelivr_cdn(repo, file_path)
-            return True, ""
+            purged = self._purge_jsdelivr_cdn(repo, file_path, branch)
+            return True, "" if purged else "CDN purge failed", branch
         except Exception as e:
-            return False, str(e)[:60]
+            return False, str(e)[:60], branch
 
     def _on_filter_change(self, idx: int):
         proto_map = [None, "TUIC", "VLESS", "VMESS", "Trojan", "SS", "Hy2", "WIREGUARD"]
@@ -2303,6 +2779,8 @@ class TestPage(WizardPage):
         entry = self._entries[src_row]
         menu = QMenu()
         menu.addAction(_("test.context.copy_uri"), lambda: QApplication.clipboard().setText(entry.uri))
+        if entry.protocol not in ('WIREGUARD', 'WG') and not (entry.deep_ok or entry.rkn_ok):
+            menu.addAction(_("test.context.find_bypass"), lambda: self._find_bypass_for_row(src_row))
         tcp_mark = "✅" if entry.tcp_ok else "❌"
         deep_mark = "⚡" if entry.deep_ok else "—"
         rkn_mark = "🛡" if entry.rkn_ok else ("—" if not entry.rkn_tested else "❌")
@@ -2313,6 +2791,8 @@ class TestPage(WizardPage):
             f"Страна: {entry.country or '—'}",
             f"TCP: {tcp_mark}  Deep: {deep_mark}  RKN: {rkn_mark}  Пинг: {ping_str}",
             f"Источник: {entry.source or '—'}",
+            f"{_('test.context.strategy')}: "
+            f"{strategy_label(entry.strategy_name, current_lang()) if entry.strategy_name else '—'}",
         ]
         if entry.rkn_results:
             lines.append("")
@@ -2331,6 +2811,7 @@ class TestPage(WizardPage):
 
     def on_leave(self):
         self._cleanup_test()
+        self._cleanup_strategy()
 
     def retranslate(self):
         self.lbl_title.setText(_("test.title"))
@@ -2341,12 +2822,29 @@ class TestPage(WizardPage):
         self.lbl_dead.setText(_("test.stats.dead", count=self._dead_cnt))
         self.btn_deep.setText(_("test.btn.deep"))
         self.btn_rkn.setText(_("test.btn.rkn"))
+        self.btn_auto_strategy.setText(
+            _("test.btn.auto_strategy.stop") if self._strategy_worker is not None
+            else _("test.btn.auto_strategy"))
+        self.btn_auto_strategy.setToolTip(_("test.auto_strategy.tooltip"))
+        self.lbl_rkn_quorum.setText(_("test.rkn.quorum"))
+        self.combo_rkn_quorum.blockSignals(True)
+        current_q = self.combo_rkn_quorum.currentIndex()
+        self.combo_rkn_quorum.clear()
+        self.combo_rkn_quorum.addItems([
+            _("test.rkn.quorum.soft"),
+            _("test.rkn.quorum.medium"),
+            _("test.rkn.quorum.strict"),
+        ])
+        self.combo_rkn_quorum.setCurrentIndex(min(current_q, 2))
+        self.combo_rkn_quorum.blockSignals(False)
+        self.combo_rkn_quorum.setToolTip(_("test.rkn.quorum.tooltip"))
+        self.lbl_strategy_hint.setText(_("test.hint.bypass"))
         self.btn_continue.setText(_("test.btn.continue"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))
         self.btn_delete_untested.setText(_("test.btn.delete_untested"))
         self.btn_export.setText(_("test.btn.export"))
         self.chk_max_latency.setText(_("test.max_latency"))
-        self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, self.model.columnCount() - 1)
+        self.model.rebuild_headers()
         # Rebuild filter combos
         current = self.filter_combo.currentIndex()
         self.filter_combo.blockSignals(True)
@@ -2375,6 +2873,7 @@ class TestPage(WizardPage):
         else:
             self.lbl_phase.setText("")
         self._update_stats()
+        self.proxy_table.viewport().update()
 
     def get_entries(self) -> list[ProxyEntry]:
         _, entries = self.sort_proxy.getFilteredEntries()
@@ -2385,6 +2884,16 @@ class ExportPage(WizardPage):
     def __init__(self, main):
         super().__init__(main)
         self._main = main
+        # Typing in a QLineEdit must not rebuild the whole export and rewrite
+        # settings.json on every keystroke.
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self._flush_settings)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(150)
+        self._preview_timer.timeout.connect(self._render_preview)
 
         root = QVBoxLayout(self)
         root.setSpacing(4)
@@ -2429,11 +2938,11 @@ class ExportPage(WizardPage):
         self.chk_smart_names = QCheckBox(_("export.chk.smart_names"))
         self.chk_clean_names = QCheckBox(_("export.chk.clean_names"))
         self.chk_failed = QCheckBox(_("export.chk.failed"))
-        self.chk_failed.setChecked(_settings_data.get("include_failed", True))
+        self.chk_failed.setChecked(_as_bool(_settings_data.get("include_failed", True)))
         self.chk_failed.toggled.connect(self._on_include_failed_changed)
         self.chk_failed.toggled.connect(self._update_preview)
         self.chk_clean_uris = QCheckBox(_("export.chk.clean_uris"))
-        self.chk_clean_uris.setChecked(_settings_data.get("clean_uris", True))
+        self.chk_clean_uris.setChecked(_as_bool(_settings_data.get("clean_uris", True)))
         self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
         self.chk_clean_uris.toggled.connect(self._update_preview)
         self.chk_no_wg = QCheckBox("Happ-совместимо: без WG/TUIC, socks5→socks")
@@ -2511,7 +3020,7 @@ class ExportPage(WizardPage):
         self.gh_file_input = QLineEdit(_settings_data.get("gh_file", "subscription.txt"))
         self.gh_file_input.setPlaceholderText("vpn/подписка.txt")
         self.gh_file_input.setToolTip("Путь к файлу внутри репозитория.\nМожно указать папку: vpn/sub.txt\nНапример: proxy/config.txt или просто list.txt")
-        self.gh_file_input.textChanged.connect(lambda t: _settings_data.update({"gh_file": t}) or _save_settings(_settings_data))
+        self.gh_file_input.textChanged.connect(self._on_gh_file_changed)
         g1.addWidget(self.gh_file_input, 1)
         gh_l.addLayout(g1)
 
@@ -2596,25 +3105,36 @@ class ExportPage(WizardPage):
         self.btn_gh_push.setEnabled(len(tokens) > 0)
         self.gh_status_label.setText("" if tokens else _("export.github.no_token"))
 
+    def _flush_settings(self):
+        _settings_data["gh_repo"] = self.gh_repo_input.text().strip()
+        _settings_data["gh_file"] = self.gh_file_input.text().strip()
+        _settings_data["sub_title"] = self.sub_title_input.text()
+        _save_settings(_settings_data)
+
     def _on_sub_title_changed(self, text):
         _settings_data["sub_title"] = text
-        _save_settings(_settings_data)
+        self._save_timer.start()
+        self._update_preview()
+
+    def _on_gh_file_changed(self, text):
+        _settings_data["gh_file"] = text
+        self._save_timer.start()
         self._update_preview()
 
     def _on_include_failed_changed(self, checked: bool):
         _settings_data["include_failed"] = checked
-        _save_settings(_settings_data)
+        self._save_timer.start()
         self._update_preview()
 
     def _on_clean_uris_changed(self, checked: bool):
         _settings_data["clean_uris"] = checked
-        _save_settings(_settings_data)
+        self._save_timer.start()
         self._update_preview()
 
     def _on_gh_repo_changed(self, text):
         text = text.strip()
         _settings_data["gh_repo"] = text
-        _save_settings(_settings_data)
+        self._save_timer.start()
         raw_m = re.match(r'https?://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/(.+)', text)
         if raw_m:
             repo = f"{raw_m.group(1)}/{raw_m.group(2)}"
@@ -2712,6 +3232,10 @@ class ExportPage(WizardPage):
         return body
 
     def _update_preview(self, *args):
+        # Debounced: several toggles/keystrokes within 150 ms rebuild once.
+        self._preview_timer.start()
+
+    def _render_preview(self):
         content = self._get_content()
         lines = content.splitlines()
         if len(lines) > 20:
@@ -2748,8 +3272,9 @@ class ExportPage(WizardPage):
     def _update_cdn_url(self):
         repo = self.gh_repo_input.text().strip()
         fp = self.gh_file_input.text().strip()
+        branch = (_settings_data.get("gh_branch") or "main").strip() or "main"
         if repo and fp:
-            self.cdn_url_input.setText(f"https://cdn.jsdelivr.net/gh/{repo}@main/{fp}")
+            self.cdn_url_input.setText(f"https://cdn.jsdelivr.net/gh/{repo}@{branch}/{fp}")
         else:
             self.cdn_url_input.setText("")
 
@@ -2783,7 +3308,8 @@ class ExportPage(WizardPage):
         out_dir = os.path.join(base_dir, f"amnezia_{ts}")
         os.makedirs(out_dir, exist_ok=True)
         for i, (e, conf) in enumerate(confs, 1):
-            name = f"wg-{i:02d}_{e.host}_{e.port}.conf"
+            # A host may contain '/', ':' or other characters invalid on Windows.
+            name = f"wg-{i:02d}_{_safe_filename_part(e.host)}_{e.port}.conf"
             with open(os.path.join(out_dir, name), "w", encoding="utf-8") as f:
                 f.write(conf)
         return len(confs)
@@ -2871,7 +3397,8 @@ class ExportPage(WizardPage):
         title = self.sub_title_input.text().strip() or "My Subscription"
         repo = self.gh_repo_input.text().strip()
         fpath = self.gh_file_input.text().strip()
-        link = f"github.com/{repo}/blob/main/{fpath}" if repo and fpath else ""
+        branch = (_settings_data.get("gh_branch") or "main").strip() or "main"
+        link = f"github.com/{repo}/blob/{branch}/{fpath}" if repo and fpath else ""
         if link:
             return f"# {title} | {link}\n\n{content}"
         return content
@@ -2893,8 +3420,7 @@ class ExportPage(WizardPage):
             return
         self.gh_status_label.setText(_("export.github.pushing"))
         self.btn_gh_push.setEnabled(False)
-        from concurrent.futures import ThreadPoolExecutor
-        pool = ThreadPoolExecutor(1)
+        sub_title = self.sub_title_input.text().strip()
 
         def _push():
             import urllib.request, urllib.error, base64, json
@@ -2904,6 +3430,15 @@ class ExportPage(WizardPage):
                 "Accept": "application/vnd.github.v3+json",
                 "User-Agent": "proxy-skitchen",
             }
+            # The contents API writes to the default branch; ask GitHub which one
+            # it is so the CDN link and purge target the real branch (main/master).
+            branch = (_settings_data.get("gh_branch") or "").strip()
+            try:
+                req = urllib.request.Request(f"https://api.github.com/repos/{repo}", headers=headers)
+                info = json.loads(urllib.request.urlopen(req, timeout=10).read())
+                branch = info.get("default_branch") or branch or "main"
+            except Exception:
+                branch = branch or "main"
             try:
                 req = urllib.request.Request(api_base, headers=headers)
                 resp = urllib.request.urlopen(req, timeout=10)
@@ -2913,38 +3448,45 @@ class ExportPage(WizardPage):
                 if e.code == 404:
                     sha = ""
                 else:
-                    return False, f"API error: {e.code}"
+                    return False, f"API error: {e.code}", branch
             except Exception as e:
-                return False, str(e)[:60]
+                return False, str(e)[:60], branch
             body = {
                 "message": f"Update subscription {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+                "branch": branch,
             }
             if sha:
                 body["sha"] = sha
             try:
                 data_bytes = json.dumps(body).encode("utf-8")
                 req = urllib.request.Request(api_base, data=data_bytes, headers=headers, method="PUT")
-                resp = urllib.request.urlopen(req, timeout=15)
-                self._purge_jsdelivr_cdn(repo, file_path)
-                return True, ""
+                urllib.request.urlopen(req, timeout=15)
             except Exception as e:
-                return False, str(e)[:60]
+                return False, str(e)[:60], branch
+            purged = self._purge_jsdelivr_cdn(repo, file_path, branch)
+            return True, "" if purged else "CDN purge failed", branch
 
-        def _on_done(fut):
-            ok, err = fut.result()
+        def _on_done(result, error):
+            # Runs in the GUI thread (unlike ThreadPoolExecutor callbacks).
             self.btn_gh_push.setEnabled(True)
-            if ok:
-                self.gh_status_label.setText(f"✅ {_('export.github.done')} — {repo}/{file_path}")
-                _settings_data["gh_repo"] = repo
-                _settings_data["gh_file"] = file_path
-                _settings_data["sub_title"] = self.sub_title_input.text().strip()
-                _save_settings(_settings_data)
-            else:
+            if error is not None:
+                self.gh_status_label.setText(f"❌ {str(error)[:60]}")
+                return
+            ok, err, branch = result
+            if not ok:
                 self.gh_status_label.setText(f"❌ {err}")
+                return
+            _settings_data["gh_repo"] = repo
+            _settings_data["gh_file"] = file_path
+            _settings_data["gh_branch"] = branch
+            _settings_data["sub_title"] = sub_title
+            _save_settings(_settings_data)
+            note = "" if not err else f" (⚠ {err})"
+            self.gh_status_label.setText(f"✅ {_('export.github.done')} — {repo}@{branch}/{file_path}{note}")
+            self._update_cdn_url()
 
-        fut = pool.submit(_push)
-        fut.add_done_callback(_on_done)
+        BackgroundCall(_push, _on_done, parent=self)
 
 
 class SettingsDialog(QDialog):
@@ -2973,22 +3515,25 @@ class SettingsDialog(QDialog):
         self.lang_combo = QComboBox()
         for code, label in LANGUAGES.items():
             self.lang_combo.addItem(label, code)
-        self.lang_combo.setCurrentIndex(list(LANGUAGES.keys()).index(current_lang()))
+        # Never blow up if settings.json holds an unknown language code.
+        lang_idx = self.lang_combo.findData(current_lang())
+        self.lang_combo.setCurrentIndex(lang_idx if lang_idx >= 0 else 0)
         self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
         gen_layout.addRow(_("settings.label.language"), self.lang_combo)
 
         self.cb_proxy = QCheckBox(_("settings.chk.proxy"))
-        self.cb_proxy.setChecked(_settings_data.get("proxy_enabled", True))
+        self.cb_proxy.setChecked(_as_bool(_settings_data.get("proxy_enabled", True)))
         gen_layout.addRow(self.cb_proxy)
         self.proxy_type = QComboBox()
         self.proxy_type.addItems(["HTTP", "SOCKS5"])
-        self.proxy_type.setCurrentText(_settings_data.get("proxy_type", "HTTP").upper())
+        ptype = str(_settings_data.get("proxy_type", "HTTP")).upper()
+        self.proxy_type.setCurrentIndex(1 if ptype == "SOCKS5" else 0)
         gen_layout.addRow(_("settings.label.type"), self.proxy_type)
-        self.proxy_host = QLineEdit(_settings_data.get("proxy_host", "127.0.0.1"))
+        self.proxy_host = QLineEdit(str(_settings_data.get("proxy_host", "127.0.0.1")))
         gen_layout.addRow(_("settings.label.host"), self.proxy_host)
         self.proxy_port = QSpinBox()
         self.proxy_port.setRange(1, 65535)
-        self.proxy_port.setValue(_settings_data.get("proxy_port", 12334))
+        self.proxy_port.setValue(_as_int(_settings_data.get("proxy_port", 12334), 12334, 1, 65535))
         gen_layout.addRow(_("settings.label.port"), self.proxy_port)
         gen_layout.addRow(QLabel(""))
         btn_open_settings = QPushButton(_("settings.btn.open_json"))
@@ -3041,7 +3586,7 @@ class SettingsDialog(QDialog):
         code = self.lang_combo.itemData(idx)
         if code and code != current_lang():
             set_lang(code)
-            if self._main:
+            if self._main is not None and hasattr(self._main, "apply_language"):
                 self._main.apply_language()
 
     def _on_check_token(self):
@@ -3052,17 +3597,16 @@ class SettingsDialog(QDialog):
             return
         token = tokens[0]
         self.check_result.setText(_("settings.token.checking"))
-        from concurrent.futures import ThreadPoolExecutor
-        proxy_enabled = _settings_data.get("proxy_enabled", True)
-        proxy_type = _settings_data.get("proxy_type", "http").lower()
-        proxy_host = _settings_data.get("proxy_host", "127.0.0.1")
-        proxy_port = _settings_data.get("proxy_port", 12334)
-        pool = ThreadPoolExecutor(1)
+        proxy_enabled = _as_bool(_settings_data.get("proxy_enabled", True))
+        proxy_type = str(_settings_data.get("proxy_type", "http")).lower()
+        proxy_host = str(_settings_data.get("proxy_host", "127.0.0.1"))
+        proxy_port = _as_int(_settings_data.get("proxy_port", 12334), 12334, 1, 65535)
+
         def _check():
-            req = urllib.request.Request("https://api.github.com/user",
-                                         headers={"Authorization": f"token {token}", "User-Agent": "proxy-skitchen"})
-            import socket
-            socket.setdefaulttimeout(4)
+            req = urllib.request.Request(
+                "https://api.github.com/user",
+                headers={"Authorization": f"token {token}", "User-Agent": "proxy-skitchen"},
+            )
             try:
                 resp = urllib.request.urlopen(req, timeout=4)
                 data = json.loads(resp.read())
@@ -3089,14 +3633,15 @@ class SettingsDialog(QDialog):
                 return _("settings.token.error", error=f"HTTP {e.code}")
             except Exception as ex:
                 return _("settings.token.error", error=f"Connection failed: {str(ex)[:40]}")
-        def _on_done(fut):
-            try:
-                result = fut.result()
-                QTimer.singleShot(0, lambda: self.check_result.setText(result))
-            except Exception as ex:
-                QTimer.singleShot(0, lambda: self.check_result.setText(str(ex)[:60]))
-        fut = pool.submit(_check)
-        fut.add_done_callback(_on_done)
+
+        def _done(result, error):
+            # GUI thread: safe to touch the label.
+            if error is not None:
+                self.check_result.setText(str(error)[:80])
+            else:
+                self.check_result.setText(result)
+
+        BackgroundCall(_check, _done, parent=self)
 
     def _on_save(self):
         tokens = [t.strip() for t in self.tokens_edit.toPlainText().strip().splitlines() if t.strip()]
@@ -3150,15 +3695,39 @@ class RepoLinkLabel(QLabel):
 
 
 class MainWindow(QMainWindow):
+    @staticmethod
+    def _make_app_icon() -> QIcon:
+        """Window/tray icon, with a drawn fallback.
+
+        An empty ``QIcon()`` is invisible: Windows then shows no tray entry at
+        all, so the app looks like it vanished after closing the window.
+        """
+        path = resource_path("icon.png")
+        if os.path.exists(path):
+            icon = QIcon(path)
+            if not icon.isNull():
+                return icon
+        pix = QPixmap(64, 64)
+        pix.fill(QColor("#2d7ff9"))
+        painter = QPainter(pix)
+        try:
+            painter.setPen(QColor("#ffffff"))
+            font = QFont()
+            font.setBold(True)
+            font.setPixelSize(32)
+            painter.setFont(font)
+            painter.drawText(pix.rect(), Qt.AlignCenter, "PS")
+        finally:
+            painter.end()
+        return QIcon(pix)
+
     def __init__(self):
         super().__init__()
         from proxy_skitchen.compat import APP_VERSION
         self.setWindowTitle(f"{_('main.title')} v{APP_VERSION}")
-        # Window icon for taskbar
-        icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
-        self._app_icon = QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
-        if os.path.exists(icon_path):
-            self.setWindowIcon(self._app_icon)
+        # Window icon for taskbar and tray
+        self._app_icon = self._make_app_icon()
+        self.setWindowIcon(self._app_icon)
         self.setMinimumSize(640, 480)
         self.resize(880, 600)
         self._pipeline_mode = False
@@ -3196,7 +3765,7 @@ class MainWindow(QMainWindow):
         proxy_row = QHBoxLayout()
         proxy_row.setContentsMargins(0, 1, 0, 1)
         self.proxy_toggle = QCheckBox(_("main.proxy_toggle"))
-        self.proxy_toggle.setChecked(_settings_data.get("proxy_enabled", True))
+        self.proxy_toggle.setChecked(_as_bool(_settings_data.get("proxy_enabled", True)))
         self.proxy_toggle.toggled.connect(self._on_toggle_proxy)
         self.proxy_toggle.setObjectName("ProxyToggle")
         proxy_row.addWidget(self.proxy_toggle)
@@ -3235,16 +3804,27 @@ class MainWindow(QMainWindow):
         self._tab_btns[0].setProperty("active", True)
 
         self._tray = QSystemTrayIcon(self._app_icon, self)
-        self._tray.setToolTip("Proxy Skitchen")
+        self._tray.setToolTip(f"Proxy Skitchen v{APP_VERSION}")
         tray_menu = QMenu()
-        show_act = tray_menu.addAction("Показать")
-        show_act.triggered.connect(self._show_from_tray)
+        self._tray_show_act = tray_menu.addAction(_("tray.show"))
+        self._tray_show_act.triggered.connect(self._show_from_tray)
         tray_menu.addSeparator()
-        quit_act = tray_menu.addAction("Выход")
-        quit_act.triggered.connect(self._quit_app)
+        self._tray_quit_act = tray_menu.addAction(_("tray.quit"))
+        self._tray_quit_act.triggered.connect(self._quit_app)
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_activated)
-        self._tray.show()
+        self._tray.setVisible(True)
+        _debug(
+            "tray: available=%s icon_null=%s icon_path=%s"
+            % (QSystemTrayIcon.isSystemTrayAvailable(),
+               self._app_icon.isNull(), resource_path("icon.png"))
+        )
+
+        # Hiding the main window must not terminate the app: the tray icon is
+        # the only way back unless the user picks "Quit" explicitly.
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
 
         self.apply_theme()
         self.update_status_bar()
@@ -3261,30 +3841,30 @@ class MainWindow(QMainWindow):
         ep = self.export_page
 
         src_has_sources = len(sp.get_sources()) > 0
-        self._tab_btns[0].setText(f"🔍 Sources {'✅' if src_has_sources else '⏹'}")
+        self._tab_btns[0].setText(f"{_('main.tab.sources')} {'✅' if src_has_sources else '⏹'}")
 
         dl_entries = dp.get_entries() if hasattr(dp, 'get_entries') else []
         if dp._phase == dp.PHASE_FETCH:
-            self._tab_btns[1].setText(f"📥 Download ⏳")
+            self._tab_btns[1].setText(f"{_('main.tab.download')} ⏳")
         elif len(dl_entries) > 0:
-            self._tab_btns[1].setText(f"📥 Download ✅")
+            self._tab_btns[1].setText(f"{_('main.tab.download')} ✅")
         else:
-            self._tab_btns[1].setText(f"📥 Download ⏹")
+            self._tab_btns[1].setText(f"{_('main.tab.download')} ⏹")
 
         test_entries = tp.get_entries()
         total = len(test_entries)
         valid = sum(1 for e in test_entries if e.tcp_ok is True or e.deep_ok is True)
         if tp._phase == tp.PHASE_TEST:
-            self._tab_btns[2].setText(f"⚡ Test ⏳")
+            self._tab_btns[2].setText(f"{_('main.tab.test')} ⏳")
         elif valid > 0:
-            self._tab_btns[2].setText(f"⚡ Test ✅")
+            self._tab_btns[2].setText(f"{_('main.tab.test')} ✅")
         elif total > 0:
-            self._tab_btns[2].setText(f"⚡ Test ❌")
+            self._tab_btns[2].setText(f"{_('main.tab.test')} ❌")
         else:
-            self._tab_btns[2].setText(f"⚡ Test ⏹")
+            self._tab_btns[2].setText(f"{_('main.tab.test')} ⏹")
 
         ep_visited = ep._main._current_page >= 2
-        self._tab_btns[3].setText(f"📤 Export {'✅' if ep_visited else '⏹'}")
+        self._tab_btns[3].setText(f"{_('main.tab.export')} {'✅' if ep_visited else '⏹'}")
 
     def set_page(self, idx: int):
         if idx < 0 or idx > 3:
@@ -3368,6 +3948,11 @@ class MainWindow(QMainWindow):
         self.download_page.retranslate()
         self.test_page.retranslate()
         self.export_page.retranslate()
+        if getattr(self, "_tray_show_act", None) is not None:
+            self._tray_show_act.setText(_("tray.show"))
+        if getattr(self, "_tray_quit_act", None) is not None:
+            self._tray_quit_act.setText(_("tray.quit"))
+        self.update_status_bar()
 
     def _switch_theme(self, theme: str):
         if theme != current_theme():
@@ -3383,9 +3968,7 @@ class MainWindow(QMainWindow):
         if self.test_page._phase == self.test_page.PHASE_TEST:
             ret = QMessageBox.question(
                 self, "Proxy Skitchen",
-                "Тест ещё выполняется.\n"
-                "Нажмите «Да» — тест остановится, программа закроется.\n"
-                "Нажмите «Нет» — программа свернётся в трей, тест продолжится.",
+                _("main.close.test_running"),
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if ret == QMessageBox.Yes:
@@ -3394,33 +3977,60 @@ class MainWindow(QMainWindow):
                 return
             event.ignore()
             self.hide()
+            self._notify_minimized()
             return
         if self._tray is None or not QSystemTrayIcon.isSystemTrayAvailable():
+            # No tray to restore from: quitting is the only sane option.
             event.accept()
+            self._quit_app()
             return
         event.ignore()
         self.hide()
-        self._tray.showMessage(
-            "Proxy Skitchen",
-            "Программа свёрнута в трей. Используйте иконку в трее для восстановления.",
-            self._app_icon, 2000,
-        )
+        self._notify_minimized()
 
-    def _show_from_tray(self):
-        self.showNormal()
+    def _notify_minimized(self):
+        if self._tray is None:
+            return
+        try:
+            self._tray.showMessage(
+                "Proxy Skitchen",
+                _("tray.minimized"),
+                self._app_icon, 2000,
+            )
+        except Exception:
+            pass
+
+    def show_window(self):
+        """Bring the window back from tray/minimized and focus it."""
+        if self.isMinimized() or not self.isVisible():
+            self.showNormal()
         self.activateWindow()
         self.raise_()
 
+    def _show_from_tray(self):
+        self.show_window()
+
     def _on_tray_activated(self, reason: int):
-        if reason == QSystemTrayIcon.DoubleClick:
+        # Windows/Linux send Trigger on a single click; macOS uses DoubleClick.
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self._show_from_tray()
 
     def _quit_app(self):
-        self._tray.hide()
+        if self._tray is not None:
+            self._tray.hide()
         self._tray = None
         self.source_page._cleanup_gh()
         self.download_page._cleanup_net()
         self.test_page._cleanup_test()
+        self.test_page._cleanup_strategy()
+        wait_background_calls(1500)
+        wait_zombies(2000)
+        # The testers spawn sing-box/xray; kill any survivor before exiting.
+        try:
+            from .tester import kill_all_procs
+            kill_all_procs()
+        except Exception:
+            pass
         QApplication.instance().quit()
 
 def get_style_string(colors: dict) -> str:

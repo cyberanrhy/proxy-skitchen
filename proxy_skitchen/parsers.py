@@ -1,4 +1,4 @@
-import re, json, base64, urllib.parse, html, os, atexit
+import re, json, base64, urllib.parse, html, os, atexit, threading
 from typing import Optional
 
 # ── Pre-compiled regexes ──
@@ -273,6 +273,7 @@ def guess_country(uri: str) -> str:
 
 _GEO_CACHE: dict[str, str] = {}
 _GEO_CACHE_DIRTY = False
+_GEO_LOCK = threading.Lock()
 
 
 def _load_geo_cache():
@@ -291,18 +292,24 @@ def _save_geo_cache():
     global _GEO_CACHE_DIRTY
     from .compat import SETTINGS_DIR
     _GEO_CACHE_FILE = os.path.join(SETTINGS_DIR, "geo_cache.json")
+    # Snapshot under the lock; write outside it to keep lookups responsive.
+    with _GEO_LOCK:
+        snapshot = dict(_GEO_CACHE)
+        _GEO_CACHE_DIRTY = False
     try:
         d = os.path.dirname(_GEO_CACHE_FILE)
         os.makedirs(d, exist_ok=True)
         with open(_GEO_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(_GEO_CACHE, f, indent=2)
-        _GEO_CACHE_DIRTY = False
+            json.dump(snapshot, f, indent=2)
     except Exception:
-        pass
+        with _GEO_LOCK:
+            _GEO_CACHE_DIRTY = True
 
 
 def flush_geo_cache():
-    if _GEO_CACHE_DIRTY:
+    with _GEO_LOCK:
+        dirty = _GEO_CACHE_DIRTY
+    if dirty:
         _save_geo_cache()
 
 
@@ -312,8 +319,10 @@ atexit.register(flush_geo_cache)
 
 def geo_lookup(ip: str) -> str:
     global _GEO_CACHE_DIRTY
-    if ip in _GEO_CACHE:
-        return _GEO_CACHE[ip]
+    with _GEO_LOCK:
+        cached = _GEO_CACHE.get(ip)
+    if cached is not None:
+        return cached
     try:
         import urllib.request
         url = f"http://ip-api.com/json/{ip}?fields=country,countryCode"
@@ -322,9 +331,11 @@ def geo_lookup(ip: str) -> str:
         data = json.loads(resp.read())
         country = data.get("country", "")
         if country:
-            _GEO_CACHE[ip] = country
-            _GEO_CACHE_DIRTY = True
-            if len(_GEO_CACHE) % 10 == 0:
+            with _GEO_LOCK:
+                _GEO_CACHE[ip] = country
+                _GEO_CACHE_DIRTY = True
+                size = len(_GEO_CACHE)
+            if size % 10 == 0:
                 _save_geo_cache()
             return country
     except Exception:

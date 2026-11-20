@@ -1,5 +1,6 @@
-import os, sys, json, socket, ssl, subprocess, time, random, tempfile, threading, urllib.request, urllib.parse, urllib.error, re, base64
+import os, sys, json, socket, ssl, subprocess, time, random, tempfile, threading, urllib.request, urllib.parse, urllib.error, re, base64, statistics
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime
@@ -99,6 +100,415 @@ SB_SEMAPHORE = threading.Semaphore(3)
 
 RKN_TEST_TIMEOUT = 10
 
+# RKN targets: (domain, human name, body marker, category)
+RKN_TARGETS = (
+    ("t.me", "Telegram", "telegram", "messenger"),
+    ("instagram.com", "Instagram", "instagram", "social"),
+    ("youtube.com", "YouTube", "youtube", "video"),
+    ("twitter.com", "Twitter", "twitter", "social"),
+)
+RKN_TARGETS_EXTENDED = RKN_TARGETS + (
+    ("meduza.io", "Meduza", "meduza", "news"),
+    ("github.com", "GitHub", "github", "dev"),
+)
+
+# Xray TLS-fragmentation profile (commonly used against SNI-based DPI).
+XRAY_FRAGMENT_DEFAULT = {
+    "packets": "tlshello",
+    "length": "100-200",
+    "interval": "10-20",
+}
+
+
+# ── Fair probing ──────────────────────────────────────────────────────────
+# A single request to one URL is too easy to fool: ISP block pages return 200
+# with a body, and one timeout does not prove a proxy is dead.  Deep testing
+# uses several independent targets, validates their content and retries.
+
+@dataclass(frozen=True)
+class ProbeTarget:
+    url: str
+    kind: str = "status"        # empty204 | trace | marker | status
+    marker: str = ""
+    category: str = "control"
+    min_bytes: int = 0
+
+
+CONTROL_TARGETS = (
+    ProbeTarget("https://cp.cloudflare.com/cdn-cgi/trace", "trace", category="control"),
+    ProbeTarget("https://www.gstatic.com/generate_204", "empty204", category="control"),
+)
+GENERATE_204_TARGET = ProbeTarget(TEST_URL, "empty204")
+INFRA_TARGETS = (
+    ProbeTarget("https://github.com", "marker", "github", category="infra", min_bytes=500),
+    ProbeTarget("https://1.1.1.1/cdn-cgi/trace", "trace", category="infra"),
+)
+
+
+@dataclass
+class ProbeAttempt:
+    ok: bool
+    code: int = 0
+    latency_ms: float = 0.0
+    size: int = 0
+    error: str = ""
+
+
+@dataclass
+class ProbeResult:
+    target: ProbeTarget
+    attempts: list = field(default_factory=list)
+    ok: bool = False
+    success_ratio: float = 0.0
+    latency_ms: float = 0.0
+    reason: str = ""
+
+
+def validate_probe_response(target: ProbeTarget, code: int, body: bytes) -> tuple[bool, str]:
+    """Validate content, not just the status code.
+
+    A captive portal or ISP block page often returns 200 with HTML; it must not
+    count as a working tunnel.
+    """
+    size = len(body)
+    if target.kind == "empty204":
+        if code == 204 and size == 0:
+            return True, ""
+        if code == 204:
+            return False, "204_with_body"
+        return False, f"http_{code}"
+    if target.kind == "trace":
+        low = body.lower()
+        if code == 200 and b"ip=" in low and (b"colo=" in low or b"warp=" in low):
+            return True, ""
+        return False, f"trace_invalid_{code}"
+    if target.kind == "marker":
+        marker = target.marker.lower().encode("utf-8")
+        if code == 200 and size >= target.min_bytes and marker in body.lower():
+            return True, ""
+        return False, f"marker_missing_{code}"
+    if code in (200, 301, 302, 303, 307, 308) and size >= target.min_bytes:
+        return True, ""
+    return False, f"http_{code}"
+
+
+def _probe_error_reason(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"http_{exc.code}"
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return "timeout"
+    if isinstance(exc, ConnectionResetError):
+        return "reset"
+    if isinstance(exc, ssl.SSLError):
+        return "tls_error"
+    return type(exc).__name__.lower()
+
+
+def summarize_attempts(attempts: list[ProbeAttempt]) -> tuple[bool, float, float, str]:
+    """Pure verdict for a list of attempts: (ok, ratio, median_latency, reason)."""
+    if not attempts:
+        return False, 0.0, 0.0, "probe_failed"
+    successes = [a for a in attempts if a.ok]
+    ratio = len(successes) / len(attempts)
+    need = max(1, (len(attempts) + 1) // 2)
+    ok = len(successes) >= need
+    latency = statistics.median(a.latency_ms for a in successes) if successes else 0.0
+    reason = ""
+    if not ok:
+        reasons = [a.error for a in attempts if a.error]
+        reason = Counter(reasons).most_common(1)[0][0] if reasons else "unknown"
+    return ok, ratio, latency, reason
+
+
+def _single_attempt(proxy_url: str, target: ProbeTarget, timeout: float) -> ProbeAttempt:
+    start = time.time()
+    try:
+        handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        opener = urllib.request.build_opener(handler)
+        opener.addheaders = [(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        )]
+        resp = opener.open(target.url, timeout=timeout)
+        code = resp.getcode()
+        body = resp.read(262144)
+        latency = (time.time() - start) * 1000
+        ok, reason = validate_probe_response(target, code, body)
+        return ProbeAttempt(ok, code, latency, len(body), reason)
+    except Exception as exc:
+        return ProbeAttempt(False, 0, (time.time() - start) * 1000, 0, _probe_error_reason(exc))
+
+
+def probe_target(proxy_url: str, target: ProbeTarget, attempts: int = 1,
+                 timeout: float = 5.0, pause: tuple = (0.15, 0.45)) -> ProbeResult:
+    """Probe one target several times and decide by success ratio."""
+    attempts = max(1, int(attempts))
+    result = ProbeResult(target=target)
+    for idx in range(attempts):
+        result.attempts.append(_single_attempt(proxy_url, target, timeout))
+        if result.attempts[-1].ok:
+            break
+        if idx < attempts - 1:
+            time.sleep(random.uniform(*pause))
+    result.ok, result.success_ratio, result.latency_ms, result.reason = summarize_attempts(result.attempts)
+    return result
+
+
+def probe_targets_rounds(proxy_url: str, targets, attempts: int = 1,
+                         timeout: float = 5.0, pause: tuple = (0.15, 0.45)) -> list[ProbeResult]:
+    """Probe several targets in parallel rounds, stopping at the first success.
+
+    Working proxies finish in the first round; dead ones pay for every round
+    but the rounds run in parallel across targets, so the cost stays bounded.
+    """
+    targets = tuple(targets)
+    attempts = max(1, int(attempts))
+    results = {target: ProbeResult(target=target) for target in targets}
+    for round_idx in range(attempts):
+        pending = [t for t in targets if not results[t].ok]
+        if not pending:
+            break
+        with ThreadPoolExecutor(max_workers=min(4, len(pending))) as ex:
+            futs = {ex.submit(_single_attempt, proxy_url, target, timeout): target
+                    for target in pending}
+            for fut in as_completed(futs):
+                target = futs[fut]
+                try:
+                    attempt = fut.result()
+                except Exception as exc:
+                    attempt = ProbeAttempt(False, 0, 0, 0, type(exc).__name__.lower())
+                results[target].attempts.append(attempt)
+        for target in pending:
+            ok, ratio, latency, reason = summarize_attempts(results[target].attempts)
+            results[target].ok = ok
+            results[target].success_ratio = ratio
+            results[target].latency_ms = latency
+            results[target].reason = reason
+        if any(results[t].ok for t in targets):
+            break
+        if round_idx < attempts - 1:
+            time.sleep(random.uniform(*pause))
+    return [results[t] for t in targets]
+
+
+def verdict_from_probes(results: list[ProbeResult]) -> tuple[bool, float, str]:
+    """A tunnel is alive if at least one independent target passed."""
+    passed = [r for r in results if r.ok]
+    if passed:
+        latencies = [r.latency_ms for r in passed if r.latency_ms > 0]
+        return True, min(latencies) if latencies else 0.0, ""
+    reasons = [r.reason for r in results if r.reason]
+    reason = Counter(reasons).most_common(1)[0][0] if reasons else "probe_failed"
+    return False, 0.0, reason
+
+
+
+def summarize_rkn_results(results: list[dict], quorum: int = 1) -> tuple[bool, float, int, int]:
+    """Apply a quorum to probe results.
+
+    ``quorum=1`` keeps the historical "at least one site opened" behaviour; a
+    higher quorum filters lucky single-domain false positives.
+    """
+    opened = [r for r in results if r.get("ok")]
+    latencies = [r.get("latency", 0.0) for r in opened if r.get("latency", 0.0) > 0]
+    best_lat = min(latencies) if latencies else 0.0
+    need = max(1, int(quorum))
+    return len(opened) >= need, best_lat, len(opened), len(results)
+
+
+def _as_port(value) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+def uri_query_param(uri: str, key: str, default: str = "") -> str:
+    """Read one query parameter from a proxy URI (before #fragment)."""
+    qm = uri.find('?')
+    if qm == -1:
+        return default
+    qs = uri[qm + 1:]
+    hash_pos = qs.find('#')
+    if hash_pos != -1:
+        qs = qs[:hash_pos]
+    values = urllib.parse.parse_qs(qs).get(key)
+    return values[0] if values else default
+
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
+_ERROR_HINTS = ("failed", "error", "fatal", "unknown", "invalid", "reject", "panic")
+
+
+def core_error_text(stdout, stderr, limit: int = 200) -> str:
+    """Extract a meaningful error line from a core's output.
+
+    Xray prints its banner first and the real failure later on stdout, while
+    sing-box writes FATAL lines to stderr.  Taking the first 200 characters
+    used to return the version banner instead of the error.
+    """
+    def _decode(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        return _ANSI_RE.sub("", value)
+
+    text = _decode(stderr).strip() or _decode(stdout).strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        low = line.lower()
+        if any(hint in low for hint in _ERROR_HINTS):
+            return line[:limit]
+    return (lines[-1] if lines else "")[:limit]
+
+
+def prefer_xray(uri: str) -> bool:
+    """Whether Xray should be tried first for this URI.
+
+    Xray 26 supports REALITY only over raw/xhttp/gRPC, while sing-box still
+    accepts REALITY over WebSocket.  Trying Xray for ``ws`` reality configs
+    guaranteed a core error before, so route those to sing-box instead.
+    """
+    if get_protocol(uri) != 'vless':
+        return False
+    if uri_query_param(uri, 'security', '').lower() != 'reality':
+        return False
+    transport = uri_query_param(uri, 'type', 'tcp').lower()
+    return transport not in ('ws', 'websocket')
+
+
+def singbox_supports_uri(uri: str) -> bool:
+    """Whether sing-box can parse this URI's transport.
+
+    sing-box 1.14 does not know ``xhttp``; falling back to it after a failed
+    Xray attempt only hides the real reason behind a config error.
+    """
+    transport = uri_query_param(uri, 'type', 'tcp').lower()
+    return transport not in ('xhttp',)
+
+
+def apply_singbox_overrides(outbound: dict, overrides: dict | None) -> dict:
+    """Apply strategy overrides (fragment/utls/sni/port/server) to sing-box."""
+    if not overrides:
+        return outbound
+    needs_tls = any(k in overrides for k in ("sni", "utls", "fragment", "fragment_fallback_delay"))
+    tls = None
+    if needs_tls:
+        tls = outbound.setdefault("tls", {})
+        tls.setdefault("enabled", True)
+        tls["enabled"] = True
+    if tls is not None:
+        if overrides.get("sni"):
+            tls["server_name"] = str(overrides["sni"])
+        if overrides.get("utls"):
+            tls["utls"] = {"enabled": True, "fingerprint": str(overrides["utls"])}
+        if overrides.get("fragment"):
+            tls["fragment"] = True
+            if overrides.get("fragment_fallback_delay"):
+                tls["fragment_fallback_delay"] = str(overrides["fragment_fallback_delay"])
+    port = _as_port(overrides.get("port"))
+    if port:
+        outbound["server_port"] = port
+    if overrides.get("server"):
+        outbound["server"] = str(overrides["server"])
+    return outbound
+
+
+def apply_xray_overrides(outbound: dict, overrides: dict | None) -> dict:
+    """Apply strategy overrides to an Xray outbound."""
+    if not overrides:
+        return outbound
+    stream = outbound.setdefault("streamSettings", {})
+    security = str(stream.get("security", "")).lower()
+
+    def tls_section():
+        key = "realitySettings" if security == "reality" else "tlsSettings"
+        return stream.setdefault(key, {})
+
+    if overrides.get("sni"):
+        tls_section()["serverName"] = str(overrides["sni"])
+    if overrides.get("utls"):
+        tls_section()["fingerprint"] = str(overrides["utls"])
+    if overrides.get("fragment"):
+        frag = overrides["fragment"]
+        stream["fragment"] = dict(frag) if isinstance(frag, dict) else dict(XRAY_FRAGMENT_DEFAULT)
+    port = _as_port(overrides.get("port"))
+    if port:
+        try:
+            outbound["settings"]["vnext"][0]["port"] = port
+        except (KeyError, IndexError, TypeError):
+            pass
+    if overrides.get("server"):
+        try:
+            outbound["settings"]["vnext"][0]["address"] = str(overrides["server"])
+        except (KeyError, IndexError, TypeError):
+            pass
+    return outbound
+
+
+
+_PROCS_LOCK = threading.Lock()
+_PROCS: set = set()
+
+_PORT_LOCK = threading.Lock()
+_PORTS_IN_USE: set[int] = set()
+_PORTS_BURNED: set[int] = set()
+
+
+def _spawn(cmd, **kwargs):
+    """Popen + global registry so TesterWorker.stop() can kill orphaned cores."""
+    proc = subprocess.Popen(cmd, **kwargs)
+    with _PROCS_LOCK:
+        _PROCS.add(proc)
+    return proc
+
+
+def _reap(proc):
+    if proc is None:
+        return
+    with _PROCS_LOCK:
+        _PROCS.discard(proc)
+
+
+def kill_all_procs():
+    """Kill every core process started by the testers (app shutdown / stop)."""
+    with _PROCS_LOCK:
+        procs = list(_PROCS)
+        _PROCS.clear()
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+
+
+def allocate_port() -> int:
+    """Reserve a free local port; serialised so two workers never share one."""
+    with _PORT_LOCK:
+        # Cap the burn list: over a long session thousands of tests would
+        # otherwise exhaust the ephemeral port range.
+        if len(_PORTS_BURNED) > 4000:
+            _PORTS_BURNED.clear()
+        for _ in range(50):
+            port = find_free_port()
+            if port not in _PORTS_IN_USE and port not in _PORTS_BURNED:
+                _PORTS_IN_USE.add(port)
+                _PORTS_BURNED.add(port)
+                return port
+        port = find_free_port()
+        _PORTS_IN_USE.add(port)
+        _PORTS_BURNED.add(port)
+        return port
+
+
+def release_port(port: int):
+    with _PORT_LOCK:
+        _PORTS_IN_USE.discard(port)
+
 
 def find_free_port() -> int:
     for _ in range(10):
@@ -155,6 +565,34 @@ def test_tcp(host: str, port: int, timeout: float = TCP_TIMEOUT) -> bool:
         return False
 
 
+def tcp_probe(host: str, port: int, timeout: float = 2.0) -> tuple[bool | None, float]:
+    """Fast reachability check with RTT.
+
+    Returns ``(True, rtt_ms)`` when connect succeeds, ``(False, 0)`` when the
+    address resolved but the port is unreachable, and ``(None, 0)`` when DNS
+    could not resolve at all (do not call that a dead proxy: DoH may still work).
+    """
+    try:
+        addrs = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    except Exception:
+        return None, 0.0
+    if not addrs:
+        return None, 0.0
+    for addr in addrs[:3]:
+        try:
+            s = socket.socket(addr[0], addr[1], addr[2])
+            s.settimeout(timeout)
+            try:
+                start = time.time()
+                s.connect(addr[4])
+                return True, (time.time() - start) * 1000
+            finally:
+                s.close()
+        except Exception:
+            continue
+    return False, 0.0
+
+
 def test_tls(host: str, sni: str = "", timeout: float = TCP_TIMEOUT) -> bool:
     try:
         ctx = ssl.create_default_context()
@@ -174,19 +612,15 @@ def test_tls(host: str, sni: str = "", timeout: float = TCP_TIMEOUT) -> bool:
         return False
 
 
-def test_http_proxy(proxy_url: str, url: str = TEST_URL, timeout: float = SB_TIMEOUT) -> tuple[bool, float]:
-    start = time.time()
-    try:
-        handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
-        opener = urllib.request.build_opener(handler)
-        resp = opener.open(url, timeout=timeout)
-        code = resp.getcode()
-        body = resp.read(1024)
-        elapsed = (time.time() - start) * 1000
-        ok = (code == 204) or (code in (200, 301, 302, 303, 307, 308) and len(body) > 0)
-        return ok, elapsed
-    except Exception:
-        return False, (time.time() - start) * 1000
+def test_http_proxy(proxy_url: str, url: str = TEST_URL, timeout: float = SB_TIMEOUT,
+                    attempts: int = 1) -> tuple[bool, float]:
+    """Backwards-compatible wrapper around :func:`probe_target`."""
+    if url == TEST_URL:
+        target = GENERATE_204_TARGET
+    else:
+        target = ProbeTarget(url, "status", min_bytes=1)
+    result = probe_target(proxy_url, target, attempts=attempts, timeout=timeout)
+    return result.ok, result.latency_ms
 
 
 def test_port(host: str, port: int, timeout: float = 1) -> bool:
@@ -225,8 +659,9 @@ class SingBoxTester:
         self.doh_list = doh_list
         self._doh_cache = {}
 
-    def test(self, uri: str, port: int) -> tuple[bool, float, str]:
-        config = self._make_config(uri, port)
+    def test(self, uri: str, port: int, overrides: dict | None = None,
+             attempts: int = 1, targets=None, timeout: float | None = None) -> tuple[bool, float, str]:
+        config = self._make_config(uri, port, overrides)
         if config is None:
             return False, 0, "unsupported protocol"
         proc = None
@@ -240,7 +675,7 @@ class SingBoxTester:
                 _debug(f"CONFIG reality: pbk={reality.get('public_key','')!r} sid={reality.get('short_id','')!r}")
                 with SB_SEMAPHORE:
                     time.sleep(random.uniform(0.1, 0.3))
-                    proc = subprocess.Popen(
+                    proc = _spawn(
                         [SING_BOX, "run", "-c", config_path],
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
@@ -250,18 +685,24 @@ class SingBoxTester:
                         err = ""
                         try:
                             _, err_b = proc.communicate(timeout=0.5)
-                            err = err_b.decode("utf-8", errors="replace")[:200]
+                            err = core_error_text(None, err_b)
                         except Exception:
                             pass
                         return False, 0, f"sb failed: {err}" if err else "sb failed to start"
-                    ok, lat = test_http_proxy(f"http://127.0.0.1:{port}", timeout=5)
+                    probe_targets = tuple(targets) if targets else (GENERATE_204_TARGET,)
+                    probe_results = probe_targets_rounds(
+                        f"http://127.0.0.1:{port}", probe_targets,
+                        attempts=attempts, timeout=timeout or SB_TIMEOUT,
+                    )
+                    ok, lat, reason = verdict_from_probes(probe_results)
                     proc.kill()
                     try:
                         proc.wait(1)
                     except Exception:
                         pass
+                    _reap(proc)
                     proc = None
-                return ok, lat, ""
+                return ok, lat, reason
         except Exception as e:
             return False, 0, str(e)
         finally:
@@ -271,6 +712,7 @@ class SingBoxTester:
                     proc.wait(1)
                 except Exception:
                     pass
+            _reap(proc)
 
     def _probe(self, proxy_url: str, domain: str, marker: str | None = None, expect_code: int = 200) -> tuple[bool, int, float]:
         url = "https://" + domain
@@ -295,8 +737,9 @@ class SingBoxTester:
             _debug(f"_probe {domain}: exc {e}")
             return False, 0, 0.0
 
-    def test_rkn_bypass(self, uri: str, port: int) -> tuple[bool, float, str, list[dict]]:
-        config = self._make_config(uri, port)
+    def test_rkn_bypass(self, uri: str, port: int, overrides: dict | None = None,
+                        targets=None, quorum: int = 1) -> tuple[bool, float, str, list[dict]]:
+        config = self._make_config(uri, port, overrides)
         if config is None:
             return False, 0, "unsupported protocol", []
         proc = None
@@ -308,41 +751,40 @@ class SingBoxTester:
                     json.dump(config, f, indent=2)
                 with SB_SEMAPHORE:
                     time.sleep(random.uniform(0.1, 0.3))
-                    proc = subprocess.Popen(
+                    proc = _spawn(
                         [SING_BOX, "run", "-c", config_path],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
                     time.sleep(0.5)
+                    if proc.poll() is not None:
+                        # Core rejected the config: report it instead of calling
+                        # every blocked site "closed".
+                        return False, 0, f"sb failed to start (rc={proc.returncode})", []
                     proxy_url = f"http://127.0.0.1:{port}"
-                    # RKN bypass: at least one blocked-in-RU site must really open
-                    targets = [("t.me", "Telegram", "telegram"),
-                               ("instagram.com", "Instagram", "instagram"),
-                               ("youtube.com", "YouTube", "youtube"),
-                               ("twitter.com", "Twitter", "twitter")]
-                    any_open = False
-                    best_lat = 0.0
-                    with ThreadPoolExecutor(max_workers=4) as ex:
-                        futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n) for d, n, mk in targets}
+                    # RKN bypass: blocked-in-RU sites must really open.
+                    use_targets = list(targets) if targets else list(RKN_TARGETS)
+                    with ThreadPoolExecutor(max_workers=min(8, len(use_targets))) as ex:
+                        futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n, cat)
+                                for d, n, mk, cat in use_targets}
                         for fut in as_completed(futs):
-                            d, n = futs[fut]
+                            d, n, cat = futs[fut]
                             try:
                                 ok, code, lat = fut.result()
                             except Exception:
                                 ok, code, lat = False, 0, 0.0
-                            results.append({"domain": d, "name": n, "ok": ok, "latency": lat, "status": code})
-                            if ok and lat > 0:
-                                any_open = True
-                                best_lat = lat if best_lat <= 0 else min(best_lat, lat)
+                            results.append({"domain": d, "name": n, "ok": ok,
+                                            "latency": lat, "status": code, "category": cat})
                             _debug(f"rkn_bypass: {uri[:60]} {d} ok={ok} code={code}")
                     proc.kill()
                     try:
                         proc.wait(1)
                     except Exception:
                         pass
+                    _reap(proc)
                     proc = None
-                ok = any_open
-                _debug(f"rkn_bypass: {uri[:60]} any_open={any_open} ok={ok}")
+                ok, best_lat, opened, total = summarize_rkn_results(results, quorum)
+                _debug(f"rkn_bypass: {uri[:60]} opened={opened}/{total} quorum={quorum} ok={ok}")
                 return ok, best_lat, "" if ok else "не открывает заблокированные", results
         except Exception as e:
             return False, 0, str(e), results
@@ -353,14 +795,16 @@ class SingBoxTester:
                     proc.wait(1)
                 except Exception:
                     pass
+            _reap(proc)
 
-    def _make_config(self, uri: str, local_port: int) -> Optional[dict]:
+    def _make_config(self, uri: str, local_port: int, overrides: dict | None = None) -> Optional[dict]:
         proto = get_protocol(uri)
         outbound = self._parse(uri)
         if outbound is None:
             return None
         if self.use_doh:
             _harden_dns(outbound, self.doh_list, self._doh_cache, 'sb')
+        apply_singbox_overrides(outbound, overrides)
         outbound["tag"] = "proxy"
         return {
             "log": {"level": "error", "output": "nul" if IS_WINDOWS else "/dev/null"},
@@ -742,8 +1186,11 @@ class XrayTester:
             _debug(f"_probe {domain}: exc {e}")
             return False, 0, 0.0
 
-    def test_rkn(self, uri: str, port: int) -> tuple[bool, float, str, list]:
-        config = self._make_config(uri, port)
+    def test_rkn(self, uri: str, port: int, overrides: dict | None = None,
+                 targets=None, quorum: int = 1) -> tuple[bool, float, str, list]:
+        if not os.path.isfile(XRAY):
+            return False, 0, f"xray не найден: {XRAY}", []
+        config = self._make_config(uri, port, overrides)
         if config is None:
             return False, 0, "unsupported protocol", []
         proc = None
@@ -755,7 +1202,7 @@ class XrayTester:
                     json.dump(config, f, indent=2)
                 with self.XRAY_SEMAPHORE:
                     time.sleep(random.uniform(0.1, 0.3))
-                    proc = subprocess.Popen(
+                    proc = _spawn(
                         [XRAY, "run", "-c", config_path],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
@@ -765,39 +1212,34 @@ class XrayTester:
                         err = ""
                         try:
                             out_b, err_b = proc.communicate(timeout=0.5)
-                            err = (out_b + err_b).decode("utf-8", errors="replace")[:200]
+                            err = core_error_text(out_b, err_b)
                         except Exception:
                             pass
                         return False, 0, f"xray err: {err}" if err else "xray failed to start", []
                     proxy_url = f"http://127.0.0.1:{port}"
-                    # RKN bypass: at least one blocked-in-RU site must really open
-                    targets = [("t.me", "Telegram", "telegram"),
-                               ("instagram.com", "Instagram", "instagram"),
-                               ("youtube.com", "YouTube", "youtube"),
-                               ("twitter.com", "Twitter", "twitter")]
-                    any_open = False
-                    best_lat = 0.0
-                    with ThreadPoolExecutor(max_workers=4) as ex:
-                        futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n) for d, n, mk in targets}
+                    # RKN bypass: blocked-in-RU sites must really open.
+                    use_targets = list(targets) if targets else list(RKN_TARGETS)
+                    with ThreadPoolExecutor(max_workers=min(8, len(use_targets))) as ex:
+                        futs = {ex.submit(self._probe, proxy_url, d, mk): (d, n, cat)
+                                for d, n, mk, cat in use_targets}
                         for fut in as_completed(futs):
-                            d, n = futs[fut]
+                            d, n, cat = futs[fut]
                             try:
                                 ok, code, lat = fut.result()
                             except Exception:
                                 ok, code, lat = False, 0, 0.0
-                            results.append({"domain": d, "name": n, "ok": ok, "latency": lat, "status": code})
-                            if ok and lat > 0:
-                                any_open = True
-                                best_lat = lat if best_lat <= 0 else min(best_lat, lat)
+                            results.append({"domain": d, "name": n, "ok": ok,
+                                            "latency": lat, "status": code, "category": cat})
                             _debug(f"xr_rkn: {uri[:60]} {d} ok={ok} code={code}")
                     proc.kill()
                     try:
                         proc.wait(1)
                     except Exception:
                         pass
+                    _reap(proc)
                     proc = None
-                ok = any_open
-                _debug(f"xr_rkn: {uri[:60]} any_open={any_open} ok={ok}")
+                ok, best_lat, opened, total = summarize_rkn_results(results, quorum)
+                _debug(f"xr_rkn: {uri[:60]} opened={opened}/{total} quorum={quorum} ok={ok}")
                 return ok, best_lat, "" if ok else "не открывает заблокированные", results
         except Exception as e:
             return False, 0, str(e), results
@@ -808,11 +1250,13 @@ class XrayTester:
                     proc.wait(1)
                 except Exception:
                     pass
+            _reap(proc)
 
-    def test(self, uri: str, port: int) -> tuple[bool, float, str]:
+    def test(self, uri: str, port: int, overrides: dict | None = None,
+             attempts: int = 1, targets=None, timeout: float | None = None) -> tuple[bool, float, str]:
         if not os.path.isfile(XRAY):
             return False, 0, f"xray не найден: {XRAY}"
-        config = self._make_config(uri, port)
+        config = self._make_config(uri, port, overrides)
         if config is None:
             return False, 0, "unsupported protocol"
         proc = None
@@ -823,7 +1267,7 @@ class XrayTester:
                     json.dump(config, f, indent=2)
                 with self.XRAY_SEMAPHORE:
                     time.sleep(random.uniform(0.1, 0.3))
-                    proc = subprocess.Popen(
+                    proc = _spawn(
                         [XRAY, "run", "-c", config_path],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
@@ -833,18 +1277,24 @@ class XrayTester:
                         err = ""
                         try:
                             out_b, err_b = proc.communicate(timeout=0.5)
-                            err = (out_b + err_b).decode("utf-8", errors="replace")[:200]
+                            err = core_error_text(out_b, err_b)
                         except Exception:
                             pass
                         return False, 0, f"xray err: {err}" if err else "xray failed to start"
-                    ok, lat = test_http_proxy(f"http://127.0.0.1:{port}", timeout=5)
+                    probe_targets = tuple(targets) if targets else (GENERATE_204_TARGET,)
+                    probe_results = probe_targets_rounds(
+                        f"http://127.0.0.1:{port}", probe_targets,
+                        attempts=attempts, timeout=timeout or SB_TIMEOUT,
+                    )
+                    ok, lat, reason = verdict_from_probes(probe_results)
                     proc.kill()
                     try:
                         proc.wait(1)
                     except Exception:
                         pass
+                    _reap(proc)
                     proc = None
-                return ok, lat, ""
+                return ok, lat, reason
         except Exception as e:
             return False, 0, str(e)
         finally:
@@ -854,8 +1304,9 @@ class XrayTester:
                     proc.wait(1)
                 except Exception:
                     pass
+            _reap(proc)
 
-    def _make_config(self, uri: str, local_port: int) -> Optional[dict]:
+    def _make_config(self, uri: str, local_port: int, overrides: dict | None = None) -> Optional[dict]:
         proto = get_protocol(uri)
         if proto != 'vless':
             return None
@@ -864,6 +1315,7 @@ class XrayTester:
             return None
         if self.use_doh:
             _harden_dns(outbound, self.doh_list, self._doh_cache, 'xray')
+        apply_xray_overrides(outbound, overrides)
         return {
             "log": {"loglevel": "warning"},
             "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "http", "settings": {}}],
