@@ -51,10 +51,10 @@ class TestProxyTableModel(unittest.TestCase):
         try:
             i18n._lang = "en"
             self.model.rebuild_headers()
-            self.assertEqual(self.model.headerData(6, Qt.Orientation.Horizontal), "Bypass")
+            self.assertEqual(self.model.headerData(6, Qt.Orientation.Horizontal), "Profile")
             i18n._lang = "ru"
             self.model.rebuild_headers()
-            self.assertEqual(self.model.headerData(6, Qt.Orientation.Horizontal), "Обход")
+            self.assertEqual(self.model.headerData(6, Qt.Orientation.Horizontal), "Профиль")
         finally:
             i18n._lang = old
 

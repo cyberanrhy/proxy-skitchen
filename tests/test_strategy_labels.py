@@ -26,11 +26,11 @@ REALITY_WS = (
 class TestStrategyLabels(unittest.TestCase):
     def test_known_labels_ru(self):
         self.assertEqual(strategy_label("fragment", "ru"), "дробление TLS")
-        self.assertEqual(strategy_label("utls_chrome", "ru"), "маскировка Chrome")
+        self.assertEqual(strategy_label("utls_chrome", "ru"), "профиль Chrome")
 
     def test_known_labels_en(self):
         self.assertEqual(strategy_label("fragment", "en"), "TLS split")
-        self.assertEqual(strategy_label("utls_firefox", "en"), "Firefox disguise")
+        self.assertEqual(strategy_label("utls_firefox", "en"), "Firefox profile")
 
     def test_port_label(self):
         self.assertIn("2053", strategy_label("port_2053", "ru"))

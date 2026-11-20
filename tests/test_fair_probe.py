@@ -182,7 +182,7 @@ class TestEngineSupport(unittest.TestCase):
 class TestProbeReasonLabel(unittest.TestCase):
     def test_known_reasons(self):
         self.assertIn("таймаут", probe_reason_label("timeout", "ru"))
-        self.assertIn("DPI", probe_reason_label("reset", "ru"))
+        self.assertIn("сброшено", probe_reason_label("reset", "ru"))
         self.assertIn("TLS", probe_reason_label("tls_error", "ru"))
 
     def test_http_reason(self):

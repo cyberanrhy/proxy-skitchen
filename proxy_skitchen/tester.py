@@ -785,7 +785,7 @@ class SingBoxTester:
                     proc = None
                 ok, best_lat, opened, total = summarize_rkn_results(results, quorum)
                 _debug(f"rkn_bypass: {uri[:60]} opened={opened}/{total} quorum={quorum} ok={ok}")
-                return ok, best_lat, "" if ok else "не открывает заблокированные", results
+                return ok, best_lat, "" if ok else "проверочные сайты не открываются", results
         except Exception as e:
             return False, 0, str(e), results
         finally:
@@ -1240,7 +1240,7 @@ class XrayTester:
                     proc = None
                 ok, best_lat, opened, total = summarize_rkn_results(results, quorum)
                 _debug(f"xr_rkn: {uri[:60]} opened={opened}/{total} quorum={quorum} ok={ok}")
-                return ok, best_lat, "" if ok else "не открывает заблокированные", results
+                return ok, best_lat, "" if ok else "проверочные сайты не открываются", results
         except Exception as e:
             return False, 0, str(e), results
         finally:

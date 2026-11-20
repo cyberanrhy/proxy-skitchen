@@ -5,20 +5,8 @@
 [![Tests](https://img.shields.io/badge/tests-137%20passing-brightgreen.svg)](tests/)
 [![Release](https://img.shields.io/github/v/release/cyberanrhy/proxy-skitchen)](https://github.com/cyberanrhy/proxy-skitchen/releases)
 
-<table>
-<tr>
-<td>
-
-**🇷🇺 Живущим в блокировках — держитесь. Свободный интернет всё ещё существует, просто его теперь ищут.**
-
-**🌍 To those living behind censorship firewalls — stay strong. The open internet still exists; you just have to look a little harder for it.**
-
-</td>
-</tr>
-</table>
-
 > Find working proxy servers and subscriptions in minutes.
-> Scrape, test honestly, bypass DPI, export — all in one desktop app.
+> Scrape, test honestly, tune TLS profiles, export — all in one desktop app.
 
 ![screenshot](screenshot.png)
 
@@ -28,7 +16,7 @@
 
 **proxy-skitchen** finds proxy configs on GitHub, tests them the hard way, and keeps only what actually works from your network.
 
-No «ping passed, so it is alive». No block page counted as a success. No dead nodes in the export.
+No «ping passed, so it is alive». No replaced response counted as a success. No dead nodes in the export.
 
 ---
 
@@ -36,42 +24,42 @@ No «ping passed, so it is alive». No block page counted as a success. No dead 
 
 | Feature | Why it matters |
 |---|---|
-| **Fair deep test** | Two independent control targets, content validation, retries, adaptive timeout — a captive portal or ISP block page can no longer pass as a working tunnel. |
-| **Per-node bypass** | `fragment` and `uTLS` are chosen **per node**, not globally. One node's winning trick breaks another's RKN access — the app now keeps them apart. |
-| **RKN access test** | Checks real blocked sites (Telegram, Instagram, YouTube, Twitter) with a configurable strictness: 1, 2 or 3 sites must open. |
-| **Block reason** | Hover a failed node and see *why*: timeout, connection reset (DPI), TLS tampering, closed port, replaced response. |
+| **Fair deep test** | Two independent control targets, content validation, retries, adaptive timeout — a captive portal or a replaced response can no longer pass as a working tunnel. |
+| **Per-node TLS profiles** | `fragment` and `uTLS` are chosen **per node**, not globally. One node's winning settings break another's site access — the app now keeps them apart. |
+| **Site check** | Verifies that a configurable set of popular sites opens through the tunnel, with 1, 2 or 3 sites required. |
+| **Failure reason** | Hover a failed node and see *why*: timeout, connection reset, TLS error, closed port, replaced response. |
 | **Single instance** | A second launch brings the existing window back instead of leaving another invisible process. |
-| **Tray that works** | Icon is bundled into the executable and drawn as a fallback, so closing the window never leaves a zombie. |
+| **Tray that works** | The icon is bundled into the executable and drawn as a fallback, so closing the window never leaves a zombie. |
 
 ---
 
 ## How the test works
 
 ```
-🔍 Search GitHub  →  ⬇ Download configs  →  🩺 Quick TCP  →  ✅ Fair deep test  →  🛠 Bypass  →  📦 Export
+🔍 Search GitHub  →  ⬇ Download configs  →  🩺 Quick TCP  →  ✅ Fair deep test  →  🧪 TLS profile  →  📦 Export
 ```
 
 1. **TCP prefilter** — an unreachable TCP port fails in ~2 s without starting a core. UDP protocols (Hysteria2, TUIC) skip this step. If DNS does not resolve at all, the node is *not* marked dead — DoH may still work.
 2. **Fair deep test** — the core starts and two control targets are probed: Cloudflare `cdn-cgi/trace` and GStatic `generate_204`.
-   - Responses are validated, not just status codes: a `204` with a body, an HTML block page or a trace without `ip=`/`colo=` is a failure.
+   - Responses are validated, not just status codes: a `204` with a body, an HTML page or a trace without `ip=`/`colo=` is a failure.
    - Two rounds with early stop: a working node finishes after the first success, a flaky one gets a second chance, a dead one pays for both.
    - Timeout adapts to the measured TCP RTT (3–6 s instead of a fixed 5 s).
-3. **RKN test** — the same tunnel is used to open blocked sites. Quorum is configurable: *soft* (1 site), *medium* (2), *strict* (3).
-4. **Bypass search** — for nodes that failed, the app tries deterministic strategies one by one, then confirms the winner with a second fair check, so a lucky packet does not count.
+3. **Site check** — the same tunnel is used to open a few popular sites. Strictness is configurable: *soft* (1 site), *medium* (2), *strict* (3).
+4. **TLS profile search** — for nodes that failed, the app tries deterministic profiles one by one, then confirms the winner with a second fair check, so a lucky packet does not count.
 
-### Bypass strategies
+### TLS profiles
 
-Chosen per node, based on the detected block type:
+Chosen per node, based on the detected issue:
 
-| Block type | Candidates, in order |
+| Detected issue | Candidates, in order |
 |---|---|
-| `sni_rst` (reset after ClientHello) | TLS `fragment` → `uTLS` fingerprints → as-is |
-| `proto_fp` / `app_block` | `uTLS` fingerprints → as-is |
-| `ip_block` | alternative CDN port (2053/2083/2087/2096) → as-is |
-| `whitelist` | as-is → `fragment` |
-| `dns_poison` | as-is (the fix is DoH, not a config override) |
+| Reset after ClientHello | TLS `fragment` → `uTLS` profiles → as-is |
+| Protocol fingerprint | `uTLS` profiles → as-is |
+| Unreachable address | alternative CDN port (2053/2083/2087/2096) → as-is |
+| Restricted address list | as-is → `fragment` |
+| DNS tampering | as-is (the fix is DoH, not a config override) |
 
-`uTLS` fingerprints: Chrome, Firefox, Safari, randomized. All results stay in the «Bypass» column and never leak into other nodes.
+`uTLS` profiles: Chrome, Firefox, Safari, randomized. All results stay in the «Profile» column and never leak into other nodes.
 
 ---
 
@@ -84,7 +72,7 @@ Chosen per node, based on the detected block type:
 - **Scan GitHub user repos** — paste `https://github.com/user` and scan all their repos.
 - **WireGuard search** — dedicated `wireguard://` mode with copyable output for AmneziaWG.
 - **Country flags** — see where each server is located.
-- **SOCKS5 download proxy** — route all traffic through a local proxy when GitHub itself is blocked.
+- **SOCKS5 download proxy** — route downloads through a local proxy when GitHub is unreachable from your network.
 - **Tray + single instance** — close hides to tray, a second launch restores the window.
 - **i18n** — Russian and English, follows the system language.
 - **Privacy first** — no accounts, no telemetry, no cloud. Everything runs locally.
@@ -204,13 +192,13 @@ Tagged builds are produced by GitHub Actions for Windows, macOS and Linux and pu
 python -m unittest discover -s tests -t .
 ```
 
-137 tests cover fair probing, attempt summaries, block classification, strategy candidates, engine routing, exporter overrides, threading contracts, table model and single-instance behaviour.
+137 tests cover fair probing, attempt summaries, failure classification, strategy candidates, engine routing, exporter overrides, threading contracts, table model and single-instance behaviour.
 
 ---
 
 ## Support the project
 
-GitHub Sponsors payouts are unavailable in Russia, so donations go through Boosty:
+Donations go through Boosty:
 
 [**boosty.to/skitchen**](https://boosty.to/skitchen)
 

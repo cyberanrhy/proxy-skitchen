@@ -22,39 +22,39 @@ class BlockType(str, Enum):
 
 # Human readable labels (RU) used by the UI later.
 BLOCK_LABELS = {
-    BlockType.NONE: "нет блокировки",
+    BlockType.NONE: "нет ограничений",
     BlockType.DNS_POISON: "подмена DNS",
-    BlockType.SNI_RST: "обрыв по SNI",
-    BlockType.IP_BLOCK: "блокировка IP",
+    BlockType.SNI_RST: "обрыв рукопожатия TLS",
+    BlockType.IP_BLOCK: "адрес недоступен",
     BlockType.THROTTLE: "замедление",
-    BlockType.APP_BLOCK: "прикладной блок",
-    BlockType.PROTO_FP: "блокировка протокола",
-    BlockType.WHITELIST: "режим белых списков",
+    BlockType.APP_BLOCK: "ограничение на уровне приложения",
+    BlockType.PROTO_FP: "несовместимость протокола",
+    BlockType.WHITELIST: "ограниченный список адресов",
     BlockType.UNKNOWN: "неизвестно",
 }
 
 _PROBE_REASON_RU = {
     "timeout": "таймаут — сервер не ответил",
-    "reset": "соединение сброшено (похоже на DPI)",
+    "reset": "соединение сброшено",
     "tls_error": "ошибка TLS — соединение подменяют",
     "probe_failed": "нет ответа от проверочного сайта",
     "204_with_body": "ответ подменён (страница-заглушка)",
     "connectionrefusederror": "порт закрыт",
     "connectionreseterror": "соединение сброшено",
     "urlerror": "сеть недоступна",
-    "tcp_unreachable": "сервер не отвечает (порт закрыт или IP заблокирован)",
+    "tcp_unreachable": "сервер не отвечает (порт закрыт или адрес недоступен)",
     "unknown": "неизвестная ошибка",
 }
 _PROBE_REASON_EN = {
     "timeout": "timeout — the server did not answer",
-    "reset": "connection reset (looks like DPI)",
+    "reset": "connection reset",
     "tls_error": "TLS error — the connection is being tampered with",
     "probe_failed": "no answer from the check site",
     "204_with_body": "response replaced (block page)",
     "connectionrefusederror": "port closed",
     "connectionreseterror": "connection reset",
     "urlerror": "network unreachable",
-    "tcp_unreachable": "server did not answer (port closed or IP blocked)",
+    "tcp_unreachable": "server did not answer (port closed or address unreachable)",
     "unknown": "unknown error",
 }
 

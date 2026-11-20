@@ -2486,7 +2486,7 @@ class TestPage(WizardPage):
         if 0 <= row < len(self._entries):
             e = self._entries[row]
             if ttype == 2:
-                kind = "RKN"
+                kind = "SITE"
                 mark = "🛡" if ok else "✗"
                 detail = ""
             else:
@@ -2764,7 +2764,7 @@ class TestPage(WizardPage):
         else:
             self.lbl_wg.setVisible(False)
         if rkn_total:
-            self.lbl_rkn.setText(f"🛡 RKN: {rkn_ok}/{rkn_total}")
+            self.lbl_rkn.setText(f"🛡 Сайты: {rkn_ok}/{rkn_total}")
             self.lbl_rkn.setVisible(True)
         else:
             self.lbl_rkn.setVisible(False)
@@ -2789,14 +2789,14 @@ class TestPage(WizardPage):
             f"{entry.display_protocol()} {entry.host}:{entry.port}",
             f"SNI: {entry.sni or '—'}",
             f"Страна: {entry.country or '—'}",
-            f"TCP: {tcp_mark}  Deep: {deep_mark}  RKN: {rkn_mark}  Пинг: {ping_str}",
+            f"TCP: {tcp_mark}  Deep: {deep_mark}  Сайты: {rkn_mark}  Пинг: {ping_str}",
             f"Источник: {entry.source or '—'}",
             f"{_('test.context.strategy')}: "
             f"{strategy_label(entry.strategy_name, current_lang()) if entry.strategy_name else '—'}",
         ]
         if entry.rkn_results:
             lines.append("")
-            lines.append("RKN результаты:")
+            lines.append("Проверка сайтов:")
             for r in entry.rkn_results:
                 status = "✅" if r.get("ok") else "❌"
                 lat = f" {r['latency']:.0f}ms" if r.get("latency") else ""
@@ -2959,7 +2959,7 @@ class ExportPage(WizardPage):
         dns_l = QHBoxLayout()
         dns_l.setSpacing(8)
         self.chk_dns_hook = QCheckBox(_("export.chk.dns_hook"))
-        self.chk_dns_hook.setToolTip("Вшить шифрованный DNS (DoH) в конфиг для обхода отравления DNS в РФ")
+        self.chk_dns_hook.setToolTip("Вшить шифрованный DNS (DoH) в конфиг для защиты от подмены DNS")
         self.chk_dns_hook.toggled.connect(self._update_preview)
         dns_l.addWidget(self.chk_dns_hook)
         self.dns_input = QLineEdit(", ".join(DEFAULT_DOH))

@@ -585,7 +585,7 @@ class CliRunner:
                     if not path:
                         continue
                     deep = input("Глубокий тест sing-box? (y/N): ").strip().lower() == "y"
-                    rkn = input("RKN-тест? (y/N): ").strip().lower() == "y"
+                    rkn = input("Проверка сайтов? (y/N): ").strip().lower() == "y"
                     out = input("Файл для сохранения (Enter = stdout): ").strip()
                     self.cmd_test_file(NS(file=path, deep=deep, rkn=rkn, output=out, clean=True))
                 elif choice == "5":
@@ -594,7 +594,7 @@ class CliRunner:
                         continue
                     period = _ask_int("Период в днях", 7)
                     deep = input("Глубокий тест sing-box? (y/N): ").strip().lower() == "y"
-                    rkn = input("RKN-тест? (y/N): ").strip().lower() == "y"
+                    rkn = input("Проверка сайтов? (y/N): ").strip().lower() == "y"
                     out = input("Файл для сохранения (Enter = stdout): ").strip()
                     self.cmd_pipeline(NS(keywords=kw.split(), repos=[], token="", max_repos=8, max_files=30, period=period, deep=deep, rkn=rkn, output=out, clean=True, verbose=False))
                 elif choice == "6":
@@ -644,7 +644,7 @@ def build_parser(runner: CliRunner):
     ptf = sub.add_parser("test-file", help="Проверить все URI из файла")
     ptf.add_argument("file")
     ptf.add_argument("--deep", action="store_true")
-    ptf.add_argument("--rkn", action="store_true", help="RKN bypass тест")
+    ptf.add_argument("--rkn", action="store_true", help="Проверка доступности проверочных сайтов")
     ptf.add_argument("--test-doh", action="store_true", help="Резолвить адрес сервера прокси через DoH (защита от отравленного DNS)")
     ptf.add_argument("--output", "-o", default="")
     ptf.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")
@@ -682,7 +682,7 @@ def build_parser(runner: CliRunner):
     pp.add_argument("--max-files", type=int, default=30)
     pp.add_argument("--period", type=int, default=7, help="Фильтр по дням (по умолчанию 7)")
     pp.add_argument("--deep", action="store_true")
-    pp.add_argument("--rkn", action="store_true", help="RKN bypass тест (проверка доступа к заблокированным сайтам)")
+    pp.add_argument("--rkn", action="store_true", help="Проверка доступности проверочных сайтов")
     pp.add_argument("--test-doh", action="store_true", help="Резолвить адрес сервера прокси через DoH (защита от отравленного DNS)")
     pp.add_argument("--output", "-o", default="")
     pp.add_argument("--clean", action="store_true", default=True, help="Очищать #fragment из URI (по умолчанию включено)")

@@ -412,7 +412,7 @@ def _get_tokens() -> list[str]:
 
 
 class ProxyTableModel(QAbstractTableModel):
-    HEADERS = ["Статус", "Протокол", "Хост", "Порт", "Страна", "Пинг", "Обход"]
+    HEADERS = ["Статус", "Протокол", "Хост", "Порт", "Страна", "Пинг", "Профиль"]
 
     # Pre-allocated QColor objects for data() hot path (per-theme cache)
     _FG_PROTO: dict[str, QColor] = {}
@@ -573,7 +573,7 @@ class ProxyTableModel(QAbstractTableModel):
             return None
         if role == Qt.ItemDataRole.ToolTipRole:
             country_display = p.country or "-"
-            rkn_str = f"  RKN: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""
+            rkn_str = f"  Сайты: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""
             strategy = self._strategy_text(p) or "-"
             reason = ""
             if p.probe_reason and not p.deep_ok:
@@ -584,7 +584,7 @@ class ProxyTableModel(QAbstractTableModel):
                     f"SNI: {p.sni or '-'}\n"
                     f"Страна: {country_display}\n"
                     f"Источник: {p.source or '-'}\n"
-                    f"Обход: {strategy}\n"
+                    f"Профиль: {strategy}\n"
                     f"Deep: {'⚡' if p.deep_ok else '❌'}{rkn_str}  "
                     f"Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}{reason}")
         return None

@@ -115,26 +115,26 @@ _LABELS = {
     "ru": {
         "as_is": "как есть",
         "fragment": "дробление TLS",
-        "utls_chrome": "маскировка Chrome",
-        "utls_firefox": "маскировка Firefox",
-        "utls_safari": "маскировка Safari",
-        "utls_randomized": "случайная маскировка",
+        "utls_chrome": "профиль Chrome",
+        "utls_firefox": "профиль Firefox",
+        "utls_safari": "профиль Safari",
+        "utls_randomized": "случайный профиль",
     },
     "en": {
         "as_is": "as is",
         "fragment": "TLS split",
-        "utls_chrome": "Chrome disguise",
-        "utls_firefox": "Firefox disguise",
-        "utls_safari": "Safari disguise",
-        "utls_randomized": "random disguise",
+        "utls_chrome": "Chrome profile",
+        "utls_firefox": "Firefox profile",
+        "utls_safari": "Safari profile",
+        "utls_randomized": "random profile",
     },
 }
 
 _TOOLTIPS = {
     "ru": {
         "as_is": "Обычное подключение без изменений.",
-        "fragment": "Начало защищённого соединения разбивается на части, "
-                    "чтобы фильтр не смог узнать сайт по имени.",
+        "fragment": "Начало защищённого соединения разбивается на части "
+                    "для совместимости с промежуточным оборудованием.",
         "utls_chrome": "Подключение притворяется обычным браузером Chrome.",
         "utls_firefox": "Подключение притворяется обычным браузером Firefox.",
         "utls_safari": "Подключение притворяется обычным браузером Safari.",
@@ -142,8 +142,8 @@ _TOOLTIPS = {
     },
     "en": {
         "as_is": "Plain connection without changes.",
-        "fragment": "Splits the start of the TLS handshake so DPI cannot "
-                    "recognise the site name.",
+        "fragment": "Splits the start of the TLS handshake for compatibility "
+                    "with intermediate network equipment.",
         "utls_chrome": "Connects as a regular Chrome browser.",
         "utls_firefox": "Connects as a regular Firefox browser.",
         "utls_safari": "Connects as a regular Safari browser.",
@@ -171,8 +171,8 @@ def strategy_tooltip(name: str, lang: str = "ru") -> str:
         return table[name]
     if name.startswith("port_"):
         if lang == "ru":
-            return f"Подключение через порт {name[5:]} — иногда фильтр проверяет только 443."
-        return f"Connect via port {name[5:]} — some filters only inspect 443."
+            return f"Подключение через порт {name[5:]} — некоторые сети проверяют только 443."
+        return f"Connect via port {name[5:]} — some networks only inspect 443."
     return strategy_label(name, lang)
 
 
