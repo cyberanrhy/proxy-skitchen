@@ -1,7 +1,9 @@
 # proxy-skitchen
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-137%20passing-brightgreen.svg)](tests/)
+[![Release](https://img.shields.io/github/v/release/cyberanrhy/proxy-skitchen)](https://github.com/cyberanrhy/proxy-skitchen/releases)
 
 <table>
 <tr>
@@ -15,8 +17,8 @@
 </tr>
 </table>
 
-> Find working proxy servers and subscriptions in minutes.  
-> Scrape, test, and export — all in one desktop app.
+> Find working proxy servers and subscriptions in minutes.
+> Scrape, test honestly, bypass DPI, export — all in one desktop app.
 
 ![screenshot](screenshot.png)
 
@@ -24,52 +26,68 @@
 
 ## Stop hunting for proxies. Let the kitchen do the work.
 
-**proxy-skitchen** automatically finds proxy configs on GitHub, tests them for real, and exports only the working ones.
+**proxy-skitchen** finds proxy configs on GitHub, tests them the hard way, and keeps only what actually works from your network.
 
-Whether you need a handful of reliable servers for daily use or a large pool for load testing — you set the keywords, and the app does the rest.
-
-### What you get
-
-- **Live proxy list** — not dead links, not outdated dumps. Only servers that passed real TCP + HTTP testing.
-- **Any format** — Clash, sing-box, Hiddify, V2RayN, or plain URI list. Import anywhere.
-- **All major protocols** — VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC.
-- **Hidden configs** — scrapes base64-encoded subs, inline URIs embedded in text files.
-- **Scan GitHub user repos** — paste a user URL (`https://github.com/user`), scans all their repos.
-- **Explicit repo URL** — paste any repo URL including paths with `/blob/` or `/tree/`.
-- **WireGuard search** — dedicated mode to find `wireguard://` configs on GitHub. Paste a repo/user URL or let the app search by keywords. Results appear in a copyable text area for manual import into AmneziaWG or any WireGuard client.
-- **Country flags** — see at a glance where each server is located.
-- **Cross-platform** — works on Linux, Windows, and macOS (PySide2 / PySide6).
+No «ping passed, so it is alive». No block page counted as a success. No dead nodes in the export.
 
 ---
 
-## How it works
+## What's new in 3.1
 
-```
-🔍 Search GitHub  →  ⬇ Download configs  →  ✅ Test  →  📦 Export
-```
-
-1. **Search** — enter keywords like "vless subscription", paste a GitHub repo URL, or a user profile to scan all repos. Toggle **WireGuard mode** to find `wireguard://` configs specifically.
-2. **Download** — the app fetches all found configs in one click. Configs can be hidden in base64, inline URIs, or plain text.
-3. **Test** — quick TCP check, then deep HTTP validation via sing-box (or xray-core for VLESS Reality).
-4. **Export** — save the working list in your preferred format.
-
----
-
-## Why you'll like it
-
-| | |
+| Feature | Why it matters |
 |---|---|
-| **No hunting** | Scans GitHub repos automatically — finds what others hide in config files, READMEs, base64 dumps, even inline URIs in source code. |
-| **No dead proxies** | Deep test makes real HTTP requests, not just ping. If it passes — it works. VLESS Reality tested via xray-core. |
-| **One-click export** | Clash, sing-box, Hiddify, V2RayN — pick your poison. |
-| **Hidden config mode** | Finds proxies embedded in any text file — base64 encoded, inline in code, JSON, markdown — and parses them. |
-| **WireGuard mode** | Dedicated search for `wireguard://` configs with one-click deep scan. Copies URIs to clipboard for AmneziaWG / WireGuard clients. |
-| **SOCKS5 proxy support** | Built-in toggle to route all downloads through a local SOCKS5 proxy — essential behind censorship firewalls. |
-| **Minimize to tray** | Close button hides to system tray. Restore via double-click. Quit only from tray menu. |
-| **Dark / Light themes** | Built-in themes + auto-performance presets for low-RAM machines. |
-| **i18n** | Interface in Russian and English (auto-detects system language). |
-| **Cross-platform** | Works on Linux, Windows (7/10/11), and macOS. |
-| **Privacy first** | No accounts, no telemetry, no cloud. Everything runs locally. |
+| **Fair deep test** | Two independent control targets, content validation, retries, adaptive timeout — a captive portal or ISP block page can no longer pass as a working tunnel. |
+| **Per-node bypass** | `fragment` and `uTLS` are chosen **per node**, not globally. One node's winning trick breaks another's RKN access — the app now keeps them apart. |
+| **RKN access test** | Checks real blocked sites (Telegram, Instagram, YouTube, Twitter) with a configurable strictness: 1, 2 or 3 sites must open. |
+| **Block reason** | Hover a failed node and see *why*: timeout, connection reset (DPI), TLS tampering, closed port, replaced response. |
+| **Single instance** | A second launch brings the existing window back instead of leaving another invisible process. |
+| **Tray that works** | Icon is bundled into the executable and drawn as a fallback, so closing the window never leaves a zombie. |
+
+---
+
+## How the test works
+
+```
+🔍 Search GitHub  →  ⬇ Download configs  →  🩺 Quick TCP  →  ✅ Fair deep test  →  🛠 Bypass  →  📦 Export
+```
+
+1. **TCP prefilter** — an unreachable TCP port fails in ~2 s without starting a core. UDP protocols (Hysteria2, TUIC) skip this step. If DNS does not resolve at all, the node is *not* marked dead — DoH may still work.
+2. **Fair deep test** — the core starts and two control targets are probed: Cloudflare `cdn-cgi/trace` and GStatic `generate_204`.
+   - Responses are validated, not just status codes: a `204` with a body, an HTML block page or a trace without `ip=`/`colo=` is a failure.
+   - Two rounds with early stop: a working node finishes after the first success, a flaky one gets a second chance, a dead one pays for both.
+   - Timeout adapts to the measured TCP RTT (3–6 s instead of a fixed 5 s).
+3. **RKN test** — the same tunnel is used to open blocked sites. Quorum is configurable: *soft* (1 site), *medium* (2), *strict* (3).
+4. **Bypass search** — for nodes that failed, the app tries deterministic strategies one by one, then confirms the winner with a second fair check, so a lucky packet does not count.
+
+### Bypass strategies
+
+Chosen per node, based on the detected block type:
+
+| Block type | Candidates, in order |
+|---|---|
+| `sni_rst` (reset after ClientHello) | TLS `fragment` → `uTLS` fingerprints → as-is |
+| `proto_fp` / `app_block` | `uTLS` fingerprints → as-is |
+| `ip_block` | alternative CDN port (2053/2083/2087/2096) → as-is |
+| `whitelist` | as-is → `fragment` |
+| `dns_poison` | as-is (the fix is DoH, not a config override) |
+
+`uTLS` fingerprints: Chrome, Firefox, Safari, randomized. All results stay in the «Bypass» column and never leak into other nodes.
+
+---
+
+## What you get
+
+- **Live proxy list** — only servers that passed real HTTP validation and content checks.
+- **Any format** — Clash, sing-box, Hiddify, V2RayN, Amnezia, or plain URI list.
+- **All major protocols** — VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC.
+- **Hidden configs** — scrapes base64 subscriptions and inline URIs embedded in text.
+- **Scan GitHub user repos** — paste `https://github.com/user` and scan all their repos.
+- **WireGuard search** — dedicated `wireguard://` mode with copyable output for AmneziaWG.
+- **Country flags** — see where each server is located.
+- **SOCKS5 download proxy** — route all traffic through a local proxy when GitHub itself is blocked.
+- **Tray + single instance** — close hides to tray, a second launch restores the window.
+- **i18n** — Russian and English, follows the system language.
+- **Privacy first** — no accounts, no telemetry, no cloud. Everything runs locally.
 
 ---
 
@@ -84,6 +102,37 @@ Whether you need a handful of reliable servers for daily use or a large pool for
 | Hysteria2 | ✓ | ✓ | ✓ |
 | TUIC | ✓ | ✓ | ✓ |
 | WireGuard | ✓ | – | – |
+
+---
+
+## Download
+
+Grab a ready build from [Releases](https://github.com/cyberanrhy/proxy-skitchen/releases):
+
+| File | Platform |
+|---|---|
+| `proxy-skitchen-windows.exe` | Windows 10/11, windowed |
+| `proxy-skitchen-cli-windows.exe` | Windows, console build for CLI commands |
+| `proxy-skitchen-macos` | macOS |
+| `proxy-skitchen-cli-macos` | macOS, console build |
+| `proxy-skitchen-linux` | Linux |
+| `proxy-skitchen-cli-linux` | Linux, console build |
+
+Each executable is a single self-contained file (PyInstaller onefile). The CLI builds run the same app and start the GUI when launched without arguments.
+
+### Deep test needs a core
+
+The app does not ship sing-box or xray inside the executable. Put them here:
+
+| Platform | sing-box | xray |
+|---|---|---|
+| Windows | `%LOCALAPPDATA%\sing-box\sing-box.exe` | `%LOCALAPPDATA%\xray\xray.exe` |
+| Linux / macOS | `/usr/local/bin/sing-box` | `/usr/local/bin/xray` |
+
+- `sing-box` — needed for any deep test (VMess, Trojan, Shadowsocks, Hysteria2, TUIC, VLESS with `ws`).
+- `xray-core` — needed for VLESS REALITY over `tcp`/`grpc`/`xhttp`.
+
+Without cores the app still parses, filters and exports configs, and the quick TCP test works.
 
 ---
 
@@ -107,12 +156,6 @@ pip install -r requirements.txt
 python -m proxy_skitchen
 ```
 
-### Windows (EXE)
-
-Download the latest release from [Releases](https://github.com/cyberanrhy/proxy-skitchen/releases) and run `proxy-skitchen.exe`.
-
-*Requires Python 3.10+ and curl. sing-box is optional (needed for deep test). xray-core is optional (needed for VLESS Reality deep test).*
-
 ---
 
 ## CLI mode
@@ -121,15 +164,23 @@ Download the latest release from [Releases](https://github.com/cyberanrhy/proxy-
 # Search and save
 python3 -m proxy_skitchen search "vless subscription" --output sources.txt
 
-# Full pipeline
+# Full pipeline: search → test → save
 python3 -m proxy_skitchen pipeline "vless subscription" --deep --output working.txt
 
 # Quick TCP test
 python3 -m proxy_skitchen test 1.2.3.4 443
 
-# Test all proxies in a file
+# Test every URI in a file
 python3 -m proxy_skitchen test-file proxies.txt --deep --output working.txt
+
+# Read a subscription and re-export it
+python3 -m proxy_skitchen export sources.txt --format clash
+
+# Replace DNS with DoH in an existing config
+python3 -m proxy_skitchen fix-dns config.json
 ```
+
+Run `python3 -m proxy_skitchen menu` for the interactive menu, or `--help` for every option.
 
 ---
 
@@ -137,10 +188,31 @@ python3 -m proxy_skitchen test-file proxies.txt --deep --output working.txt
 
 ```bash
 pip install pyinstaller
-pyinstaller proxy-skitchen.spec
+pyinstaller proxy-skitchen.spec        # GUI build
+pyinstaller proxy-skitchen-cli.spec    # console build
 ```
 
-The executable will be in `dist/proxy-skitchen` (Linux/macOS) or `dist/proxy-skitchen.exe` (Windows).
+Output lands in `dist/`. On Windows the spec uses `proxy_skitchen/icon.ico` (PyInstaller rejects PNG there without Pillow); other platforms use `icon.png`.
+
+Tagged builds are produced by GitHub Actions for Windows, macOS and Linux and published as release assets.
+
+---
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+137 tests cover fair probing, attempt summaries, block classification, strategy candidates, engine routing, exporter overrides, threading contracts, table model and single-instance behaviour.
+
+---
+
+## Support the project
+
+GitHub Sponsors payouts are unavailable in Russia, so donations go through Boosty:
+
+[**boosty.to/skitchen**](https://boosty.to/skitchen)
 
 ---
 
