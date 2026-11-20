@@ -3708,7 +3708,7 @@ class MainWindow(QMainWindow):
             if not icon.isNull():
                 return icon
         pix = QPixmap(64, 64)
-        pix.fill(QColor("#2d7ff9"))
+        pix.fill(QColor("#000000"))
         painter = QPainter(pix)
         try:
             painter.setPen(QColor("#ffffff"))
