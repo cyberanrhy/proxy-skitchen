@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-162%20passing-brightgreen.svg)](tests/)
 [![Release](https://img.shields.io/github/v/release/cyberanrhy/proxy-skitchen)](https://github.com/cyberanrhy/proxy-skitchen/releases)
 
 > Find working proxy servers and subscriptions in minutes.
@@ -28,6 +28,7 @@ No «ping passed, so it is alive». No replaced response counted as a success. N
 | **Stage trail** | Hover a node to see where the check stopped: DNS, TCP, core, probe. No more guessing why a node is dead. |
 | **Plain proxies removed** | Open `http://`/`socks://` proxies are unencrypted: they are dropped on load, never tested and never exported. |
 | **Happ-style node support** | HTTP and SOCKS proxies are now assembled by the Xray path too, so they behave the same in both clients. |
+| **Safe close** | The window hides to the tray only when the icon is really registered. If the tray is missing, the app quits — no more invisible process with neither a window nor an icon. |
 
 ## What's new in 3.1
 
