@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-137%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-160%20passing-brightgreen.svg)](tests/)
 [![Release](https://img.shields.io/github/v/release/cyberanrhy/proxy-skitchen)](https://github.com/cyberanrhy/proxy-skitchen/releases)
 
 > Find working proxy servers and subscriptions in minutes.
@@ -19,6 +19,15 @@
 No «ping passed, so it is alive». No replaced response counted as a success. No dead nodes in the export.
 
 ---
+
+## What's new in 3.2
+
+| Feature | Why it matters |
+|---|---|
+| **Check modes** | *Standard* keeps the fair multi-target check. *Like Happ* reproduces the way Happ reports nodes: one core, one request, fixed timeout, no DoH and no fallback — useful when comparing results with another client. |
+| **Stage trail** | Hover a node to see where the check stopped: DNS, TCP, core, probe. No more guessing why a node is dead. |
+| **Plain proxies removed** | Open `http://`/`socks://` proxies are unencrypted: they are dropped on load, never tested and never exported. |
+| **Happ-style node support** | HTTP and SOCKS proxies are now assembled by the Xray path too, so they behave the same in both clients. |
 
 ## What's new in 3.1
 
@@ -46,6 +55,17 @@ No «ping passed, so it is alive». No replaced response counted as a success. N
    - Timeout adapts to the measured TCP RTT (3–6 s instead of a fixed 5 s).
 3. **Site check** — the same tunnel is used to open a few popular sites. Strictness is configurable: *soft* (1 site), *medium* (2), *strict* (3).
 4. **TLS profile search** — for nodes that failed, the app tries deterministic profiles one by one, then confirms the winner with a second fair check, so a lucky packet does not count.
+
+Plain `http://` and `socks://` proxies are dropped before step 1: they carry no encryption, so they are never tested and never exported.
+
+### Check modes
+
+| Mode | What it does | When to use it |
+|---|---|---|
+| **Standard** | Several control targets, two rounds, adaptive timeout, second core on failure. | Everyday picking: fewer false "dead" verdicts. |
+| **Like Happ** | One core, one HEAD request, fixed 5 s, no DoH, no fallback, any HTTP answer counts as alive. | When you want the same verdict another client gives you. |
+
+The mode is switched in the test toolbar. Failed nodes show the stage where the check stopped — DNS, TCP, core or probe.
 
 ### TLS profiles
 
@@ -192,7 +212,7 @@ Tagged builds are produced by GitHub Actions for Windows, macOS and Linux and pu
 python -m unittest discover -s tests -t .
 ```
 
-137 tests cover fair probing, attempt summaries, failure classification, strategy candidates, engine routing, exporter overrides, threading contracts, table model and single-instance behaviour.
+160 tests cover fair probing, attempt summaries, failure classification, Happ-compatible checks, plain-proxy filtering, strategy candidates, engine routing, exporter overrides, threading contracts, table model and single-instance behaviour.
 
 ---
 
