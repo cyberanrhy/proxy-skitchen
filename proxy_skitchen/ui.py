@@ -3728,6 +3728,16 @@ class RepoLinkLabel(QLabel):
         super().leaveEvent(e)
 
 
+def close_action(tray_ready: bool) -> str:
+    """What a close request should do: ``"quit"`` or ``"tray"``.
+
+    Hiding the window is only safe when the tray icon is really registered:
+    otherwise the app turns into a process with no window and no icon, which
+    the user cannot reach at all.
+    """
+    return "tray" if tray_ready else "quit"
+
+
 class MainWindow(QMainWindow):
     @staticmethod
     def _make_app_icon() -> QIcon:
@@ -3848,6 +3858,15 @@ class MainWindow(QMainWindow):
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.setVisible(True)
+        self._tray_ready = bool(QSystemTrayIcon.isSystemTrayAvailable())
+        # The Windows tray is often not ready right after login or after
+        # Explorer restarts: the icon is silently dropped and the window would
+        # hide with no way back.  Retry until it is really registered, and
+        # restore the window if the tray disappears while it is hidden.
+        self._tray_watch = QTimer(self)
+        self._tray_watch.setInterval(3000)
+        self._tray_watch.timeout.connect(self._ensure_tray)
+        self._tray_watch.start()
         _debug(
             "tray: available=%s icon_null=%s icon_path=%s"
             % (QSystemTrayIcon.isSystemTrayAvailable(),
@@ -3999,6 +4018,7 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
 
     def closeEvent(self, event):
+        action = close_action(bool(getattr(self, "_tray_ready", False)))
         if self.test_page._phase == self.test_page.PHASE_TEST:
             ret = QMessageBox.question(
                 self, "Proxy Skitchen",
@@ -4010,11 +4030,13 @@ class MainWindow(QMainWindow):
                 self._quit_app()
                 return
             event.ignore()
-            self.hide()
-            self._notify_minimized()
+            if action == "tray":
+                self.hide()
+                self._notify_minimized()
             return
-        if self._tray is None or not QSystemTrayIcon.isSystemTrayAvailable():
-            # No tray to restore from: quitting is the only sane option.
+        if action == "quit":
+            # No working tray icon: quitting is the only sane option, otherwise
+            # the process would stay alive with no window and no way back.
             event.accept()
             self._quit_app()
             return
@@ -4022,8 +4044,28 @@ class MainWindow(QMainWindow):
         self.hide()
         self._notify_minimized()
 
-    def _notify_minimized(self):
+    def _ensure_tray(self):
+        """Keep the tray icon registered and never leave a hidden app orphaned."""
         if self._tray is None:
+            return
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            if not self._tray_ready:
+                # Re-register: some shells only accept the icon once the
+                # taskbar exists, so a first attempt at startup is lost.
+                self._tray.setVisible(False)
+                self._tray.setVisible(True)
+                self._tray_ready = True
+                _debug("tray: registered after retry")
+            return
+        if self._tray_ready:
+            _debug("tray: lost")
+        self._tray_ready = False
+        if not self.isVisible() or self.isMinimized():
+            _debug("tray: lost while hidden, restoring window")
+            self.show_window()
+
+    def _notify_minimized(self):
+        if self._tray is None or not self._tray_ready:
             return
         try:
             self._tray.showMessage(
@@ -4050,6 +4092,8 @@ class MainWindow(QMainWindow):
             self._show_from_tray()
 
     def _quit_app(self):
+        if getattr(self, "_tray_watch", None) is not None:
+            self._tray_watch.stop()
         if self._tray is not None:
             self._tray.hide()
         self._tray = None
