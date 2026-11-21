@@ -307,7 +307,7 @@ class TesterWorker(QObject):
     count_signal = Signal(int)
     geo_signal = Signal(int, str)
 
-    def __init__(self, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2, use_doh: bool = False, dns_list=None, rkn_quorum: int = 1, fair_attempts: int = 2):
+    def __init__(self, rkn: bool = False, test_threads: int = 4, deep_threads: int = 2, use_doh: bool = False, dns_list=None, rkn_quorum: int = 1, fair_attempts: int = 2, check_mode: str = "fair"):
         super().__init__()
         self._rkn = rkn
         self._test_threads = test_threads
@@ -316,9 +316,12 @@ class TesterWorker(QObject):
         self._doh_list = dns_list
         self._rkn_quorum = max(1, int(rkn_quorum))
         self._fair_attempts = max(1, min(3, int(fair_attempts)))
+        self._check_mode = "happ" if str(check_mode).strip().lower() == "happ" else "fair"
         self._stop = False
         self._sb_tester = None
         self._xr_tester = None
+        self._sb_happ_tester = None
+        self._xr_happ_tester = None
         self._tester_lock = threading.Lock()
 
     def stop(self):
@@ -430,7 +433,24 @@ class TesterWorker(QObject):
                 self._xr_tester = XrayTester(use_doh=self._use_doh, doh_list=self._doh_list)
             return self._xr_tester
 
+    def _get_happ_sb_tester(self):
+        """Happ mode never uses DoH, so it gets its own core instance."""
+        with self._tester_lock:
+            if not self._sb_happ_tester:
+                from .tester import SingBoxTester
+                self._sb_happ_tester = SingBoxTester(use_doh=False)
+            return self._sb_happ_tester
+
+    def _get_happ_xr_tester(self):
+        with self._tester_lock:
+            if not self._xr_happ_tester:
+                from .tester import XrayTester
+                self._xr_happ_tester = XrayTester(use_doh=False)
+            return self._xr_happ_tester
+
     def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
+        if self._check_mode == "happ":
+            return self._happ_test(entry)
         from .tester import (allocate_port, release_port, prefer_xray,
                              singbox_supports_uri, tcp_probe, CONTROL_TARGETS)
         # Fast, fair prefilter: a TCP-based protocol cannot work if its port is
@@ -457,6 +477,59 @@ class TesterWorker(QObject):
             return result
         finally:
             release_port(port)
+
+    def _happ_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
+        """Happ-compatible check: one core, one HEAD, fixed timeout, no DoH.
+
+        Reproduces XTLS/libXray (the library Happ uses): a node is alive when a
+        single HEAD request through it returns any HTTP answer within the fixed
+        timeout.  No sing-box fallback, no DoH rescue, no widened timeout — the
+        differences that made our fair check count more nodes as alive.
+        """
+        from .tester import (allocate_port, release_port, tcp_probe,
+                             HAPP_TIMEOUT, HAPP_TARGET)
+        stages: dict[str, str] = {}
+        entry.probe_stages = stages
+        timeout = HAPP_TIMEOUT
+        tcp_protocols = ('VLESS', 'VMESS', 'TROJAN', 'SS', 'SOCKS', 'SOCKS4',
+                         'SOCKS5', 'HTTP', 'HTTPS')
+        if entry.protocol in tcp_protocols:
+            reachable, rtt = tcp_probe(entry.host, entry.port, timeout=timeout)
+            if reachable is None:
+                stages["dns"] = "fail"
+                return False, 0, "dns_fail"
+            if reachable is False:
+                stages["dns"] = "ok"
+                stages["tcp"] = "refused"
+                return False, 0, "tcp_unreachable"
+            stages["dns"] = "ok"
+            stages["tcp"] = f"{rtt:.0f}ms"
+        else:
+            stages["tcp"] = "n/a"
+        # Hysteria2/TUIC are UDP: Xray cannot carry them, sing-box can.
+        udp_protocols = ('HY2', 'HYSTERIA', 'TUIC')
+        port = allocate_port()
+        try:
+            if entry.protocol in udp_protocols:
+                ok, latency, reason = self._get_happ_sb_tester().test_happ(
+                    entry.uri, port, timeout=timeout)
+            else:
+                ok, latency, reason = self._get_happ_xr_tester().test_happ(
+                    entry.uri, port, timeout=timeout)
+        finally:
+            release_port(port)
+        if reason == "unsupported_protocol" or reason.startswith(
+                ("xray_start_fail", "sb_start_fail")):
+            stages["core"] = "fail"
+            reason = ("unsupported_protocol" if reason == "unsupported_protocol"
+                      else "xray_start_fail")
+            stages["probe"] = "n/a"
+        else:
+            stages["core"] = "ok"
+            stages["probe"] = "ok" if ok else (reason or "probe_failed")
+        _debug(f"_happ_test: {entry.host}:{entry.port} ok={ok} reason={reason} "
+               f"target={HAPP_TARGET} timeout={timeout:.1f}")
+        return ok, latency, reason
 
     def _rkn_test(self, entry: ProxyEntry) -> tuple[bool, float, str, list]:
         from .tester import allocate_port, release_port, prefer_xray

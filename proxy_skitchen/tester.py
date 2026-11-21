@@ -138,6 +138,12 @@ CONTROL_TARGETS = (
     ProbeTarget("https://cp.cloudflare.com/cdn-cgi/trace", "trace", category="control"),
     ProbeTarget("https://www.gstatic.com/generate_204", "empty204", category="control"),
 )
+
+# Mirror of XTLS/libXray (the library Happ uses): one HEAD request through the
+# node, any HTTP response counts as alive, one attempt, fixed timeout.
+HAPP_TARGET = "https://www.gstatic.com/generate_204"
+HAPP_TIMEOUT = 5.0
+_HAPP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 GENERATE_204_TARGET = ProbeTarget(TEST_URL, "empty204")
 INFRA_TARGETS = (
     ProbeTarget("https://github.com", "marker", "github", category="infra", min_bytes=500),
@@ -195,6 +201,16 @@ def validate_probe_response(target: ProbeTarget, code: int, body: bytes) -> tupl
 def _probe_error_reason(exc: Exception) -> str:
     if isinstance(exc, urllib.error.HTTPError):
         return f"http_{exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        inner = getattr(exc, "reason", None)
+        if isinstance(inner, BaseException):
+            return _probe_error_reason(inner)
+        text = str(inner).lower()
+        if "timed out" in text or "timeout" in text:
+            return "timeout"
+        if "reset" in text:
+            return "reset"
+        return "urlerror"
     if isinstance(exc, (socket.timeout, TimeoutError)):
         return "timeout"
     if isinstance(exc, ConnectionResetError):
@@ -202,6 +218,30 @@ def _probe_error_reason(exc: Exception) -> str:
     if isinstance(exc, ssl.SSLError):
         return "tls_error"
     return type(exc).__name__.lower()
+
+
+def happ_head(proxy_url: str, url: str = HAPP_TARGET,
+              timeout: float = HAPP_TIMEOUT) -> tuple[bool, float, str]:
+    """One HEAD request through the node, judged the way Happ judges it.
+
+    XTLS/libXray treats any HTTP answer — including 403/404 and a block page —
+    as a live node, so a status code is not validated here either.  The point
+    is to reproduce Happ's verdict, not to be right about content; the fair
+    check (``CONTROL_TARGETS``) stays the truthful one.
+    """
+    start = time.time()
+    try:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+        request = urllib.request.Request(url, method="HEAD",
+                                         headers={"User-Agent": _HAPP_UA})
+        response = opener.open(request, timeout=timeout)
+        response.close()
+        return True, (time.time() - start) * 1000, ""
+    except urllib.error.HTTPError:
+        return True, (time.time() - start) * 1000, ""
+    except Exception as exc:
+        return False, (time.time() - start) * 1000, _probe_error_reason(exc)
 
 
 def summarize_attempts(attempts: list[ProbeAttempt]) -> tuple[bool, float, float, str]:
@@ -705,6 +745,53 @@ class SingBoxTester:
                 return ok, lat, reason
         except Exception as e:
             return False, 0, str(e)
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(1)
+                except Exception:
+                    pass
+            _reap(proc)
+
+    def test_happ(self, uri: str, port: int, timeout: float = HAPP_TIMEOUT) -> tuple[bool, float, str]:
+        """Happ-style single HEAD for protocols Xray does not carry (UDP)."""
+        config = self._make_config(uri, port)
+        if config is None:
+            return False, 0, "unsupported_protocol"
+        proc = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="sb_happ_", dir=TMP_DIR) as tmp_dir:
+                config_path = os.path.join(tmp_dir, "config.json")
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+                with SB_SEMAPHORE:
+                    time.sleep(random.uniform(0.1, 0.3))
+                    proc = _spawn(
+                        [SING_BOX, "run", "-c", config_path],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                        cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
+                    )
+                    time.sleep(0.5)
+                    if proc.poll() is not None:
+                        err_b = b""
+                        try:
+                            _, err_b = proc.communicate(timeout=0.5)
+                        except Exception:
+                            pass
+                        return False, 0, f"sb_start_fail: {core_error_text(None, err_b)}"
+                    ok, latency, reason = happ_head(
+                        f"http://127.0.0.1:{port}", timeout=timeout)
+                    proc.kill()
+                    try:
+                        proc.wait(1)
+                    except Exception:
+                        pass
+                    _reap(proc)
+                    proc = None
+                return ok, latency, reason
+        except Exception as exc:
+            return False, 0, _probe_error_reason(exc)
         finally:
             if proc and proc.poll() is None:
                 try:
@@ -1308,9 +1395,14 @@ class XrayTester:
 
     def _make_config(self, uri: str, local_port: int, overrides: dict | None = None) -> Optional[dict]:
         proto = get_protocol(uri)
-        if proto != 'vless':
+        if proto == 'vless':
+            outbound = self._parse_vless(uri)
+        elif proto == 'http':
+            outbound = self._parse_http_outbound(uri)
+        elif proto == 'socks':
+            outbound = self._parse_socks_outbound(uri)
+        else:
             return None
-        outbound = self._parse_vless(uri)
         if outbound is None:
             return None
         if self.use_doh:
@@ -1321,6 +1413,94 @@ class XrayTester:
             "inbounds": [{"port": local_port, "listen": "127.0.0.1", "protocol": "http", "settings": {}}],
             "outbounds": [outbound],
         }
+
+    def _http_server(self, uri: str) -> Optional[dict]:
+        """Split ``scheme://[user:pass@]host:port`` into an Xray server entry."""
+        clean = uri.strip()
+        for pfx in ('http://', 'https://', 'socks5://', 'socks4://'):
+            if clean.lower().startswith(pfx):
+                clean = clean[len(pfx):]
+                break
+        for sep in ('?', '#'):
+            pos = clean.find(sep)
+            if pos != -1:
+                clean = clean[:pos]
+        server, _, port_text = clean.rpartition(':')
+        if not server or not port_text.isdigit():
+            return None
+        server = server.rpartition('@')[2]
+        if not server:
+            return None
+        entry = {"address": server, "port": int(port_text)}
+        userinfo = clean.rpartition('@')[0]
+        if userinfo and '@' in clean:
+            user, _, password = userinfo.partition(':')
+            if user:
+                entry["users"] = [{"user": urllib.parse.unquote(user),
+                                   "pass": urllib.parse.unquote(password)}]
+        return entry
+
+    def _parse_http_outbound(self, uri: str) -> Optional[dict]:
+        server = self._http_server(uri)
+        if server is None:
+            return None
+        return {"protocol": "http", "settings": {"servers": [server]}}
+
+    def _parse_socks_outbound(self, uri: str) -> Optional[dict]:
+        server = self._http_server(uri)
+        if server is None:
+            return None
+        return {"protocol": "socks", "settings": {"servers": [server]}}
+
+    def test_happ(self, uri: str, port: int, timeout: float = HAPP_TIMEOUT) -> tuple[bool, float, str]:
+        """Happ-compatible check: Xray only, one HEAD, no retries, no DoH."""
+        if not os.path.isfile(XRAY):
+            return False, 0, f"xray не найден: {XRAY}"
+        config = self._make_config(uri, port)
+        if config is None:
+            return False, 0, "unsupported_protocol"
+        proc = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="xr_happ_", dir=TMP_DIR) as tmp_dir:
+                config_path = os.path.join(tmp_dir, "config.json")
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+                with self.XRAY_SEMAPHORE:
+                    time.sleep(random.uniform(0.1, 0.3))
+                    proc = _spawn(
+                        [XRAY, "run", "-c", config_path],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
+                    )
+                    time.sleep(0.5)
+                    if proc.poll() is not None:
+                        err = ""
+                        try:
+                            out_b, err_b = proc.communicate(timeout=0.5)
+                            err = core_error_text(out_b, err_b)
+                        except Exception:
+                            pass
+                        return False, 0, "xray_start_fail" if not err else f"xray_start_fail: {err}"
+                    ok, latency, reason = happ_head(
+                        f"http://127.0.0.1:{port}", timeout=timeout)
+                    proc.kill()
+                    try:
+                        proc.wait(1)
+                    except Exception:
+                        pass
+                    _reap(proc)
+                    proc = None
+                return ok, latency, reason
+        except Exception as exc:
+            return False, 0, _probe_error_reason(exc)
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(1)
+                except Exception:
+                    pass
+            _reap(proc)
 
     def _parse_vless(self, uri: str) -> Optional[dict]:
         try:

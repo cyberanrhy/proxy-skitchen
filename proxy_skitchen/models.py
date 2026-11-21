@@ -106,6 +106,7 @@ DEFAULT_SETTINGS = {
     "clean_uris": True,
     "sub_title": "My Subscription",
     "rkn_quorum": 1,
+    "check_mode": "fair",
 }
 
 def current_theme() -> str:
@@ -132,12 +133,28 @@ def sanitize_network(uri: str) -> str:
     return uri
 
 
+# Open HTTP/SOCKS proxies carry no encryption of their own: using one for a
+# site check would expose the whole request, so they are excluded from it.
+PLAIN_PROXY_PROTOCOLS = frozenset({"HTTP", "HTTPS", "SOCKS", "SOCKS4", "SOCKS5"})
+
+
+def is_plain_proxy(protocol_or_uri: str) -> bool:
+    """True for a plain HTTP/SOCKS proxy (no TLS, no node-level encryption).
+
+    Accepts either a protocol label (``"HTTP"``) or a raw URI.
+    """
+    text = (protocol_or_uri or "").strip().upper()
+    if "://" in text:
+        text = text.split("://", 1)[0]
+    return text in PLAIN_PROXY_PROTOCOLS
+
+
 class ProxyEntry:
     __slots__ = ('uri', 'protocol', 'host', 'port', 'sni', 'country', 'source',
                  'tcp_ok', 'deep_ok', 'rkn_ok', 'latency_ms', 'deep_error', 'is_embedded',
                  'tcp_tested', 'deep_tested', 'rkn_tested', 'geo_tested', 'rkn_results',
                  'security', '_clean_uri', 'strategy_name', 'strategy_overrides',
-                 'block_type', 'probe_reason')
+                 'block_type', 'probe_reason', 'probe_stages')
 
     def __init__(self, uri: str, source: str = ""):
         from .parsers import normalize_uri
@@ -167,6 +184,8 @@ class ProxyEntry:
         self.block_type = ""
         # Human-readable reason from the fair deep test (timeout/reset/...).
         self.probe_reason = ""
+        # Stage-by-stage record of the last deep check (dns/tcp/core/probe).
+        self.probe_stages = {}
         self._parse()
 
     def _parse(self):
@@ -335,6 +354,8 @@ def _normalize_settings(data) -> dict:
     normalized["proxy_port"] = _coerce_int(normalized.get("proxy_port", 12334), 12334, 1, 65535)
     normalized["max_latency_ms"] = _coerce_int(normalized.get("max_latency_ms", 3100), 3100, 100, 30000)
     normalized["rkn_quorum"] = _coerce_int(normalized.get("rkn_quorum", 1), 1, 1, 4)
+    mode = str(normalized.get("check_mode", "fair")).strip().lower()
+    normalized["check_mode"] = "happ" if mode == "happ" else "fair"
     for key in ("proxy_type", "proxy_host", "language", "theme", "gh_repo",
                 "gh_file", "gh_branch", "sub_title", "default_repo", "perf_mode"):
         if key in normalized and normalized[key] is not None:
@@ -409,6 +430,24 @@ def _get_tokens() -> list[str]:
     if not tokens:
         tokens = _env_tokens()
     return tokens
+
+
+def format_probe_stages(stages: dict | None) -> str:
+    """Render the deep-check stage trail for a tooltip.
+
+    Codes stay language-neutral in the model; only the labels are Russian,
+    matching the rest of the tooltip.
+    """
+    if not stages:
+        return ""
+    labels = (("dns", "DNS"), ("tcp", "TCP"), ("core", "Ядро"), ("probe", "Проба"))
+    parts = []
+    for key, label in labels:
+        value = stages.get(key)
+        if value in (None, ""):
+            continue
+        parts.append(f"{label}: {value}")
+    return ("\nЭтапы: " + " · ".join(parts)) if parts else ""
 
 
 class ProxyTableModel(QAbstractTableModel):
@@ -580,13 +619,14 @@ class ProxyTableModel(QAbstractTableModel):
                 from .i18n import current_lang
                 from .dpi import probe_reason_label
                 reason = f"\nПричина: {probe_reason_label(p.probe_reason, current_lang())}"
+            stages = format_probe_stages(p.probe_stages)
             return (f"{p.display_protocol()} {p.host}:{p.port}\n"
                     f"SNI: {p.sni or '-'}\n"
                     f"Страна: {country_display}\n"
                     f"Источник: {p.source or '-'}\n"
                     f"Профиль: {strategy}\n"
                     f"Deep: {'⚡' if p.deep_ok else '❌'}{rkn_str}  "
-                    f"Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}{reason}")
+                    f"Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}{reason}{stages}")
         return None
 
     def add_proxies(self, entries: list[ProxyEntry]):

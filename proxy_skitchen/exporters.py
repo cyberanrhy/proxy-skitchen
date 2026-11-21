@@ -2,7 +2,7 @@ import os, json, base64
 from typing import Optional
 
 
-from .models import ProxyEntry
+from .models import ProxyEntry, is_plain_proxy
 
 
 def _clean_uri(uri: str) -> str:
@@ -15,6 +15,10 @@ def _clean_uri(uri: str) -> str:
 
 def _is_valid_entry(e: ProxyEntry) -> bool:
     if not e.host or e.port is None or e.port == 0:
+        return False
+    # Plain HTTP/SOCKS proxies (http://1.2.3.4:8080) carry no encryption of
+    # their own: drop them instead of exporting them as if they were nodes.
+    if is_plain_proxy(e.protocol):
         return False
     from .parsers import uri_has_insecure, uri_sni_messy
     # hysteria2 handles `insecure` natively (tls.insecure / skip-cert-verify)

@@ -43,6 +43,9 @@ _PROBE_REASON_RU = {
     "connectionreseterror": "соединение сброшено",
     "urlerror": "сеть недоступна",
     "tcp_unreachable": "сервер не отвечает (порт закрыт или адрес недоступен)",
+    "dns_fail": "домен узла не разрешается",
+    "unsupported_protocol": "ядро не поддерживает этот тип подключения",
+    "xray_start_fail": "ядро не приняло настройки узла",
     "unknown": "неизвестная ошибка",
 }
 _PROBE_REASON_EN = {
@@ -55,6 +58,9 @@ _PROBE_REASON_EN = {
     "connectionreseterror": "connection reset",
     "urlerror": "network unreachable",
     "tcp_unreachable": "server did not answer (port closed or address unreachable)",
+    "dns_fail": "the node's domain does not resolve",
+    "unsupported_protocol": "the core does not support this connection type",
+    "xray_start_fail": "the core rejected the node settings",
     "unknown": "unknown error",
 }
 

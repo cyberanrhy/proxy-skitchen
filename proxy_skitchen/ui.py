@@ -11,7 +11,7 @@ def _debug(msg: str):
 
 from .compat import *
 from .compat import _write_log, DEBUG_LOG_PATHS
-from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens
+from .models import ProxyEntry, ProxyTableModel, _auth_data, _settings_data, _save_auth, _load_auth, _save_settings, _load_settings, PERF_PRESETS, THEMES, current_theme, set_theme, country_flag, _get_tokens, is_plain_proxy
 from .parsers import is_proxy_uri, extract_uris, get_server_port, get_protocol
 from .exporters import format_raw, format_v2rayn, format_singbox, format_clash, format_hiddify, format_amnezia, smart_name, _country_to_code, _is_valid_entry, _entry_ok, _clean_uri, wireguard_conf_from_entry, validate_content, DEFAULT_DOH
 from .workers import NetworkWorker, TesterWorker, GitHubSearchWorker, StrategyWorker
@@ -1912,6 +1912,16 @@ class TestPage(WizardPage):
         self.btn_auto_strategy.clicked.connect(self._on_auto_strategy)
         aux.addWidget(self.btn_auto_strategy)
 
+        self.lbl_check_mode = QLabel(_("test.mode"))
+        aux.addWidget(self.lbl_check_mode)
+        self.combo_check_mode = QComboBox()
+        self.combo_check_mode.addItems([_("test.mode.fair"), _("test.mode.happ")])
+        self.combo_check_mode.setCurrentIndex(
+            1 if str(_settings_data.get("check_mode", "fair")).lower() == "happ" else 0)
+        self.combo_check_mode.setToolTip(_("test.mode.tooltip"))
+        self.combo_check_mode.currentIndexChanged.connect(self._on_check_mode_changed)
+        aux.addWidget(self.combo_check_mode)
+
         self.lbl_rkn_quorum = QLabel(_("test.rkn.quorum"))
         aux.addWidget(self.lbl_rkn_quorum)
         self.combo_rkn_quorum = QComboBox()
@@ -2070,6 +2080,12 @@ class TestPage(WizardPage):
         if self._strategy_worker is not None:
             self._cleanup_strategy()
             self.btn_auto_strategy.setText(_("test.btn.auto_strategy"))
+        # Plain HTTP/SOCKS proxies are dropped on load: unencrypted, never
+        # tested, never exported.
+        plain = [e for e in entries if is_plain_proxy(e.protocol)]
+        if plain:
+            entries = [e for e in entries if not is_plain_proxy(e.protocol)]
+            self._log(f"⚠ Пропущено открытых прокси без шифрования: {len(plain)}")
         seen_uris = set()
         seen_keys = {}
         deduped = []
@@ -2199,6 +2215,10 @@ class TestPage(WizardPage):
 
     def _on_rkn_quorum_changed(self, idx: int):
         _settings_data["rkn_quorum"] = max(1, min(4, idx + 1))
+        _save_settings(_settings_data)
+
+    def _on_check_mode_changed(self, idx: int):
+        _settings_data["check_mode"] = "happ" if idx == 1 else "fair"
         _save_settings(_settings_data)
 
     def _cleanup_strategy(self):
@@ -2394,20 +2414,25 @@ class TestPage(WizardPage):
             self.btn_auto_strategy.setText(_("test.btn.auto_strategy"))
         base = subset if subset is not None else self._entries
         base_indices = subset_indices if subset_indices is not None else list(range(len(base)))
-        total = len(base)
         # Always keep model-row indices paired with entries: the tester reports
         # rows back, so dropping WireGuard entries without dropping their
         # indices would mark the wrong proxies.
         pairs = [(i, e) for i, e in zip(base_indices, base)
                  if e.protocol not in ('WIREGUARD', 'WG')]
+        # Plain proxies are never tested: no encryption, nothing to measure.
+        before_plain = len(pairs)
+        pairs = [(i, e) for i, e in pairs if not is_plain_proxy(e.protocol)]
+        plain_skipped = before_plain - len(pairs)
+        if plain_skipped:
+            self._log(f"⚠ Пропущено открытых прокси без шифрования: {plain_skipped}")
         if not pairs:
-            self._log("⚠ WireGuard не тестируется — нет подходящих entry")
+            self._log("⚠ Нет подходящих узлов для проверки")
             return
         target_indices = [i for i, _ in pairs]
         target = [e for _, e in pairs]
-        skipped = total - len(target)
-        if skipped:
-            self._log(f"⚠ Пропущено WireGuard: {skipped}")
+        skipped_wg = sum(1 for e in base if e.protocol in ('WIREGUARD', 'WG'))
+        if skipped_wg:
+            self._log(f"⚠ Пропущено WireGuard: {skipped_wg}")
         self._stop_requested = False
         self._test_start_time = time.time()
         self._set_phase(self.PHASE_TEST)
@@ -2423,7 +2448,8 @@ class TestPage(WizardPage):
         threads = max(1, self.spin_threads.value())
         self._tester = TesterWorker(rkn=rkn, test_threads=threads, deep_threads=threads,
                                     use_doh=self.chk_test_doh.isChecked(), dns_list=DEFAULT_DOH,
-                                    rkn_quorum=self.combo_rkn_quorum.currentIndex() + 1)
+                                    rkn_quorum=self.combo_rkn_quorum.currentIndex() + 1,
+                                    check_mode=str(_settings_data.get("check_mode", "fair")))
         # Run token: results from a stopped/superseded tester are dropped instead
         # of being written into rows of the next run.
         self._tester.result_signal.connect(self._on_test_result)
@@ -2838,6 +2864,14 @@ class TestPage(WizardPage):
         self.combo_rkn_quorum.setCurrentIndex(min(current_q, 2))
         self.combo_rkn_quorum.blockSignals(False)
         self.combo_rkn_quorum.setToolTip(_("test.rkn.quorum.tooltip"))
+        self.lbl_check_mode.setText(_("test.mode"))
+        self.combo_check_mode.blockSignals(True)
+        current_mode = self.combo_check_mode.currentIndex()
+        self.combo_check_mode.clear()
+        self.combo_check_mode.addItems([_("test.mode.fair"), _("test.mode.happ")])
+        self.combo_check_mode.setCurrentIndex(min(current_mode, 1))
+        self.combo_check_mode.blockSignals(False)
+        self.combo_check_mode.setToolTip(_("test.mode.tooltip"))
         self.lbl_strategy_hint.setText(_("test.hint.bypass"))
         self.btn_continue.setText(_("test.btn.continue"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))

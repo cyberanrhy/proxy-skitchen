@@ -36,7 +36,7 @@ def excepthook(etype, value, tb):
 sys.excepthook = excepthook
 
 from .compat import QCoreApplication, QApplication, QTimer, QEventLoop, _QT6, CREATE_NO_WINDOW, IS_WINDOWS
-from .models import ProxyEntry, _auth_data, _get_tokens, _settings_data, current_theme
+from .models import ProxyEntry, _auth_data, _get_tokens, _settings_data, current_theme, is_plain_proxy
 from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, wrap_raw_host, parse_json_proxies
 from .exporters import (format_raw, format_v2rayn, format_singbox, format_clash,
                         format_hiddify, validate_content, _clean_uri, _is_valid_entry,
@@ -350,7 +350,7 @@ class CliRunner:
             if ok:
                 tcp_ok += 1
                 ok_uris.append(uri)
-            if args.rkn and ok and sb_tester:
+            if args.rkn and ok and sb_tester and not is_plain_proxy(uri):
                 r_ok, lat, err, results = sb_tester.test_rkn_bypass(uri, 29999 + (i % 10000))
                 if r_ok:
                     rkn_ok += 1
@@ -446,18 +446,24 @@ class CliRunner:
         deep_ok = 0
         rkn_ok = 0
         sb_tester = SingBoxTester(use_doh=getattr(args, 'test_doh', False), doh_list=DEFAULT_DOH) if args.deep or args.rkn else None
-        if args.rkn and sb_tester:
-            for i, u in enumerate(ok_uris):
-                self._status(f"rkn [{i + 1}/{len(ok_uris)}]")
-                r_ok, lat, err, results = sb_tester.test_rkn_bypass(u, 29999 + (i % 10000))
-                if r_ok:
-                    rkn_ok += 1
-        elif args.deep and sb_tester:
-            for i, u in enumerate(ok_uris):
-                self._status(f"deep [{i + 1}/{len(ok_uris)}]")
-                d_ok, lat, err = sb_tester.test(u, 19999 + (i % 10000))
-                if d_ok:
-                    deep_ok += 1
+        if sb_tester and (args.deep or args.rkn):
+            # Plain HTTP/SOCKS proxies are not tested at all: no encryption,
+            # nothing to measure, and never exported.
+            checked = [u for u in ok_uris if not is_plain_proxy(u)]
+            skipped_plain = len(ok_uris) - len(checked)
+            if skipped_plain:
+                self._status(f"пропущено открытых прокси без шифрования: {skipped_plain}")
+            for i, u in enumerate(checked):
+                if args.rkn:
+                    self._status(f"rkn [{i + 1}/{len(checked)}]")
+                    r_ok, lat, err, results = sb_tester.test_rkn_bypass(u, 29999 + (i % 10000))
+                    if r_ok:
+                        rkn_ok += 1
+                else:
+                    self._status(f"deep [{i + 1}/{len(checked)}]")
+                    d_ok, lat, err = sb_tester.test(u, 19999 + (i % 10000))
+                    if d_ok:
+                        deep_ok += 1
 
         self._ok(f"итог: tcp={tcp_ok}, deep={deep_ok}, rkn={rkn_ok}")
 
