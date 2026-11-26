@@ -148,7 +148,7 @@ GENERATE_204_TARGET = ProbeTarget(TEST_URL, "empty204")
 # DEEP mirrors the Happ app's check: one target, one attempt, fixed 5 s, no
 # second core.  Content is still validated (fair logic), so a block page that
 # returns 200 does not count as a tunnel.
-DEEP_TARGETS = (GENERATE_204_TARGET,)
+DEEP_TARGETS = (ProbeTarget(TEST_URL, "head_any"),)
 DEEP_TIMEOUT = HAPP_TIMEOUT
 INFRA_TARGETS = (
     ProbeTarget("https://github.com", "marker", "github", category="infra", min_bytes=500),
@@ -187,6 +187,13 @@ def validate_probe_response(target: ProbeTarget, code: int, body: bytes) -> tupl
             return True, ""
         if code == 204:
             return False, "204_with_body"
+        return False, f"http_{code}"
+    if target.kind == "head_any":
+        # Happ (libXray) accepts any HTTP answer to a HEAD request.  5xx is
+        # excluded because our HTTP proxy inbound synthesises it when the
+        # outbound fails; a real gstatic 204 target never returns 5xx.
+        if 200 <= code < 500:
+            return True, ""
         return False, f"http_{code}"
     if target.kind == "trace":
         low = body.lower()
@@ -243,7 +250,11 @@ def happ_head(proxy_url: str, url: str = HAPP_TARGET,
         response = opener.open(request, timeout=timeout)
         response.close()
         return True, (time.time() - start) * 1000, ""
-    except urllib.error.HTTPError:
+    except urllib.error.HTTPError as exc:
+        # A 5xx here is produced by the local proxy inbound when the outbound
+        # failed, not by gstatic; counting it as alive was a false positive.
+        if 500 <= exc.code < 600:
+            return False, (time.time() - start) * 1000, f"http_{exc.code}"
         return True, (time.time() - start) * 1000, ""
     except Exception as exc:
         return False, (time.time() - start) * 1000, _probe_error_reason(exc)
@@ -275,9 +286,23 @@ def _single_attempt(proxy_url: str, target: ProbeTarget, timeout: float) -> Prob
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         )]
-        resp = opener.open(target.url, timeout=timeout)
+        if target.kind == "head_any":
+            request = urllib.request.Request(
+                target.url, method="HEAD",
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                       "Chrome/120.0 Safari/537.36"})
+            resp = opener.open(request, timeout=timeout)
+        else:
+            resp = opener.open(target.url, timeout=timeout)
         code = resp.getcode()
-        body = resp.read(262144)
+        if target.kind == "head_any":
+            # HEAD has no body; reading it would block until the connection
+            # closes on some cores.
+            resp.close()
+            body = b""
+        else:
+            body = resp.read(262144)
         latency = (time.time() - start) * 1000
         ok, reason = validate_probe_response(target, code, body)
         return ProbeAttempt(ok, code, latency, len(body), reason)
@@ -285,35 +310,58 @@ def _single_attempt(proxy_url: str, target: ProbeTarget, timeout: float) -> Prob
         return ProbeAttempt(False, 0, (time.time() - start) * 1000, 0, _probe_error_reason(exc))
 
 
+def _strict_verdict(result: ProbeResult):
+    """Require every attempt to pass (used by the two-HEAD DEEP gate)."""
+    attempts = result.attempts
+    if not attempts:
+        result.ok, result.success_ratio, result.latency_ms, result.reason = False, 0.0, 0.0, "probe_failed"
+        return
+    successes = [a for a in attempts if a.ok]
+    failures = [a for a in attempts if not a.ok]
+    result.success_ratio = len(successes) / len(attempts)
+    result.ok = not failures
+    result.latency_ms = statistics.median(a.latency_ms for a in successes) if successes else 0.0
+    result.reason = "" if result.ok else (failures[0].error or "probe_failed")
+
+
 def probe_target(proxy_url: str, target: ProbeTarget, attempts: int = 1,
-                 timeout: float = 5.0, pause: tuple = (0.15, 0.45)) -> ProbeResult:
+                 timeout: float = 5.0, pause: tuple = (0.15, 0.45),
+                 require_all: bool = False) -> ProbeResult:
     """Probe one target several times and decide by success ratio."""
     attempts = max(1, int(attempts))
     result = ProbeResult(target=target)
     for idx in range(attempts):
         result.attempts.append(_single_attempt(proxy_url, target, timeout))
-        if result.attempts[-1].ok:
+        if not require_all and result.attempts[-1].ok:
             break
         if idx < attempts - 1:
             time.sleep(random.uniform(*pause))
-    result.ok, result.success_ratio, result.latency_ms, result.reason = summarize_attempts(result.attempts)
+    if require_all:
+        _strict_verdict(result)
+    else:
+        result.ok, result.success_ratio, result.latency_ms, result.reason = summarize_attempts(result.attempts)
     return result
 
 
 def probe_targets_rounds(proxy_url: str, targets, attempts: int = 1,
-                         timeout: float = 5.0, pause: tuple = (0.15, 0.45)) -> list[ProbeResult]:
+                         timeout: float = 5.0, pause: tuple = (0.15, 0.45),
+                         require_all: bool = False) -> list[ProbeResult]:
     """Probe several targets in parallel rounds, stopping at the first success.
 
     Working proxies finish in the first round; dead ones pay for every round
     but the rounds run in parallel across targets, so the cost stays bounded.
+    ``require_all`` runs every round and requires every attempt to pass.
     """
     targets = tuple(targets)
     attempts = max(1, int(attempts))
     results = {target: ProbeResult(target=target) for target in targets}
     for round_idx in range(attempts):
-        pending = [t for t in targets if not results[t].ok]
-        if not pending:
-            break
+        if require_all:
+            pending = list(targets)
+        else:
+            pending = [t for t in targets if not results[t].ok]
+            if not pending:
+                break
         with ThreadPoolExecutor(max_workers=min(4, len(pending))) as ex:
             futs = {ex.submit(_single_attempt, proxy_url, target, timeout): target
                     for target in pending}
@@ -324,16 +372,20 @@ def probe_targets_rounds(proxy_url: str, targets, attempts: int = 1,
                 except Exception as exc:
                     attempt = ProbeAttempt(False, 0, 0, 0, type(exc).__name__.lower())
                 results[target].attempts.append(attempt)
-        for target in pending:
-            ok, ratio, latency, reason = summarize_attempts(results[target].attempts)
-            results[target].ok = ok
-            results[target].success_ratio = ratio
-            results[target].latency_ms = latency
-            results[target].reason = reason
-        if any(results[t].ok for t in targets):
-            break
+        if not require_all:
+            for target in pending:
+                ok, ratio, latency, reason = summarize_attempts(results[target].attempts)
+                results[target].ok = ok
+                results[target].success_ratio = ratio
+                results[target].latency_ms = latency
+                results[target].reason = reason
+            if any(results[t].ok for t in targets):
+                break
         if round_idx < attempts - 1:
             time.sleep(random.uniform(*pause))
+    if require_all:
+        for target in targets:
+            _strict_verdict(results[target])
     return [results[t] for t in targets]
 
 
@@ -773,7 +825,8 @@ class SingBoxTester:
         self._guard = guard
 
     def test(self, uri: str, port: int, overrides: dict | None = None,
-             attempts: int = 1, targets=None, timeout: float | None = None) -> tuple[bool, float, str]:
+             attempts: int = 1, targets=None, timeout: float | None = None,
+             require_all: bool = False) -> tuple[bool, float, str]:
         config = self._make_config(uri, port, overrides)
         if config is None:
             return False, 0, "unsupported protocol"
@@ -807,6 +860,7 @@ class SingBoxTester:
                     probe_results = probe_targets_rounds(
                         f"http://127.0.0.1:{port}", probe_targets,
                         attempts=attempts, timeout=timeout or SB_TIMEOUT,
+                        require_all=require_all,
                     )
                     ok, lat, reason = verdict_from_probes(probe_results)
                     proc.kill()
@@ -1427,7 +1481,8 @@ class XrayTester:
             _reap(proc, self._guard)
 
     def test(self, uri: str, port: int, overrides: dict | None = None,
-             attempts: int = 1, targets=None, timeout: float | None = None) -> tuple[bool, float, str]:
+             attempts: int = 1, targets=None, timeout: float | None = None,
+             require_all: bool = False) -> tuple[bool, float, str]:
         if not os.path.isfile(XRAY):
             return False, 0, f"xray не найден: {XRAY}"
         config = self._make_config(uri, port, overrides)
@@ -1460,6 +1515,7 @@ class XrayTester:
                     probe_results = probe_targets_rounds(
                         f"http://127.0.0.1:{port}", probe_targets,
                         attempts=attempts, timeout=timeout or SB_TIMEOUT,
+                        require_all=require_all,
                     )
                     ok, lat, reason = verdict_from_probes(probe_results)
                     proc.kill()

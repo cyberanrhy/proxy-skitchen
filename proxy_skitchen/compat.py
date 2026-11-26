@@ -45,6 +45,7 @@ try:
         QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
         QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QPushButton, QCheckBox, QComboBox, QSpinBox,
         QGroupBox, QRadioButton, QButtonGroup, QDialog, QDialogButtonBox, QMessageBox, QProgressBar,
+        QProgressDialog,
         QHeaderView, QAbstractItemView, QMenu, QFileDialog, QInputDialog, QStatusBar, QToolBar,
         QToolButton, QFrame, QScrollArea, QSizePolicy, QSystemTrayIcon, QStackedWidget,
     )
@@ -70,6 +71,7 @@ except ImportError:
         QTreeWidget, QTreeWidgetItem, QListWidget, QListWidgetItem,
         QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QPushButton, QCheckBox, QComboBox, QSpinBox,
         QGroupBox, QRadioButton, QButtonGroup, QDialog, QDialogButtonBox, QMessageBox, QProgressBar,
+        QProgressDialog,
         QHeaderView, QAbstractItemView, QMenu, QFileDialog, QInputDialog, QStatusBar, QToolBar,
         QToolButton, QFrame, QScrollArea, QSizePolicy, QSystemTrayIcon, QStackedWidget,
     )
@@ -114,7 +116,7 @@ else:
     ] if os.path.isdir(p)), os.path.expanduser("~"))
 
 APP_NAME = "proxy-skitchen"
-APP_VERSION = "3.2.3"
+APP_VERSION = "3.2.4"
 
 if IS_WINDOWS:
     CREATE_NO_WINDOW = 0x08000000

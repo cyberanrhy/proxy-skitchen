@@ -2952,6 +2952,10 @@ class ExportPage(WizardPage):
         self.chk_failed.setChecked(_as_bool(_settings_data.get("include_failed", True)))
         self.chk_failed.toggled.connect(self._on_include_failed_changed)
         self.chk_failed.toggled.connect(self._update_preview)
+        self.chk_recheck = QCheckBox(_("export.chk.recheck"))
+        self.chk_recheck.setChecked(_as_bool(_settings_data.get("export_recheck", True)))
+        self.chk_recheck.setToolTip(_("export.chk.recheck.tooltip"))
+        self.chk_recheck.toggled.connect(self._on_recheck_changed)
         self.chk_clean_uris = QCheckBox(_("export.chk.clean_uris"))
         self.chk_clean_uris.setChecked(_as_bool(_settings_data.get("clean_uris", True)))
         self.chk_clean_uris.toggled.connect(self._on_clean_uris_changed)
@@ -2963,7 +2967,8 @@ class ExportPage(WizardPage):
         self.chk_smart_names.toggled.connect(self._update_preview)
         self.chk_clean_names.toggled.connect(self._update_preview)
         self.chk_failed.toggled.connect(self._update_preview)
-        for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed, self.chk_clean_uris, self.chk_no_wg):
+        for chk in (self.chk_smart_names, self.chk_clean_names, self.chk_failed,
+                    self.chk_recheck, self.chk_clean_uris, self.chk_no_wg):
             opt_l.addWidget(chk)
         fmt_opts.addLayout(opt_l)
 
@@ -3142,6 +3147,10 @@ class ExportPage(WizardPage):
         self._save_timer.start()
         self._update_preview()
 
+    def _on_recheck_changed(self, checked: bool):
+        _settings_data["export_recheck"] = checked
+        self._save_timer.start()
+
     def _on_gh_repo_changed(self, text):
         text = text.strip()
         _settings_data["gh_repo"] = text
@@ -3264,6 +3273,8 @@ class ExportPage(WizardPage):
         self.fmt_hiddify.setText(_("export.radio.hiddify"))
         self.fmt_amnezia.setText(_("export.radio.amnezia"))
         self.chk_failed.setText(_("export.chk.failed"))
+        self.chk_recheck.setText(_("export.chk.recheck"))
+        self.chk_recheck.setToolTip(_("export.chk.recheck.tooltip"))
         self.chk_smart_names.setText(_("export.chk.smart_names"))
         self.chk_clean_names.setText(_("export.chk.clean_names"))
         self.chk_dns_hook.setText(_("export.chk.dns_hook"))
@@ -3338,7 +3349,49 @@ class ExportPage(WizardPage):
             return 'amnezia'
         return 'raw'
 
+    def _recheck_if_needed(self) -> bool:
+        """Re-run the 2x HEAD DEEP gate just before writing an export.
+
+        Returns False when the user cancels; otherwise every stale-alive node
+        now has ``deep_ok=False`` and drops out of the generated content.
+        """
+        if not self.chk_recheck.isChecked() or self.chk_failed.isChecked():
+            return True
+        if self.fmt_amnezia.isChecked():
+            return True
+        entries = [e for e in (self._main.test_page.get_entries() or [])
+                   if _is_valid_entry(e) and _entry_ok(e)]
+        if not entries:
+            return True
+        worker = TesterWorker(use_doh=False)
+        dlg = QProgressDialog(
+            _("export.recheck.progress", done=0, total=len(entries)),
+            _("export.recheck.cancel"), 0, len(entries), self)
+        dlg.setWindowTitle(_("export.recheck.title"))
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        state = {"cancel": False}
+
+        def on_progress(done, total):
+            dlg.setValue(done)
+            dlg.setLabelText(_("export.recheck.progress", done=done, total=total))
+            QApplication.processEvents()
+
+        def should_cancel():
+            QApplication.processEvents()
+            if dlg.wasCanceled():
+                state["cancel"] = True
+            return state["cancel"]
+
+        worker.recheck(entries, threads=4, progress=on_progress,
+                       cancel=should_cancel)
+        dlg.close()
+        return not state["cancel"]
+
     def _on_save(self):
+        if not self._recheck_if_needed():
+            return
         if self.fmt_amnezia.isChecked():
             count = self._save_amnezia_confs(DESKTOP_DIR)
             if count == 0:
@@ -3372,6 +3425,8 @@ class ExportPage(WizardPage):
         QMessageBox.information(self, _("msg.done"), _("msg.saved", path=path))
 
     def _on_save_desktop(self):
+        if not self._recheck_if_needed():
+            return
         if self.fmt_amnezia.isChecked():
             count = self._save_amnezia_confs(DESKTOP_DIR)
             if count == 0:
@@ -3415,6 +3470,8 @@ class ExportPage(WizardPage):
         return content
 
     def _on_github_push(self):
+        if not self._recheck_if_needed():
+            return
         repo = self.gh_repo_input.text().strip()
         file_path = self.gh_file_input.text().strip()
         if not repo or not file_path:

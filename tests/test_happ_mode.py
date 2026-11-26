@@ -12,6 +12,8 @@ _APP = QCoreApplication.instance() or QCoreApplication([])
 
 VLESS = ("vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443"
          "?security=reality&type=tcp&pbk=x&sid=y&sni=example.com")
+VLESS_OTHER = ("vless://99999999-2222-3333-4444-555555555555@1.2.3.5:443"
+               "?security=reality&type=tcp&pbk=x&sid=y&sni=example.com")
 
 
 def _opener(side_effect):
@@ -57,6 +59,64 @@ class TestHappHead(unittest.TestCase):
                                         return_value=_opener(fake_open)):
             tester.happ_head("http://127.0.0.1:1", timeout=2.5)
         self.assertEqual(seen, [("HEAD", 2.5)])
+
+
+class TestHeadAnyProbe(unittest.TestCase):
+    """DEEP must judge a node the way Happ does: HEAD, any non-5xx response."""
+
+    def test_accepts_client_error(self):
+        ok, reason = tester.validate_probe_response(tester.DEEP_TARGETS[0], 403, b"")
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    def test_accepts_204(self):
+        ok, _reason = tester.validate_probe_response(tester.DEEP_TARGETS[0], 204, b"")
+        self.assertTrue(ok)
+
+    def test_rejects_proxy_5xx(self):
+        ok, reason = tester.validate_probe_response(tester.DEEP_TARGETS[0], 502, b"")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "http_502")
+
+    def test_uses_head_method(self):
+        seen = []
+        response = unittest.mock.Mock()
+        response.getcode.return_value = 204
+
+        def fake_open(request, timeout):
+            seen.append(request.get_method())
+            return response
+
+        with unittest.mock.patch.object(tester.urllib.request, "build_opener",
+                                        return_value=_opener(fake_open)):
+            tester._single_attempt("http://127.0.0.1:1", tester.DEEP_TARGETS[0], 0.1)
+        self.assertEqual(seen, ["HEAD"])
+
+    def test_happ_head_rejects_proxy_5xx(self):
+        err = urllib.error.HTTPError("https://x", 502, "Bad Gateway", {}, None)
+        with unittest.mock.patch.object(tester.urllib.request, "build_opener",
+                                        return_value=_opener(err)):
+            ok, _lat, reason = tester.happ_head("http://127.0.0.1:1", timeout=0.1)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "http_502")
+
+    def test_strict_verdict_requires_every_attempt(self):
+        result = tester.ProbeResult(target=tester.DEEP_TARGETS[0], attempts=[
+            tester.ProbeAttempt(True, 204, 100.0),
+            tester.ProbeAttempt(False, 0, 5000.0, 0, "timeout"),
+        ])
+        tester._strict_verdict(result)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "timeout")
+
+    def test_strict_verdict_passes_when_both_ok(self):
+        result = tester.ProbeResult(target=tester.DEEP_TARGETS[0], attempts=[
+            tester.ProbeAttempt(True, 204, 120.0),
+            tester.ProbeAttempt(True, 204, 180.0),
+        ])
+        tester._strict_verdict(result)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.latency_ms, 150.0)
 
 
 class TestXrayOutboundSupport(unittest.TestCase):
@@ -168,16 +228,19 @@ class TestHappWorker(unittest.TestCase):
             result = worker._deep_test(self.entry)
         return result, xr, sb
 
-    def test_deep_is_single_attempt_single_target(self):
+    def test_deep_requires_two_head_attempts(self):
         worker = TesterWorker()
         (ok, _lat, _reason), xr, sb = self._deep_with(
             worker, (True, 50.0, ""), (True, 50.0, ""))
         self.assertTrue(ok)
         _args, kwargs = xr.test.call_args
-        self.assertEqual(kwargs["attempts"], 1)
+        self.assertEqual(kwargs["attempts"], 2)
+        self.assertTrue(kwargs["require_all"])
         self.assertEqual(kwargs["targets"], tester.DEEP_TARGETS)
         self.assertEqual(kwargs["timeout"], tester.DEEP_TIMEOUT)
-        self.assertEqual(tester.DEEP_TARGETS, (tester.GENERATE_204_TARGET,))
+        self.assertEqual(len(tester.DEEP_TARGETS), 1)
+        self.assertEqual(tester.DEEP_TARGETS[0].kind, "head_any")
+        self.assertEqual(tester.DEEP_TARGETS[0].url, tester.TEST_URL)
         sb.test.assert_not_called()
 
     def test_deep_has_no_second_core_fallback(self):
@@ -295,6 +358,38 @@ class TestExportFilter(unittest.TestCase):
         self.assertTrue(_is_valid_entry(ProxyEntry(VLESS)))
         self.assertTrue(_is_valid_entry(ProxyEntry(
             "trojan://secret@1.2.3.4:443?sni=example.com")))
+
+
+class TestExportRecheck(unittest.TestCase):
+    def test_recheck_keeps_only_alive_and_updates_flags(self):
+        worker = TesterWorker()
+        alive_entry = ProxyEntry(VLESS)
+        dead_entry = ProxyEntry(VLESS_OTHER)
+
+        def fake(entry):
+            if entry is alive_entry:
+                return True, 10.0, ""
+            return False, 0.0, "timeout"
+
+        with unittest.mock.patch.object(worker, "_deep_test", side_effect=fake):
+            alive = worker.recheck([alive_entry, dead_entry], threads=2)
+        self.assertEqual(alive, [alive_entry])
+        self.assertTrue(alive_entry.deep_ok)
+        self.assertTrue(alive_entry.deep_tested)
+        self.assertFalse(dead_entry.deep_ok)
+        self.assertTrue(dead_entry.deep_tested)
+        self.assertEqual(dead_entry.probe_reason, "timeout")
+
+    def test_recheck_cancel_schedules_nothing(self):
+        worker = TesterWorker()
+        entries = [ProxyEntry(VLESS), ProxyEntry(VLESS_OTHER)]
+        with unittest.mock.patch.object(worker, "_deep_test",
+                                        return_value=(True, 1.0, "")):
+            alive = worker.recheck(entries, threads=1, cancel=lambda: True)
+        self.assertEqual(alive, [])
+
+    def test_export_recheck_defaults_on(self):
+        self.assertTrue(_normalize_settings({})["export_recheck"])
 
 
 class TestCheckModeSetting(unittest.TestCase):

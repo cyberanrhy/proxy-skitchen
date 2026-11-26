@@ -338,6 +338,46 @@ class TesterWorker(QObject):
                 except Exception as exc:
                     _debug(f"TesterWorker.stop(): kill_all failed: {exc}")
 
+    def recheck(self, entries, threads: int = 4,
+                progress=None, cancel=None) -> list:
+        """Fresh DEEP pass right before export; returns the still-alive entries.
+
+        A node that passed the test minutes ago may already be gone.  Running
+        the same 2x HEAD gate again and writing only survivors keeps the
+        exported file close to what Happ will accept at import time.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        total = len(entries)
+        alive = []
+        if not total:
+            return alive
+        done = 0
+        with ThreadPoolExecutor(max_workers=max(1, min(int(threads), total))) as pool:
+            futs = {}
+            for e in entries:
+                if cancel and cancel():
+                    break
+                futs[pool.submit(self._deep_test, e)] = e
+            for fut in as_completed(futs):
+                e = futs[fut]
+                try:
+                    ok, lat, reason = fut.result()
+                except Exception:
+                    ok, lat, reason = False, 0.0, "probe_failed"
+                e.deep_ok = ok
+                e.deep_tested = True
+                e.latency_ms = float(lat) if ok else 0.0
+                e.probe_reason = "" if ok else reason
+                if ok:
+                    alive.append(e)
+                done += 1
+                if progress is not None:
+                    try:
+                        progress(done, total)
+                    except Exception:
+                        pass
+        return alive
+
     @Slot()
     def test_batch(self, entries: list[ProxyEntry], indices: list[int] | None = None):
         _debug(f"test_batch: start total={len(entries)} rkn={self._rkn}")
@@ -466,7 +506,8 @@ class TesterWorker(QObject):
                 return False, 0, "tcp_unreachable"
         port = allocate_port()
         use_xray = xray_can_carry(entry.uri)
-        probe = {"attempts": 1, "targets": DEEP_TARGETS, "timeout": timeout}
+        probe = {"attempts": 2, "targets": DEEP_TARGETS, "timeout": timeout,
+                 "require_all": True}
         _debug(f"_deep_test: {entry.host}:{entry.port} use_xray={use_xray} "
                f"port={port} timeout={timeout:.1f}")
         try:

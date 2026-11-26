@@ -107,6 +107,7 @@ DEFAULT_SETTINGS = {
     "sub_title": "My Subscription",
     "rkn_quorum": 1,
     "check_mode": "fair",
+    "export_recheck": True,
 }
 
 def current_theme() -> str:
@@ -377,7 +378,8 @@ def _normalize_settings(data) -> dict:
         data = {}
     normalized = dict(DEFAULT_SETTINGS)
     normalized.update(data)
-    for key in ("proxy_enabled", "clean_uris", "include_failed", "max_latency_enabled"):
+    for key in ("proxy_enabled", "clean_uris", "include_failed", "max_latency_enabled",
+                "export_recheck"):
         if key in normalized:
             normalized[key] = _coerce_bool(normalized[key], bool(DEFAULT_SETTINGS.get(key, True)))
     normalized["proxy_port"] = _coerce_int(normalized.get("proxy_port", 12334), 12334, 1, 65535)
