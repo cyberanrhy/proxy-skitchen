@@ -327,13 +327,16 @@ class TesterWorker(QObject):
     def stop(self):
         _debug(f"TesterWorker.stop() called, was_stop={self._stop}")
         self._stop = True
-        # Kill sing-box/xray processes that are already running: the worker
-        # only flags itself otherwise, and the cores would outlive the app.
-        try:
-            from .tester import kill_all_procs
-            kill_all_procs()
-        except Exception as exc:
-            _debug(f"TesterWorker.stop(): kill_all_procs failed: {exc}")
+        # Kill only this worker's own cores: another worker may be running its
+        # own sing-box/xray, and tearing those down would corrupt its test run.
+        for tester in (self._sb_tester, self._xr_tester,
+                       self._sb_happ_tester, self._xr_happ_tester):
+            guard = getattr(tester, "_guard", None)
+            if guard is not None:
+                try:
+                    guard.kill_all()
+                except Exception as exc:
+                    _debug(f"TesterWorker.stop(): kill_all failed: {exc}")
 
     @Slot()
     def test_batch(self, entries: list[ProxyEntry], indices: list[int] | None = None):
@@ -389,7 +392,9 @@ class TesterWorker(QObject):
                         if (idx + 1) % 10 == 0 or idx == len(unique_ips) - 1:
                             self.log_signal.emit(f"geo: {idx+1}/{len(unique_ips)}")
                         if idx < len(unique_ips) - 1 and not self._stop:
-                            time.sleep(1.5)
+                            # Short pause for the public resolver; old 1.5 s/IP
+                            # stalled the entire finish cycle.
+                            time.sleep(0.25)
                     for i, e in geo_alive:
                         if e.host in ip_to_country:
                             entries[i].country = ip_to_country[e.host]
@@ -420,32 +425,32 @@ class TesterWorker(QObject):
         return deep_ok, deep_lat, deep_err, 1
 
     def _get_sb_tester(self):
+        from .tester import SingBoxTester, ProcGuard
         with self._tester_lock:
             if not self._sb_tester:
-                from .tester import SingBoxTester
-                self._sb_tester = SingBoxTester(use_doh=self._use_doh, doh_list=self._doh_list)
+                self._sb_tester = SingBoxTester(use_doh=self._use_doh, doh_list=self._doh_list, guard=ProcGuard())
             return self._sb_tester
 
     def _get_xr_tester(self):
+        from .tester import XrayTester, ProcGuard
         with self._tester_lock:
             if not self._xr_tester:
-                from .tester import XrayTester
-                self._xr_tester = XrayTester(use_doh=self._use_doh, doh_list=self._doh_list)
+                self._xr_tester = XrayTester(use_doh=self._use_doh, doh_list=self._doh_list, guard=ProcGuard())
             return self._xr_tester
 
     def _get_happ_sb_tester(self):
         """Happ mode never uses DoH, so it gets its own core instance."""
+        from .tester import SingBoxTester, ProcGuard
         with self._tester_lock:
             if not self._sb_happ_tester:
-                from .tester import SingBoxTester
-                self._sb_happ_tester = SingBoxTester(use_doh=False)
+                self._sb_happ_tester = SingBoxTester(use_doh=False, guard=ProcGuard())
             return self._sb_happ_tester
 
     def _get_happ_xr_tester(self):
+        from .tester import XrayTester, ProcGuard
         with self._tester_lock:
             if not self._xr_happ_tester:
-                from .tester import XrayTester
-                self._xr_happ_tester = XrayTester(use_doh=False)
+                self._xr_happ_tester = XrayTester(use_doh=False, guard=ProcGuard())
             return self._xr_happ_tester
 
     def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
@@ -1312,11 +1317,13 @@ class StrategyWorker(QObject):
 
     def stop(self):
         self._stop = True
-        try:
-            from .tester import kill_all_procs
-            kill_all_procs()
-        except Exception:
-            pass
+        for tester in (getattr(self, "_sb", None), getattr(self, "_xr", None)):
+            guard = getattr(tester, "_guard", None)
+            if guard is not None:
+                try:
+                    guard.kill_all()
+                except Exception:
+                    pass
 
     @Slot()
     def run(self):
@@ -1326,9 +1333,10 @@ class StrategyWorker(QObject):
             CONTROL_TARGETS,
         )
         from .strategies import candidates_for_failed_entry
+        from .tester import ProcGuard
 
-        sb = SingBoxTester(use_doh=self._use_doh, doh_list=self._dns_list)
-        xr = XrayTester(use_doh=self._use_doh, doh_list=self._dns_list)
+        self._sb = sb = SingBoxTester(use_doh=self._use_doh, doh_list=self._dns_list, guard=ProcGuard())
+        self._xr = xr = XrayTester(use_doh=self._use_doh, doh_list=self._dns_list, guard=ProcGuard())
 
         def pick(row, entry):
             for cand in candidates_for_failed_entry(entry, limit=self._max_candidates):

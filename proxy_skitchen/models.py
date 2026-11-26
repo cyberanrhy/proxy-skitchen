@@ -154,11 +154,18 @@ class ProxyEntry:
                  'tcp_ok', 'deep_ok', 'rkn_ok', 'latency_ms', 'deep_error', 'is_embedded',
                  'tcp_tested', 'deep_tested', 'rkn_tested', 'geo_tested', 'rkn_results',
                  'security', '_clean_uri', 'strategy_name', 'strategy_overrides',
-                 'block_type', 'probe_reason', 'probe_stages')
+                 'block_type', 'probe_reason', 'probe_stages', 'remark')
 
     def __init__(self, uri: str, source: str = ""):
-        from .parsers import normalize_uri
-        self.uri = sanitize_network(normalize_uri(uri))
+        from .parsers import normalize_uri, guess_country
+        raw = uri or ""
+        # The remark is stripped from ``uri`` (exports want clean links) but is
+        # still the only place many subscriptions put the country/flag.
+        self.remark = ""
+        hash_idx = raw.rfind('#')
+        if hash_idx != -1:
+            self.remark = urllib.parse.unquote(raw[hash_idx + 1:])
+        self.uri = sanitize_network(normalize_uri(raw))
         self.protocol = ""
         self.host = ""
         self.port = 0
@@ -187,6 +194,8 @@ class ProxyEntry:
         # Stage-by-stage record of the last deep check (dns/tcp/core/probe).
         self.probe_stages = {}
         self._parse()
+        if not self.country and raw:
+            self.country = guess_country(raw)
 
     def _parse(self):
         try:
@@ -211,32 +220,42 @@ class ProxyEntry:
             if uri_lower.startswith('ss://') or uri_lower.startswith('shadowsocks://'):
                 self.protocol = 'SS'
                 try:
-                    clean = self.uri[5:] if uri_lower.startswith('ss://') else self.uri[14:]
-                    clean = clean.split('#')[0].split('?')[0]
-                    # Try base64 decode first (new format: ss://base64(method:pass@host:port))
+                    body = self.uri[5:] if uri_lower.startswith('ss://') else self.uri[14:]
+                    body = body.split('#')[0].split('?')[0]
+                    # Legacy format base64-encodes the whole
+                    # ``method:password@host:port``; SIP002 keeps
+                    # ``[base64|plain]method:password@host:port``.  A base64
+                    # alphabet never contains '@', so its presence tells the
+                    # formats apart without guessing at the payload length.
+                    decoded = ""
                     try:
-                        pad = 4 - len(clean) % 4
-                        if pad != 4:
-                            clean += '=' * pad
-                        decoded = base64.b64decode(clean).decode('utf-8', errors='ignore')
-                        if '@' in decoded:
-                            host_part = decoded.split('@', 1)[1]
-                            if ':' in host_part:
-                                self.host, port_str = host_part.rsplit(':', 1)
-                                self.port = int(port_str)
+                        pad = -len(body) % 4
+                        payload = body.replace('-', '+').replace('_', '/')
+                        decoded = base64.b64decode(payload + '=' * pad).decode(
+                            'utf-8', errors='ignore')
                     except Exception:
                         pass
-                    if not self.host:
-                        # Old format: ss://method:pass@host:port
-                        if '@' in clean:
-                            host_part = clean.split('@', 1)[1]
-                            if ':' in host_part:
-                                self.host, port_str = host_part.rsplit(':', 1)
-                                self.port = int(port_str)
-                            else:
-                                self.host = host_part
-                        else:
-                            self.host = clean
+                    if '@' in body:
+                        host_port = body.rsplit('@', 1)[1]
+                    elif '@' in decoded:
+                        host_port = decoded.rsplit('@', 1)[1]
+                    else:
+                        host_port = body
+                    host_port = host_port.strip().strip('/')
+                    if host_port.startswith('['):
+                        end = host_port.find(']')
+                        if end != -1:
+                            self.host = host_port[1:end]
+                            rest = host_port[end + 1:]
+                            if rest.startswith(':') and rest[1:].isdigit():
+                                self.port = int(rest[1:])
+                    elif ':' in host_port:
+                        host, port_str = host_port.rsplit(':', 1)
+                        self.host = host.strip('[]')
+                        if port_str.isdigit():
+                            self.port = int(port_str)
+                    else:
+                        self.host = host_port.strip('[]')
                 except Exception:
                     pass
                 self.security = 'none'
@@ -290,6 +309,10 @@ class ProxyEntry:
             pass
 
     def key(self) -> str:
+        # Full normalized URI: same host:port with a different UUID/SNI/path is
+        # a different node (CDN endpoints often share host:port).
+        if self.uri:
+            return self.uri
         proto = (self.protocol or "?").lower()
         return f"{proto}:{self.host}:{self.port}"
 
@@ -308,8 +331,14 @@ class ProxyEntry:
     def clean_uri(self) -> str:
         """Return cached clean URI (without #remark), normalized."""
         if not self._clean_uri:
-            self._clean_uri = self.uri
+            self._clean_uri = self.uri.split('#', 1)[0]
         return self._clean_uri
+
+    def display_uri(self, clean: bool = True) -> str:
+        """URI for export; ``clean=False`` restores the original remark."""
+        if clean or not self.remark:
+            return self.clean_uri()
+        return f"{self.clean_uri()}#{urllib.parse.quote(self.remark, safe='')}"
 
     def __repr__(self):
         return f"<{self.status_emoji()} {self.display_protocol()} {self.host}:{self.port}>"
@@ -433,21 +462,19 @@ def _get_tokens() -> list[str]:
 
 
 def format_probe_stages(stages: dict | None) -> str:
-    """Render the deep-check stage trail for a tooltip.
-
-    Codes stay language-neutral in the model; only the labels are Russian,
-    matching the rest of the tooltip.
-    """
+    """Render the deep-check stage trail for a tooltip (localized labels)."""
     if not stages:
         return ""
-    labels = (("dns", "DNS"), ("tcp", "TCP"), ("core", "Ядро"), ("probe", "Проба"))
+    from .i18n import _
+    labels = (("dns", "DNS"), ("tcp", "TCP"),
+              ("core", _("probe.stage.core")), ("probe", _("probe.stage.probe")))
     parts = []
     for key, label in labels:
         value = stages.get(key)
         if value in (None, ""):
             continue
         parts.append(f"{label}: {value}")
-    return ("\nЭтапы: " + " · ".join(parts)) if parts else ""
+    return (f"\n{_('table.tip.stages')}: " + " · ".join(parts)) if parts else ""
 
 
 class ProxyTableModel(QAbstractTableModel):
@@ -611,22 +638,25 @@ class ProxyTableModel(QAbstractTableModel):
                 return tc["fail_bg"]
             return None
         if role == Qt.ItemDataRole.ToolTipRole:
+            from .i18n import _ as tr
             country_display = p.country or "-"
-            rkn_str = f"  Сайты: {'🛡' if p.rkn_ok else '-'}" if p.rkn_tested else ""
+            rkn_str = (f"  {tr('table.tip.sites')}: {'🛡' if p.rkn_ok else '-'}"
+                       if p.rkn_tested else "")
             strategy = self._strategy_text(p) or "-"
             reason = ""
             if p.probe_reason and not p.deep_ok:
                 from .i18n import current_lang
                 from .dpi import probe_reason_label
-                reason = f"\nПричина: {probe_reason_label(p.probe_reason, current_lang())}"
+                reason = f"\n{tr('table.tip.reason')}: {probe_reason_label(p.probe_reason, current_lang())}"
             stages = format_probe_stages(p.probe_stages)
             return (f"{p.display_protocol()} {p.host}:{p.port}\n"
                     f"SNI: {p.sni or '-'}\n"
-                    f"Страна: {country_display}\n"
-                    f"Источник: {p.source or '-'}\n"
-                    f"Профиль: {strategy}\n"
+                    f"{tr('table.tip.country')}: {country_display}\n"
+                    f"{tr('table.tip.source')}: {p.source or '-'}\n"
+                    f"{tr('table.tip.profile')}: {strategy}\n"
                     f"Deep: {'⚡' if p.deep_ok else '❌'}{rkn_str}  "
-                    f"Пинг: {f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}{reason}{stages}")
+                    f"{tr('table.header.ping')}: "
+                    f"{f'{p.latency_ms:.0f}ms' if p.latency_ms else '-'}{reason}{stages}")
         return None
 
     def add_proxies(self, entries: list[ProxyEntry]):
@@ -643,10 +673,13 @@ class ProxyTableModel(QAbstractTableModel):
                 p.deep_ok = ok
                 p.deep_error = error
                 p.deep_tested = True
-                p.tcp_ok = ok
-                p.tcp_tested = True
-                if ok and latency:
-                    p.latency_ms = latency
+                # A failed deep probe (e.g. protocol mismatch) does not make a
+                # reachable TCP port unreachable: only promote on success.
+                if ok:
+                    p.tcp_ok = True
+                    p.tcp_tested = True
+                    if latency:
+                        p.latency_ms = latency
             elif ttype == 2:
                 p.rkn_ok = ok
                 p.rkn_tested = True

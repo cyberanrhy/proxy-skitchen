@@ -494,23 +494,73 @@ _PROCS_LOCK = threading.Lock()
 _PROCS: set = set()
 
 _PORT_LOCK = threading.Lock()
-_PORTS_IN_USE: set[int] = set()
-_PORTS_BURNED: set[int] = set()
 
 
-def _spawn(cmd, **kwargs):
-    """Popen + global registry so TesterWorker.stop() can kill orphaned cores."""
+class ProcGuard:
+    """Worker-scoped core-process registry.
+
+    ``TesterWorker`` and ``StrategyWorker`` each get their own guard so that
+    ``stop()`` kills only the cores they started, not those of a sibling worker.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._procs: set = set()
+        self._closed = False
+
+    def add(self, proc):
+        with self._lock:
+            if self._closed:
+                stale = proc
+            else:
+                self._procs.add(proc)
+                stale = None
+        if stale is not None:
+            try:
+                stale.kill()
+            except Exception:
+                pass
+
+    def discard(self, proc):
+        if proc is None:
+            return
+        with self._lock:
+            self._procs.discard(proc)
+
+    def kill_all(self):
+        with self._lock:
+            self._closed = True
+            procs = list(self._procs)
+            self._procs.clear()
+        for proc in procs:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:
+                pass
+
+
+def _spawn(cmd, guard=None, **kwargs):
+    """Popen + global + per-guard registry."""
     proc = subprocess.Popen(cmd, **kwargs)
     with _PROCS_LOCK:
         _PROCS.add(proc)
+    if guard is not None:
+        guard.add(proc)
     return proc
 
 
-def _reap(proc):
+def _reap(proc, guard=None):
     if proc is None:
         return
     with _PROCS_LOCK:
         _PROCS.discard(proc)
+    if guard is not None:
+        guard.discard(proc)
+
+
+_PORTS_IN_USE: set[int] = set()
+_PORTS_BURNED: set[int] = set()
 
 
 def kill_all_procs():
@@ -694,10 +744,11 @@ def test_via_socks(host: str, port: int, target_host: str = TEST_HOST, target_po
 
 
 class SingBoxTester:
-    def __init__(self, use_doh: bool = False, doh_list=None):
+    def __init__(self, use_doh: bool = False, doh_list=None, guard=None):
         self.use_doh = use_doh
         self.doh_list = doh_list
         self._doh_cache = {}
+        self._guard = guard
 
     def test(self, uri: str, port: int, overrides: dict | None = None,
              attempts: int = 1, targets=None, timeout: float | None = None) -> tuple[bool, float, str]:
@@ -717,6 +768,7 @@ class SingBoxTester:
                     time.sleep(random.uniform(0.1, 0.3))
                     proc = _spawn(
                         [SING_BOX, "run", "-c", config_path],
+                        guard=self._guard,
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
@@ -740,7 +792,7 @@ class SingBoxTester:
                         proc.wait(1)
                     except Exception:
                         pass
-                    _reap(proc)
+                    _reap(proc, self._guard)
                     proc = None
                 return ok, lat, reason
         except Exception as e:
@@ -752,7 +804,7 @@ class SingBoxTester:
                     proc.wait(1)
                 except Exception:
                     pass
-            _reap(proc)
+            _reap(proc, self._guard)
 
     def test_happ(self, uri: str, port: int, timeout: float = HAPP_TIMEOUT) -> tuple[bool, float, str]:
         """Happ-style single HEAD for protocols Xray does not carry (UDP)."""
@@ -769,6 +821,7 @@ class SingBoxTester:
                     time.sleep(random.uniform(0.1, 0.3))
                     proc = _spawn(
                         [SING_BOX, "run", "-c", config_path],
+                        guard=self._guard,
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
@@ -787,7 +840,7 @@ class SingBoxTester:
                         proc.wait(1)
                     except Exception:
                         pass
-                    _reap(proc)
+                    _reap(proc, self._guard)
                     proc = None
                 return ok, latency, reason
         except Exception as exc:
@@ -799,7 +852,7 @@ class SingBoxTester:
                     proc.wait(1)
                 except Exception:
                     pass
-            _reap(proc)
+            _reap(proc, self._guard)
 
     def _probe(self, proxy_url: str, domain: str, marker: str | None = None, expect_code: int = 200) -> tuple[bool, int, float]:
         url = "https://" + domain
@@ -840,6 +893,7 @@ class SingBoxTester:
                     time.sleep(random.uniform(0.1, 0.3))
                     proc = _spawn(
                         [SING_BOX, "run", "-c", config_path],
+                        guard=self._guard,
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
@@ -868,7 +922,7 @@ class SingBoxTester:
                         proc.wait(1)
                     except Exception:
                         pass
-                    _reap(proc)
+                    _reap(proc, self._guard)
                     proc = None
                 ok, best_lat, opened, total = summarize_rkn_results(results, quorum)
                 _debug(f"rkn_bypass: {uri[:60]} opened={opened}/{total} quorum={quorum} ok={ok}")
@@ -882,7 +936,7 @@ class SingBoxTester:
                     proc.wait(1)
                 except Exception:
                     pass
-            _reap(proc)
+            _reap(proc, self._guard)
 
     def _make_config(self, uri: str, local_port: int, overrides: dict | None = None) -> Optional[dict]:
         proto = get_protocol(uri)
@@ -1085,14 +1139,20 @@ class SingBoxTester:
             except Exception:
                 return None
         else:
-            mp_b64 = clean[:at]
-            try:
-                pad = 4 - len(mp_b64) % 4
-                if pad != 4:
-                    mp_b64 += '=' * pad
-                mp = base64.b64decode(mp_b64).decode('utf-8', errors='ignore')
-            except Exception:
-                mp = mp_b64
+            raw = clean[:at]
+            if ':' in raw:
+                # SIP002 plaintext userinfo: method:password
+                from urllib.parse import unquote
+                mp = unquote(raw)
+            else:
+                try:
+                    pad = 4 - len(raw) % 4
+                    if pad != 4:
+                        raw += '=' * pad
+                    raw = raw.replace('-', '+').replace('_', '/')
+                    mp = base64.b64decode(raw).decode('utf-8', errors='ignore')
+                except Exception:
+                    mp = clean[:at]
             hp = clean[at + 1:]
         qm = hp.find('?')
         if qm != -1:
@@ -1104,8 +1164,11 @@ class SingBoxTester:
         except Exception:
             port = 443
         colon2 = mp.find(':')
-        method = mp[:colon2]
-        password = mp[colon2 + 1:]
+        if colon2 == -1:
+            method, password = mp, ""
+        else:
+            method = mp[:colon2]
+            password = mp[colon2 + 1:]
         out = {"type": "shadowsocks", "server": host, "server_port": port, "method": method, "password": password}
         plugin = self._qv(q, 'plugin', '')
         if plugin:
@@ -1245,10 +1308,11 @@ class SingBoxTester:
 class XrayTester:
     XRAY_SEMAPHORE = threading.Semaphore(2)
 
-    def __init__(self, use_doh: bool = False, doh_list=None):
+    def __init__(self, use_doh: bool = False, doh_list=None, guard=None):
         self.use_doh = use_doh
         self.doh_list = doh_list
         self._doh_cache = {}
+        self._guard = guard
 
     def _probe(self, proxy_url: str, domain: str, marker: str | None = None, expect_code: int = 200) -> tuple[bool, int, float]:
         url = "https://" + domain
@@ -1291,6 +1355,7 @@ class XrayTester:
                     time.sleep(random.uniform(0.1, 0.3))
                     proc = _spawn(
                         [XRAY, "run", "-c", config_path],
+                        guard=self._guard,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
@@ -1323,7 +1388,7 @@ class XrayTester:
                         proc.wait(1)
                     except Exception:
                         pass
-                    _reap(proc)
+                    _reap(proc, self._guard)
                     proc = None
                 ok, best_lat, opened, total = summarize_rkn_results(results, quorum)
                 _debug(f"xr_rkn: {uri[:60]} opened={opened}/{total} quorum={quorum} ok={ok}")
@@ -1337,7 +1402,7 @@ class XrayTester:
                     proc.wait(1)
                 except Exception:
                     pass
-            _reap(proc)
+            _reap(proc, self._guard)
 
     def test(self, uri: str, port: int, overrides: dict | None = None,
              attempts: int = 1, targets=None, timeout: float | None = None) -> tuple[bool, float, str]:
@@ -1356,6 +1421,7 @@ class XrayTester:
                     time.sleep(random.uniform(0.1, 0.3))
                     proc = _spawn(
                         [XRAY, "run", "-c", config_path],
+                        guard=self._guard,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
@@ -1379,7 +1445,7 @@ class XrayTester:
                         proc.wait(1)
                     except Exception:
                         pass
-                    _reap(proc)
+                    _reap(proc, self._guard)
                     proc = None
                 return ok, lat, reason
         except Exception as e:
@@ -1391,7 +1457,7 @@ class XrayTester:
                     proc.wait(1)
                 except Exception:
                     pass
-            _reap(proc)
+            _reap(proc, self._guard)
 
     def _make_config(self, uri: str, local_port: int, overrides: dict | None = None) -> Optional[dict]:
         proto = get_protocol(uri)
@@ -1469,6 +1535,7 @@ class XrayTester:
                     time.sleep(random.uniform(0.1, 0.3))
                     proc = _spawn(
                         [XRAY, "run", "-c", config_path],
+                        guard=self._guard,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         cwd=tmp_dir, creationflags=CREATE_NO_WINDOW,
                     )
@@ -1488,7 +1555,7 @@ class XrayTester:
                         proc.wait(1)
                     except Exception:
                         pass
-                    _reap(proc)
+                    _reap(proc, self._guard)
                     proc = None
                 return ok, latency, reason
         except Exception as exc:
@@ -1500,7 +1567,7 @@ class XrayTester:
                     proc.wait(1)
                 except Exception:
                     pass
-            _reap(proc)
+            _reap(proc, self._guard)
 
     def _parse_vless(self, uri: str) -> Optional[dict]:
         try:

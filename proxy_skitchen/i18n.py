@@ -306,6 +306,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "table.header.country": "Страна",
         "table.header.ping": "Пинг",
         "table.header.strategy": "Профиль",
+        "table.tip.country": "Страна",
+        "table.tip.source": "Источник",
+        "table.tip.profile": "Профиль",
+        "table.tip.reason": "Причина",
+        "table.tip.sites": "Сайты",
+        "table.tip.stages": "Этапы",
+        "probe.stage.core": "Ядро",
+        "probe.stage.probe": "Проба",
 
         # ── Event window ──
         "event.title": "⚡ Событие",
@@ -610,6 +618,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "table.header.country": "Country",
         "table.header.ping": "Ping",
         "table.header.strategy": "Profile",
+        "table.tip.country": "Country",
+        "table.tip.source": "Source",
+        "table.tip.profile": "Profile",
+        "table.tip.reason": "Reason",
+        "table.tip.sites": "Sites",
+        "table.tip.stages": "Stages",
+        "probe.stage.core": "Core",
+        "probe.stage.probe": "Probe",
 
         # ── Event window ──
         "event.title": "⚡ Event",

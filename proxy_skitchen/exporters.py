@@ -1,5 +1,6 @@
 import os, json, base64
 from typing import Optional
+from urllib.parse import unquote
 
 
 from .models import ProxyEntry, is_plain_proxy
@@ -134,7 +135,7 @@ def format_raw(entries: list[ProxyEntry], include_failed: bool = False, clean: b
         if not _is_valid_entry(e):
             continue
         if include_failed or _entry_ok(e):
-            lines.append(_clean_uri(e) if clean else e.uri)
+            lines.append(_clean_uri(e) if clean else e.display_uri(clean=False))
     return "\n".join(lines) + "\n"
 
 
@@ -173,6 +174,15 @@ def format_singbox(entries: list[ProxyEntry], include_failed: bool = False, dns=
     return json.dumps(config, indent=2, ensure_ascii=False) + "\n"
 
 
+def _yaml_scalar(value) -> str:
+    """Quote a user-controlled value for a YAML document (Clash config).
+
+    Plain scalars break on ``": "``, ``" #"`` and leading indicators; JSON
+    double-quoted strings are valid YAML and keep such passwords/paths intact.
+    """
+    return json.dumps(str(value), ensure_ascii=False)
+
+
 def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_names: bool = False, dns=None) -> str:
     proxies = []
     for i, e in enumerate(entries):
@@ -203,55 +213,61 @@ def format_clash(entries: list[ProxyEntry], include_failed: bool = False, clean_
         lines.append("")
     lines.append("proxies:")
     for p in proxies:
-        lines.append(f"  - name: {json.dumps(p['name'], ensure_ascii=False)}")
+        lines.append(f"  - name: {_yaml_scalar(p['name'])}")
         lines.append(f"    type: {p['type']}")
-        lines.append(f"    server: {p['server']}")
+        lines.append(f"    server: {_yaml_scalar(p['server'])}")
         lines.append(f"    port: {p['port']}")
         if p.get('uuid'):
-            lines.append(f"    uuid: {p['uuid']}")
+            lines.append(f"    uuid: {_yaml_scalar(p['uuid'])}")
         if p.get('password'):
-            lines.append(f"    password: {p['password']}")
+            lines.append(f"    password: {_yaml_scalar(p['password'])}")
         if p.get('cipher'):
-            lines.append(f"    cipher: {p['cipher']}")
+            lines.append(f"    cipher: {_yaml_scalar(p['cipher'])}")
         if p.get('flow'):
-            lines.append(f"    flow: {p['flow']}")
+            lines.append(f"    flow: {_yaml_scalar(p['flow'])}")
         if p.get('network'):
             lines.append(f"    network: {p['network']}")
         if p.get('tls', False):
             lines.append("    tls: true")
         if p.get('servername'):
-            lines.append(f"    servername: {p['servername']}")
+            lines.append(f"    servername: {_yaml_scalar(p['servername'])}")
         if p.get('client-fingerprint'):
-            lines.append(f"    client-fingerprint: {p['client-fingerprint']}")
+            lines.append(f"    client-fingerprint: {_yaml_scalar(p['client-fingerprint'])}")
         if p.get('ws-opts'):
             lines.append("    ws-opts:")
             if p['ws-opts'].get('path'):
-                lines.append(f"      path: {p['ws-opts']['path']}")
+                lines.append(f"      path: {_yaml_scalar(p['ws-opts']['path'])}")
             if p['ws-opts'].get('headers'):
                 lines.append("      headers:")
                 for k, v in p['ws-opts']['headers'].items():
-                    lines.append(f"        {k}: {v}")
+                    lines.append(f"        {_yaml_scalar(k)}: {_yaml_scalar(v)}")
         if p.get('grpc-opts'):
             lines.append("    grpc-opts:")
             if p['grpc-opts'].get('grpc-service-name'):
-                lines.append(f"      grpc-service-name: {p['grpc-opts']['grpc-service-name']}")
+                lines.append(f"      grpc-service-name: {_yaml_scalar(p['grpc-opts']['grpc-service-name'])}")
         if p.get('reality-opts'):
             lines.append("    reality-opts:")
             for k, v in p['reality-opts'].items():
-                lines.append(f"      {k}: {v}")
+                lines.append(f"      {k}: {_yaml_scalar(v)}")
         if p.get('skip-cert-verify', False):
             lines.append("    skip-cert-verify: true")
         if p.get('obfs'):
-            lines.append(f"    obfs: {p['obfs']}")
+            lines.append(f"    obfs: {_yaml_scalar(p['obfs'])}")
         if p.get('obfs-password'):
-            lines.append(f"    obfs-password: {p['obfs-password']}")
+            lines.append(f"    obfs-password: {_yaml_scalar(p['obfs-password'])}")
         if p.get('type') == 'wireguard':
-            for key in ('private-key', 'peer-public-key', 'pre-shared-key', 'ip', 'mtu', 'persistent-keepalive', 'udp'):
+            for key in ('private-key', 'peer-public-key', 'pre-shared-key'):
                 if p.get(key) is not None:
-                    val = "true" if key == 'udp' else p[key]
-                    lines.append(f"    {key}: {val}")
+                    lines.append(f"    {key}: {_yaml_scalar(p[key])}")
+            if p.get('ip') is not None:
+                lines.append(f"    ip: {_yaml_scalar(p['ip'])}")
+            for key in ('mtu', 'persistent-keepalive'):
+                if p.get(key) is not None:
+                    lines.append(f"    {key}: {p[key]}")
+            if p.get('udp') is not None:
+                lines.append("    udp: true")
             if p.get('ipv6') is not None:
-                lines.append(f'    ipv6: "{p["ipv6"]}"')
+                lines.append(f"    ipv6: {_yaml_scalar(p['ipv6'])}")
             if p.get('reserved') is not None:
                 lines.append("    reserved: [" + ", ".join(str(x) for x in p['reserved']) + "]")
     return "\n".join(lines) + "\n"
@@ -266,8 +282,56 @@ def format_hiddify(entries: list[ProxyEntry], include_failed: bool = False, titl
         "",
     ]
     for e in valid:
-        lines.append(_clean_uri(e.uri) if clean else e.uri)
+        lines.append(_clean_uri(e) if clean else e.display_uri(clean=False))
     return "\n".join(lines) + "\n"
+
+
+# Outbound types that a Sing-box config may contain; anything else is broken
+# (e.g. the old `hy2` alias) and must not be reported as valid.
+_SINGBOX_OUTBOUND_TYPES = {
+    'shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic',
+    'wireguard', 'socks', 'http', 'direct',
+}
+
+
+def _validate_clash(content: str) -> tuple[int, int]:
+    """Count valid Clash proxy blocks, parsing the YAML when PyYAML is present."""
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml is not None:
+        try:
+            obj = yaml.safe_load(content)
+        except Exception:
+            return 0, max(1, content.count('- name:'))
+        proxies = obj.get('proxies') if isinstance(obj, dict) else None
+        if not isinstance(proxies, list):
+            return 0, 1
+        valid = sum(1 for p in proxies
+                    if isinstance(p, dict) and p.get('type')
+                    and p.get('server') and p.get('port'))
+        return valid, len(proxies) - valid
+    # Structural fallback for builds without PyYAML: every proxy block must
+    # carry the three fields Clash requires.
+    blocks, current = [], None
+    for line in content.splitlines():
+        if line.startswith('  - name:'):
+            if current is not None:
+                blocks.append(current)
+            current = []
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        blocks.append(current)
+    valid = broken = 0
+    for block in blocks:
+        text = "\n".join(block)
+        if '    type:' in text and '    server:' in text and '    port:' in text:
+            valid += 1
+        else:
+            broken += 1
+    return valid, broken
 
 
 def validate_content(content: str, fmt: str) -> tuple[int, int]:
@@ -277,16 +341,19 @@ def validate_content(content: str, fmt: str) -> tuple[int, int]:
             content = base64.b64decode(content).decode('utf-8', errors='ignore')
         except Exception:
             content = ""
-    if fmt in ('singbox', 'clash'):
-        if fmt == 'singbox':
-            try:
-                obj = json.loads(content)
-                items = obj.get('outbounds', []) if isinstance(obj, dict) else []
-                return len(items), 0
-            except Exception:
-                return 0, 0
-        valid = sum(1 for line in content.splitlines() if line.strip().startswith('- name:'))
-        return valid, 0
+    if fmt == 'singbox':
+        try:
+            obj = json.loads(content)
+        except Exception:
+            return 0, 0
+        items = obj.get('outbounds', []) if isinstance(obj, dict) else []
+        valid = sum(1 for out in items
+                    if isinstance(out, dict)
+                    and out.get('type') in _SINGBOX_OUTBOUND_TYPES
+                    and out.get('server') and out.get('server_port'))
+        return valid, max(0, len(items) - valid)
+    if fmt == 'clash':
+        return _validate_clash(content)
     from .parsers import is_proxy_uri
     valid = 0
     broken = 0
@@ -439,7 +506,8 @@ def _entry_to_outbound(e: ProxyEntry) -> Optional[dict]:
     if proto not in ('vless', 'vmess', 'trojan', 'hy2', 'hysteria2', 'socks5', 'http', 'https'):
         return None
 
-    out = {"type": proto, "server": e.host, "server_port": e.port}
+    out = {"type": "hysteria2" if proto == "hy2" else proto,
+           "server": e.host, "server_port": e.port}
 
     if proto == 'vless':
         uuid = _extract_user(e.uri)
@@ -781,26 +849,46 @@ def rewrite_dns(text: str, dns=None) -> str:
     return json.dumps(cfg, indent=2, ensure_ascii=False)
 
 
+def _b64_text(value: str) -> str:
+    """Decode base64 with implicit padding; empty string when it is not base64."""
+    try:
+        pad = -len(value) % 4
+        # Some subscriptions emit URL-safe userinfo; translate to standard.
+        value = value.replace('-', '+').replace('_', '/')
+        return base64.b64decode(value + '=' * pad).decode('utf-8', errors='ignore')
+    except Exception:
+        return ""
+
+
+def _ss_userinfo(uri: str) -> str:
+    """Return ``method:password`` from any Shadowsocks URI flavour.
+
+    SIP002 keeps the userinfo in the URI, either base64 or plaintext; the legacy
+    format base64-encodes the whole ``method:password@host:port``. A colon never
+    appears in the base64 alphabet, so its presence cleanly separates the two:
+    with a colon the payload is already text, without one it must be decoded.
+    """
+    clean = uri.split('://', 1)[-1]
+    clean = clean.split('#')[0].split('?')[0]
+    at = clean.rfind('@')
+    if at != -1:
+        raw = clean[:at]
+        if ':' in raw:
+            return unquote(raw)
+        decoded = _b64_text(raw)
+        return decoded if ':' in decoded else unquote(raw)
+    decoded = _b64_text(clean)
+    if '@' in decoded:
+        # legacy payload: method:password@host:port
+        return decoded.split('@', 1)[0]
+    return decoded or clean
+
+
 def _extract_ss_pass(uri: str) -> str:
     try:
-        clean = uri.replace('ss://', '').replace('SS://', '')
-        clean = clean.split('#')[0].split('?')[0]
-        at = clean.find('@')
-        if at != -1:
-            mp_b64 = clean[:at]
-        else:
-            mp_b64 = clean
-        try:
-            pad = 4 - len(mp_b64) % 4
-            if pad != 4:
-                mp_b64 += '=' * pad
-            mp = base64.b64decode(mp_b64).decode('utf-8', errors='ignore')
-        except Exception:
-            mp = mp_b64  # old format: plaintext method:password
-        if '@' in mp:
-            mp = mp.split('@', 1)[0]
+        mp = _ss_userinfo(uri)
         colon = mp.find(':')
-        return mp[colon + 1:] if colon != -1 else mp
+        return mp[colon + 1:] if colon != -1 else ""
     except Exception:
         pass
     return ""
@@ -885,25 +973,10 @@ def wireguard_conf_from_entry(e: ProxyEntry, dns=None) -> Optional[str]:
 
 def _extract_ss_cipher(uri: str) -> str:
     try:
-        clean = uri.replace('ss://', '').replace('SS://', '')
-        clean = clean.split('#')[0].split('?')[0]
-        at = clean.find('@')
-        if at != -1:
-            mp_b64 = clean[:at]
-        else:
-            mp_b64 = clean
-        try:
-            pad = 4 - len(mp_b64) % 4
-            if pad != 4:
-                mp_b64 += '=' * pad
-            mp = base64.b64decode(mp_b64).decode('utf-8', errors='ignore')
-        except Exception:
-            mp = mp_b64
+        mp = _ss_userinfo(uri)
         colon = mp.find(':')
         if colon != -1:
-            method = mp[:colon]
-            if method:
-                return method
+            return mp[:colon]
     except Exception:
         pass
     return ""

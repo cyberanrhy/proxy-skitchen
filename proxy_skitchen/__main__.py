@@ -41,7 +41,7 @@ from .parsers import is_proxy_uri, extract_uris, get_protocol, get_server_port, 
 from .exporters import (format_raw, format_v2rayn, format_singbox, format_clash,
                         format_hiddify, validate_content, _clean_uri, _is_valid_entry,
                         rewrite_dns, _parse_dns_list, DEFAULT_DOH)
-from .tester import test_tcp, test_tls, SingBoxTester
+from .tester import test_tcp, test_tls, SingBoxTester, allocate_port, release_port, ProcGuard
 from .workers import GitHubSearchWorker
 from .i18n import current_lang
 
@@ -339,7 +339,7 @@ class CliRunner:
         self._status(f"файл: {total} прокси, отброшено: {dropped}")
         tcp_ok = deep_ok = rkn_ok = 0
         ok_uris = []
-        sb_tester = SingBoxTester(use_doh=getattr(args, 'test_doh', False), doh_list=DEFAULT_DOH) if args.deep or args.rkn else None
+        sb_tester = SingBoxTester(use_doh=getattr(args, 'test_doh', False), doh_list=DEFAULT_DOH, guard=ProcGuard()) if args.deep or args.rkn else None
         for i, uri in enumerate(uris):
             host, port = get_server_port(uri)
             if not host or not port:
@@ -351,11 +351,19 @@ class CliRunner:
                 tcp_ok += 1
                 ok_uris.append(uri)
             if args.rkn and ok and sb_tester and not is_plain_proxy(uri):
-                r_ok, lat, err, results = sb_tester.test_rkn_bypass(uri, 29999 + (i % 10000))
+                p = allocate_port()
+                try:
+                    r_ok, lat, err, results = sb_tester.test_rkn_bypass(uri, p)
+                finally:
+                    release_port(p)
                 if r_ok:
                     rkn_ok += 1
             elif args.deep and ok and sb_tester:
-                d_ok, lat, err = sb_tester.test(uri, 19999 + (i % 10000))
+                p = allocate_port()
+                try:
+                    d_ok, lat, err = sb_tester.test(uri, p)
+                finally:
+                    release_port(p)
                 if d_ok:
                     deep_ok += 1
         self._ok(f"tcp: {tcp_ok}/{total}, deep: {deep_ok}, rkn: {rkn_ok}")
@@ -421,7 +429,8 @@ class CliRunner:
             except Exception as e:
                 self._warn(f"{str(e)[:60]}")
 
-        # dedup by canonical key: proto:host:port (same host+port but different proto are kept)
+        # dedup by canonical key (full normalized URI): same host:port with a
+        # different UUID/SNI/path is a different node and must be kept.
         seen = set()
         unique = []
         for u in all_uris:
@@ -445,7 +454,7 @@ class CliRunner:
 
         deep_ok = 0
         rkn_ok = 0
-        sb_tester = SingBoxTester(use_doh=getattr(args, 'test_doh', False), doh_list=DEFAULT_DOH) if args.deep or args.rkn else None
+        sb_tester = SingBoxTester(use_doh=getattr(args, 'test_doh', False), doh_list=DEFAULT_DOH, guard=ProcGuard()) if args.deep or args.rkn else None
         if sb_tester and (args.deep or args.rkn):
             # Plain HTTP/SOCKS proxies are not tested at all: no encryption,
             # nothing to measure, and never exported.
@@ -456,12 +465,20 @@ class CliRunner:
             for i, u in enumerate(checked):
                 if args.rkn:
                     self._status(f"rkn [{i + 1}/{len(checked)}]")
-                    r_ok, lat, err, results = sb_tester.test_rkn_bypass(u, 29999 + (i % 10000))
+                    p = allocate_port()
+                    try:
+                        r_ok, lat, err, results = sb_tester.test_rkn_bypass(u, p)
+                    finally:
+                        release_port(p)
                     if r_ok:
                         rkn_ok += 1
                 else:
                     self._status(f"deep [{i + 1}/{len(checked)}]")
-                    d_ok, lat, err = sb_tester.test(u, 19999 + (i % 10000))
+                    p = allocate_port()
+                    try:
+                        d_ok, lat, err = sb_tester.test(u, p)
+                    finally:
+                        release_port(p)
                     if d_ok:
                         deep_ok += 1
 

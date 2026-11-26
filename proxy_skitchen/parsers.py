@@ -188,12 +188,27 @@ def get_protocol(uri: str) -> str:
 def get_server_port(uri: str) -> tuple[Optional[str], Optional[int]]:
     line = uri.strip()
     l = line.lower()
+    if l.startswith('shadowsocks://'):
+        line = line[len('shadowsocks://'):]
+        l = line.lower()
     for pfx in ['vless://', 'trojan://', 'ss://', 'hysteria://', 'hy://',
                  'hysteria2://', 'hy2://', 'tuic://', 'socks5://', 'socks4://',
                  'wireguard://', 'wg://']:
         if l.startswith(pfx):
             line = line[len(pfx):]
             break
+
+    if l.startswith('ss://') and '@' not in line:
+        # Legacy Shadowsocks: the whole method:pass@host:port is base64.
+        try:
+            pad = -len(line) % 4
+            decoded = base64.b64decode(
+                line.replace('-', '+').replace('_', '/') + '=' * pad
+            ).decode('utf-8', errors='ignore')
+            if '@' in decoded:
+                line = decoded
+        except Exception:
+            pass
 
     if l.startswith('vmess://'):
         try:
@@ -325,7 +340,7 @@ def geo_lookup(ip: str) -> str:
         return cached
     try:
         import urllib.request
-        url = f"http://ip-api.com/json/{ip}?fields=country,countryCode"
+        url = f"https://ip-api.com/json/{ip}?fields=country,countryCode"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         resp = urllib.request.urlopen(req, timeout=3)
         data = json.loads(resp.read())
