@@ -1912,16 +1912,6 @@ class TestPage(WizardPage):
         self.btn_auto_strategy.clicked.connect(self._on_auto_strategy)
         aux.addWidget(self.btn_auto_strategy)
 
-        self.lbl_check_mode = QLabel(_("test.mode"))
-        aux.addWidget(self.lbl_check_mode)
-        self.combo_check_mode = QComboBox()
-        self.combo_check_mode.addItems([_("test.mode.fair"), _("test.mode.happ")])
-        self.combo_check_mode.setCurrentIndex(
-            1 if str(_settings_data.get("check_mode", "fair")).lower() == "happ" else 0)
-        self.combo_check_mode.setToolTip(_("test.mode.tooltip"))
-        self.combo_check_mode.currentIndexChanged.connect(self._on_check_mode_changed)
-        aux.addWidget(self.combo_check_mode)
-
         self.lbl_rkn_quorum = QLabel(_("test.rkn.quorum"))
         aux.addWidget(self.lbl_rkn_quorum)
         self.combo_rkn_quorum = QComboBox()
@@ -2217,10 +2207,6 @@ class TestPage(WizardPage):
         _settings_data["rkn_quorum"] = max(1, min(4, idx + 1))
         _save_settings(_settings_data)
 
-    def _on_check_mode_changed(self, idx: int):
-        _settings_data["check_mode"] = "happ" if idx == 1 else "fair"
-        _save_settings(_settings_data)
-
     def _cleanup_strategy(self):
         self._strategy_run += 1  # ignore queued signals from the stopped worker
         _cleanup_thread(self._strategy_thread, self._strategy_worker)
@@ -2448,8 +2434,7 @@ class TestPage(WizardPage):
         threads = max(1, self.spin_threads.value())
         self._tester = TesterWorker(rkn=rkn, test_threads=threads, deep_threads=threads,
                                     use_doh=self.chk_test_doh.isChecked(), dns_list=DEFAULT_DOH,
-                                    rkn_quorum=self.combo_rkn_quorum.currentIndex() + 1,
-                                    check_mode=str(_settings_data.get("check_mode", "fair")))
+                                    rkn_quorum=self.combo_rkn_quorum.currentIndex() + 1)
         # Run token: results from a stopped/superseded tester are dropped instead
         # of being written into rows of the next run.
         self._tester.result_signal.connect(self._on_test_result)
@@ -2864,14 +2849,6 @@ class TestPage(WizardPage):
         self.combo_rkn_quorum.setCurrentIndex(min(current_q, 2))
         self.combo_rkn_quorum.blockSignals(False)
         self.combo_rkn_quorum.setToolTip(_("test.rkn.quorum.tooltip"))
-        self.lbl_check_mode.setText(_("test.mode"))
-        self.combo_check_mode.blockSignals(True)
-        current_mode = self.combo_check_mode.currentIndex()
-        self.combo_check_mode.clear()
-        self.combo_check_mode.addItems([_("test.mode.fair"), _("test.mode.happ")])
-        self.combo_check_mode.setCurrentIndex(min(current_mode, 1))
-        self.combo_check_mode.blockSignals(False)
-        self.combo_check_mode.setToolTip(_("test.mode.tooltip"))
         self.lbl_strategy_hint.setText(_("test.hint.bypass"))
         self.btn_continue.setText(_("test.btn.continue"))
         self.btn_delete_dead.setText(_("test.btn.delete_dead"))

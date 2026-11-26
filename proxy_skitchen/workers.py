@@ -454,32 +454,25 @@ class TesterWorker(QObject):
             return self._xr_happ_tester
 
     def _deep_test(self, entry: ProxyEntry) -> tuple[bool, float, str]:
-        if self._check_mode == "happ":
-            return self._happ_test(entry)
-        from .tester import (allocate_port, release_port, prefer_xray,
-                             singbox_supports_uri, tcp_probe, CONTROL_TARGETS)
-        # Fast, fair prefilter: a TCP-based protocol cannot work if its port is
-        # unreachable.  UDP protocols (Hysteria2/TUIC) are tested by the core.
-        timeout = 4.0
+        from .tester import (allocate_port, release_port, tcp_probe,
+                             xray_can_carry, DEEP_TARGETS, DEEP_TIMEOUT)
+        # Narrowed to the Happ app: a TCP-based protocol cannot work if its
+        # port is unreachable, but the probe itself is one attempt against one
+        # target with a fixed timeout and a single core (no fallback).
+        timeout = DEEP_TIMEOUT
         if entry.protocol in ('VLESS', 'VMESS', 'TROJAN', 'SS', 'SOCKS', 'HTTP'):
-            reachable, rtt = tcp_probe(entry.host, entry.port, timeout=2.0)
+            reachable, _rtt = tcp_probe(entry.host, entry.port, timeout=timeout)
             if reachable is False:
                 return False, 0, "tcp_unreachable"
-            if reachable:
-                timeout = max(3.0, min(6.0, (rtt / 1000.0) * 4))
         port = allocate_port()
-        use_xray = prefer_xray(entry.uri)
-        fair = {"attempts": self._fair_attempts, "targets": CONTROL_TARGETS, "timeout": timeout}
-        _debug(f"_deep_test: {entry.host}:{entry.port} use_xray={use_xray} port={port} fair={self._fair_attempts} timeout={timeout:.1f}")
+        use_xray = xray_can_carry(entry.uri)
+        probe = {"attempts": 1, "targets": DEEP_TARGETS, "timeout": timeout}
+        _debug(f"_deep_test: {entry.host}:{entry.port} use_xray={use_xray} "
+               f"port={port} timeout={timeout:.1f}")
         try:
             if use_xray:
-                result = self._get_xr_tester().test(entry.uri, port, **fair)
-                if result[0] or not singbox_supports_uri(entry.uri):
-                    _debug(f"_deep_test: {entry.host}:{entry.port} xray result={result}")
-                    return result
-            result = self._get_sb_tester().test(entry.uri, port, **fair)
-            _debug(f"_deep_test: {entry.host}:{entry.port} result={result}")
-            return result
+                return self._get_xr_tester().test(entry.uri, port, **probe)
+            return self._get_sb_tester().test(entry.uri, port, **probe)
         finally:
             release_port(port)
 
@@ -492,7 +485,7 @@ class TesterWorker(QObject):
         differences that made our fair check count more nodes as alive.
         """
         from .tester import (allocate_port, release_port, tcp_probe,
-                             HAPP_TIMEOUT, HAPP_TARGET)
+                             HAPP_TIMEOUT, HAPP_TARGET, xray_can_carry)
         stages: dict[str, str] = {}
         entry.probe_stages = stages
         timeout = HAPP_TIMEOUT
@@ -511,11 +504,13 @@ class TesterWorker(QObject):
             stages["tcp"] = f"{rtt:.0f}ms"
         else:
             stages["tcp"] = "n/a"
-        # Hysteria2/TUIC are UDP: Xray cannot carry them, sing-box can.
+        # Hysteria2/TUIC are UDP: Xray cannot carry them, sing-box can.  Our
+        # Xray builder also lacks trojan/vmess/shadowsocks, so those (and
+        # REALITY-over-WebSocket) go to sing-box instead of being marked dead.
         udp_protocols = ('HY2', 'HYSTERIA', 'TUIC')
         port = allocate_port()
         try:
-            if entry.protocol in udp_protocols:
+            if entry.protocol in udp_protocols or not xray_can_carry(entry.uri):
                 ok, latency, reason = self._get_happ_sb_tester().test_happ(
                     entry.uri, port, timeout=timeout)
             else:

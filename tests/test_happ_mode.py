@@ -155,23 +155,119 @@ class TestHappWorker(unittest.TestCase):
         self.assertTrue(ok)
         sb.test_happ.assert_called_once()
 
-    def test_fair_mode_does_not_use_happ_path(self):
-        with unittest.mock.patch.object(self.worker, "_happ_test") as happ:
-            worker = TesterWorker(check_mode="fair")
-            with unittest.mock.patch.object(worker, "_happ_test") as fair_happ, \
-                    unittest.mock.patch.object(tester, "tcp_probe",
-                                               return_value=(True, 10.0)):
-                sb = unittest.mock.Mock()
-                sb.test.return_value = (True, 50.0, "")
-                with unittest.mock.patch.object(worker, "_get_sb_tester",
-                                                return_value=sb), \
-                        unittest.mock.patch.object(tester, "allocate_port",
-                                                   return_value=3), \
-                        unittest.mock.patch.object(tester, "release_port"):
-                    ok, _lat, _reason = worker._deep_test(self.entry)
+    def _deep_with(self, worker, xr_result, sb_result):
+        xr = unittest.mock.Mock()
+        xr.test.return_value = xr_result
+        sb = unittest.mock.Mock()
+        sb.test.return_value = sb_result
+        with unittest.mock.patch.object(tester, "tcp_probe", return_value=(True, 10.0)), \
+                unittest.mock.patch.object(tester, "allocate_port", return_value=3), \
+                unittest.mock.patch.object(tester, "release_port"), \
+                unittest.mock.patch.object(worker, "_get_xr_tester", return_value=xr), \
+                unittest.mock.patch.object(worker, "_get_sb_tester", return_value=sb):
+            result = worker._deep_test(self.entry)
+        return result, xr, sb
+
+    def test_deep_is_single_attempt_single_target(self):
+        worker = TesterWorker()
+        (ok, _lat, _reason), xr, sb = self._deep_with(
+            worker, (True, 50.0, ""), (True, 50.0, ""))
         self.assertTrue(ok)
-        fair_happ.assert_not_called()
-        happ.assert_not_called()
+        _args, kwargs = xr.test.call_args
+        self.assertEqual(kwargs["attempts"], 1)
+        self.assertEqual(kwargs["targets"], tester.DEEP_TARGETS)
+        self.assertEqual(kwargs["timeout"], tester.DEEP_TIMEOUT)
+        self.assertEqual(tester.DEEP_TARGETS, (tester.GENERATE_204_TARGET,))
+        sb.test.assert_not_called()
+
+    def test_deep_has_no_second_core_fallback(self):
+        worker = TesterWorker()
+        (ok, _lat, reason), _xr, sb = self._deep_with(
+            worker, (False, 0, "timeout"), (True, 50.0, ""))
+        self.assertFalse(ok)
+        self.assertEqual(reason, "timeout")
+        sb.test.assert_not_called()
+
+    def test_deep_trojan_uses_singbox(self):
+        entry = ProxyEntry("trojan://secret@1.2.3.4:443?sni=example.com")
+        worker = TesterWorker()
+        xr = unittest.mock.Mock()
+        sb = unittest.mock.Mock()
+        sb.test.return_value = (True, 40.0, "")
+        with unittest.mock.patch.object(tester, "tcp_probe", return_value=(True, 10.0)), \
+                unittest.mock.patch.object(tester, "allocate_port", return_value=4), \
+                unittest.mock.patch.object(tester, "release_port"), \
+                unittest.mock.patch.object(worker, "_get_xr_tester", return_value=xr), \
+                unittest.mock.patch.object(worker, "_get_sb_tester", return_value=sb):
+            ok, _lat, _reason = worker._deep_test(entry)
+        self.assertTrue(ok)
+        sb.test.assert_called_once()
+        xr.test.assert_not_called()
+
+
+class TestHappCoreRouting(unittest.TestCase):
+    """A node must reach the core that can actually build its config.
+
+    Our Xray config builder only handles vless/http/socks; routing trojan,
+    vmess or shadowsocks to it made the Happ check report them dead.
+    """
+
+    def _run(self, uri):
+        worker = TesterWorker(check_mode="happ")
+        entry = ProxyEntry(uri)
+        xr = unittest.mock.Mock()
+        xr.test_happ.return_value = (True, 20.0, "")
+        sb = unittest.mock.Mock()
+        sb.test_happ.return_value = (True, 20.0, "")
+        with unittest.mock.patch.object(tester, "tcp_probe", return_value=(True, 5.0)), \
+                unittest.mock.patch.object(tester, "allocate_port", return_value=7), \
+                unittest.mock.patch.object(tester, "release_port"), \
+                unittest.mock.patch.object(worker, "_get_happ_xr_tester", return_value=xr), \
+                unittest.mock.patch.object(worker, "_get_happ_sb_tester", return_value=sb):
+            ok, _lat, reason = worker._happ_test(entry)
+        return ok, reason, xr, sb
+
+    def test_trojan_uses_singbox(self):
+        ok, _reason, xr, sb = self._run(
+            "trojan://secret@1.2.3.4:443?sni=example.com")
+        self.assertTrue(ok)
+        sb.test_happ.assert_called_once()
+        xr.test_happ.assert_not_called()
+
+    def test_shadowsocks_uses_singbox(self):
+        ok, _reason, xr, sb = self._run(
+            "ss://aes-256-gcm:secretpass@1.2.3.4:8388")
+        self.assertTrue(ok)
+        sb.test_happ.assert_called_once()
+        xr.test_happ.assert_not_called()
+
+    def test_vmess_uses_singbox(self):
+        import base64
+        import json
+        payload = base64.b64encode(json.dumps({
+            "v": "2", "ps": "n", "add": "1.2.3.4", "port": "443",
+            "id": "11111111-2222-3333-4444-555555555555", "aid": "0",
+            "net": "ws", "type": "none", "host": "example.com",
+            "path": "/", "tls": "tls",
+        }).encode()).decode()
+        ok, _reason, xr, sb = self._run("vmess://" + payload)
+        self.assertTrue(ok)
+        sb.test_happ.assert_called_once()
+        xr.test_happ.assert_not_called()
+
+    def test_vless_reality_tcp_stays_on_xray(self):
+        ok, _reason, xr, sb = self._run(VLESS)
+        self.assertTrue(ok)
+        xr.test_happ.assert_called_once()
+        sb.test_happ.assert_not_called()
+
+    def test_vless_reality_ws_uses_singbox(self):
+        uri = ("vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443"
+               "?security=reality&type=ws&pbk=x&sid=y&sni=example.com")
+        ok, _reason, xr, sb = self._run(uri)
+        self.assertTrue(ok)
+        sb.test_happ.assert_called_once()
+        xr.test_happ.assert_not_called()
 
 
 class TestPlainProxyFilter(unittest.TestCase):

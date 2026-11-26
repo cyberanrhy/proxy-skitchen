@@ -145,6 +145,11 @@ HAPP_TARGET = "https://www.gstatic.com/generate_204"
 HAPP_TIMEOUT = 5.0
 _HAPP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 GENERATE_204_TARGET = ProbeTarget(TEST_URL, "empty204")
+# DEEP mirrors the Happ app's check: one target, one attempt, fixed 5 s, no
+# second core.  Content is still validated (fair logic), so a block page that
+# returns 200 does not count as a tunnel.
+DEEP_TARGETS = (GENERATE_204_TARGET,)
+DEEP_TIMEOUT = HAPP_TIMEOUT
 INFRA_TARGETS = (
     ProbeTarget("https://github.com", "marker", "github", category="infra", min_bytes=500),
     ProbeTarget("https://1.1.1.1/cdn-cgi/trace", "trace", category="infra"),
@@ -418,6 +423,23 @@ def prefer_xray(uri: str) -> bool:
         return False
     transport = uri_query_param(uri, 'type', 'tcp').lower()
     return transport not in ('ws', 'websocket')
+
+
+def xray_can_carry(uri: str) -> bool:
+    """Whether our Xray config builder can carry this URI.
+
+    The Xray tester implements only vless, http and socks; trojan, vmess and
+    shadowsocks must go to sing-box.  REALITY over WebSocket is also routed to
+    sing-box because our Xray config is rejected there.
+    """
+    proto = get_protocol(uri)
+    if proto in ('http', 'https', 'socks', 'socks4', 'socks5'):
+        return True
+    if proto != 'vless':
+        return False
+    security = uri_query_param(uri, 'security', '').lower()
+    transport = uri_query_param(uri, 'type', 'tcp').lower()
+    return not (security == 'reality' and transport in ('ws', 'websocket'))
 
 
 def singbox_supports_uri(uri: str) -> bool:
